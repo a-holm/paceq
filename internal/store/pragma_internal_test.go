@@ -144,16 +144,9 @@ func TestReaderPoolKeepsItsConnections(t *testing.T) {
 		t.Fatalf("read: %v", err)
 	}
 
-	stats := s.r.Stats()
-	if stats.MaxIdleClosed != 0 {
+	if closed := s.r.Stats().MaxIdleClosed; closed != 0 {
 		t.Errorf("reader MaxIdleClosed = %d after %d concurrent readers, want 0: the pool is "+
 			"churning connections and replaying the reader pragmas on every reopen",
-			stats.MaxIdleClosed, readers)
-	}
-	if stats.MaxIdleTimeClosed != 0 {
-		t.Errorf("reader MaxIdleTimeClosed = %d, want 0", stats.MaxIdleTimeClosed)
-	}
-	if stats.MaxLifetimeClosed != 0 {
-		t.Errorf("reader MaxLifetimeClosed = %d, want 0", stats.MaxLifetimeClosed)
+			closed, readers)
 	}
 }

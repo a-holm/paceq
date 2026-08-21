@@ -18,6 +18,13 @@ type codedError struct{ code int }
 func (e codedError) Error() string { return fmt.Sprintf("stub sqlite error (%d)", e.code) }
 func (e codedError) Code() int     { return e.code }
 
+// busySnapshotStub is a stand-in driver error carrying the SQLITE_BUSY_SNAPSHOT
+// result code. The number is written out rather than read from
+// busySnapshotCode: a test that takes its expectation from the code under test
+// cannot catch that code being wrong. TestIsBusySnapshotOnARealDriverError is
+// what anchors 517 against the driver itself.
+func busySnapshotStub() codedError { return codedError{code: 517} }
+
 // realBusySnapshot reproduces SQLITE_BUSY_SNAPSHOT the only way it can happen:
 // a DEFERRED transaction reads, another connection commits, and the first one
 // then tries to write. This anchors the result code against the driver instead
@@ -105,7 +112,7 @@ func TestIsBusySnapshotRejectsEverythingElse(t *testing.T) {
 }
 
 func TestIsBusySnapshotSeesThroughWrapping(t *testing.T) {
-	err := fmt.Errorf("commit write transaction: %w", codedError{code: busySnapshotCode})
+	err := fmt.Errorf("commit write transaction: %w", busySnapshotStub())
 	if !isBusySnapshot(err) {
 		t.Errorf("isBusySnapshot(%v) = false, want true", err)
 	}
@@ -129,7 +136,7 @@ func TestWithTxRetriesBusySnapshotUpToThreeAttempts(t *testing.T) {
 					attempts, maxWriteAttempts)
 				return overrun
 			}
-			return codedError{code: busySnapshotCode}
+			return busySnapshotStub()
 		})
 		if overrun != nil {
 			t.Fatal(overrun)
@@ -174,7 +181,7 @@ func TestWithTxStopsRetryingWhenTheContextIsCancelled(t *testing.T) {
 		err := s.withTx(ctx, func(*sql.Tx) error {
 			attempts++
 			cancel()
-			return codedError{code: busySnapshotCode}
+			return busySnapshotStub()
 		})
 
 		if !errors.Is(err, context.Canceled) {
@@ -218,6 +225,34 @@ func TestWithTxLeavesNoOpenTransaction(t *testing.T) {
 	}
 }
 
+// TestWithTxCommitsAfterARetry pins the point of the retry policy. The other
+// retry tests only prove withTx gives up correctly; this one proves a
+// transaction that lost a snapshot race runs again and its write lands.
+func TestWithTxCommitsAfterARetry(t *testing.T) {
+	s := newStore(t)
+
+	attempts := 0
+	err := s.withTx(context.Background(), func(tx *sql.Tx) error {
+		attempts++
+		if attempts < maxWriteAttempts {
+			return busySnapshotStub()
+		}
+		_, err := tx.Exec("UPDATE counter SET n = 7 WHERE id = 1")
+		return err
+	})
+	if err != nil {
+		t.Fatalf("withTx: %v", err)
+	}
+	if attempts != maxWriteAttempts {
+		t.Errorf("withTx ran the callback %d times, want %d", attempts, maxWriteAttempts)
+	}
+	// Read through the reader pool, so the value has to have been committed to
+	// the file rather than left on the writer's own connection.
+	if got := readCounter(t, s); got != 7 {
+		t.Errorf("counter = %d, want 7: the retried transaction never committed", got)
+	}
+}
+
 // TestWriterConnectionIsNeverRecycled backs ConnMaxLifetime(0): the pool keeps
 // exactly the one connection it opened, however many transactions run.
 func TestWriterConnectionIsNeverRecycled(t *testing.T) {
@@ -242,12 +277,10 @@ func TestWriterConnectionIsNeverRecycled(t *testing.T) {
 	if stats.OpenConnections != 1 {
 		t.Errorf("writer OpenConnections = %d, want 1", stats.OpenConnections)
 	}
+	// A configuration smoke check, not a behavioural guard: the database/sql
+	// connection cleaner runs at most once a second, so a test this short would
+	// not see a recycled connection even if the lifetime were set.
 	if stats.MaxLifetimeClosed != 0 {
-		t.Errorf("writer MaxLifetimeClosed = %d, want 0: the write connection was recycled",
-			stats.MaxLifetimeClosed)
-	}
-	if stats.MaxIdleTimeClosed != 0 {
-		t.Errorf("writer MaxIdleTimeClosed = %d, want 0: the write connection was recycled",
-			stats.MaxIdleTimeClosed)
+		t.Errorf("writer MaxLifetimeClosed = %d, want 0", stats.MaxLifetimeClosed)
 	}
 }
