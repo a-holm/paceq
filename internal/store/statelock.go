@@ -35,10 +35,9 @@ type StateLock struct {
 type LockedError struct {
 	Path string
 	Err  error
-}
-
-func (e *LockedError) Error() string {
-	return fmt.Sprintf("PQ1001: another paceq process already uses %s", e.Path)
+	// Owner is the session row of the process holding the lock, when the
+	// database could be read and named one. Its message says so when it is nil.
+	Owner *Session
 }
 
 func (e *LockedError) Unwrap() error { return e.Err }

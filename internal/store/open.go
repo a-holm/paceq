@@ -91,6 +91,10 @@ type Store struct {
 	// bootChanged is written by StartSession and read by whoever reconciles, so
 	// it is atomic rather than a plain bool.
 	bootChanged atomic.Bool
+
+	// lock is the state directory claim, held when the store was opened through
+	// OpenState. Close releases it.
+	lock *StateLock
 }
 
 // Open opens the database at path with a single-connection writer pool and a
@@ -205,11 +209,19 @@ func (s *Store) Path() string {
 	return s.path
 }
 
-// Close releases every connection in both pools.
+// Close releases every connection in both pools, and the state lock when this
+// store took one. The lock goes last: it may not be handed on while a
+// connection to the database it protects is still open.
 func (s *Store) Close() error {
 	rErr := s.r.Close()
-	if err := s.w.Close(); err != nil {
-		return err
+	wErr := s.w.Close()
+	if s.lock != nil {
+		if err := s.lock.Release(); err != nil && wErr == nil && rErr == nil {
+			return err
+		}
+	}
+	if wErr != nil {
+		return wErr
 	}
 	return rErr
 }
