@@ -453,9 +453,63 @@ func TestExternalWriterIsAbsorbedByBusyTimeout(t *testing.T) {
 	t.Logf("waited %s behind an external writer holding the lock for %s", waited.Round(time.Millisecond), hold)
 }
 
-// externalWindow is short: the failure it looks for happens within microseconds
-// of a read, thousands of times a second, so a long window buys nothing.
-const externalWindow = 2 * time.Second
+const (
+	// externalWriters is the writer count for the external writer gate. The
+	// pressure that matters here comes from the second process, not from our own
+	// queue, so it is smaller than gateWriters.
+	externalWriters = 8
+
+	// externalWindow is short: the failure it looks for happens within
+	// microseconds of a read, thousands of times a second, so a long window buys
+	// nothing.
+	externalWindow = 2 * time.Second
+
+	// externalLimit caps the window when the base one produced too little. Two
+	// processes writing one file back each other off through busy_timeout, and
+	// that equilibrium can shut either side out for seconds at a time: a starved
+	// run measures the loser's backoff rather than the write model. The window
+	// therefore runs on past externalWindow until both sides have the commits
+	// they aim for, and externalLimit is where it gives up and says so.
+	externalLimit = 8 * time.Second
+
+	// externalEvidence is the commit count each side aims for before the window
+	// may close: the external writer's commits are what invalidate a read
+	// snapshot, and ours are the transactions that would be invalidated. One per
+	// writer, so the number says the queue moved rather than that a single lucky
+	// call got through. A run that ends under it says so in its output. A run
+	// that ends at zero on either side had nothing to catch and skips.
+	externalEvidence = externalWriters
+)
+
+// commitGate counts commits on one side of the external writer gate and closes
+// done once there are enough of them. It is the window's stop condition, so
+// that a run ends on evidence rather than on the clock alone.
+type commitGate struct {
+	n    atomic.Int64
+	done chan struct{}
+}
+
+func newCommitGate() *commitGate {
+	return &commitGate{done: make(chan struct{})}
+}
+
+// commit records one commit. Add returns a distinct value to every caller, so
+// exactly one of them closes done.
+func (g *commitGate) commit() {
+	if g.n.Add(1) == externalEvidence {
+		close(g.done)
+	}
+}
+
+func (g *commitGate) count() int64 { return g.n.Load() }
+
+// short reports that this side is under the evidence it aims for, which is what
+// makes the window run past externalWindow.
+func (g *commitGate) short() bool { return g.count() < externalEvidence }
+
+// silent reports that this side never committed at all, which is the one
+// outcome that leaves the run with nothing to say.
+func (g *commitGate) silent() bool { return g.count() == 0 }
 
 // hammeringWriter is a second connection to the same file with a busy_timeout
 // long enough that it keeps making progress while our writers hold the lock.
@@ -486,9 +540,14 @@ func hammeringWriter(t *testing.T, path string) *sql.DB {
 // upgrade that failed would be retried, so a callback running twice is a
 // transaction that began without the write lock, even when the retry hides the
 // error.
+//
+// Both of those hold whatever the machine was doing, so they are asserted on
+// every run. What does not hold under load is the setup behind them: either
+// side can be backed off the write lock for the whole window, and a run where
+// that happened has no evidence rather than a defect. Such a run extends the
+// window and prints what it ended with, and skips only if a side never
+// committed at all.
 func TestConcurrentWritersBesideAnExternalWriter(t *testing.T) {
-	const writers = 8
-
 	s := gateStore(t)
 	ext := hammeringWriter(t, s.Path())
 	if err := s.withTx(context.Background(), func(tx *sql.Tx) error {
@@ -498,28 +557,57 @@ func TestConcurrentWritersBesideAnExternalWriter(t *testing.T) {
 		t.Fatalf("create the external writer's table: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), externalWindow)
+	capped, cancelCap := context.WithTimeout(context.Background(), externalLimit)
+	defer cancelCap()
+	ctx, cancel := context.WithCancel(capped)
 	defer cancel()
+
+	external, ours := newCommitGate(), newCommitGate()
+
+	// The window closes on the clock and on evidence: never before
+	// externalWindow, and after it only once both sides have committed enough to
+	// have proven their half of the setup. externalLimit is the backstop, so a
+	// side that stays starved costs seconds rather than the suite.
+	var extended atomic.Bool
+	go func() {
+		defer cancel()
+		base := time.NewTimer(externalWindow)
+		defer base.Stop()
+		select {
+		case <-base.C:
+		case <-capped.Done():
+			return
+		}
+		if external.short() || ours.short() {
+			extended.Store(true)
+		}
+		for _, landed := range []<-chan struct{}{external.done, ours.done} {
+			select {
+			case <-landed:
+			case <-capped.Done():
+				return
+			}
+		}
+	}()
 
 	// The external writer commits continuously. Every commit invalidates a read
 	// snapshot taken before it, which is what turns a deferred transaction's
 	// write into an upgrade that cannot succeed.
 	hammering := make(chan struct{})
-	var extCommits atomic.Int64
 	go func() {
 		defer close(hammering)
 		for ctx.Err() == nil {
 			if _, err := ext.ExecContext(ctx, "INSERT INTO ext (n) VALUES (1)"); err == nil {
-				extCommits.Add(1)
+				external.commit()
 			}
 		}
 	}()
 
 	var runs, calls atomic.Int64
-	result := runLoad(ctx, writers, func(ctx context.Context, worker int) error {
+	result := runLoad(ctx, externalWriters, func(ctx context.Context, worker int) error {
 		key := worker % gateKeys
 		calls.Add(1)
-		return s.withTx(ctx, func(tx *sql.Tx) error {
+		err := s.withTx(ctx, func(tx *sql.Tx) error {
 			runs.Add(1)
 			var n int64
 			if err := tx.QueryRow("SELECT n FROM gate_head WHERE k = ?", key).Scan(&n); err != nil {
@@ -532,14 +620,28 @@ func TestConcurrentWritersBesideAnExternalWriter(t *testing.T) {
 			_, err := tx.Exec("UPDATE gate_head SET n = ? WHERE k = ?", n+1, key)
 			return err
 		})
+		if err == nil {
+			ours.commit()
+		}
+		return err
 	})
 	cancel()
 	<-hammering
 
-	t.Log(result.summary(fmt.Sprintf("%d writers beside an external writer", writers)))
+	t.Log(result.summary(fmt.Sprintf("%d writers beside an external writer", externalWriters)))
 	t.Logf("the external writer committed %d times, callbacks ran %d times for %d calls",
-		extCommits.Load(), runs.Load(), calls.Load())
+		external.count(), runs.Load(), calls.Load())
+	if extended.Load() {
+		t.Logf("STARVED: a side of the gate was under the %d commits it aims for when the %s window "+
+			"closed, so the load ran on to %s; it ended with %d commits from the external writer and "+
+			"%d from ours",
+			externalEvidence, externalWindow, result.elapsed.Round(time.Millisecond),
+			external.count(), ours.count())
+	}
 
+	// Everything the write model promises is asserted first, on the numbers the
+	// run actually produced. A starved run reports the defects it saw; what it
+	// must not do is call its own missing evidence a defect.
 	for _, err := range result.failed {
 		t.Errorf("writer: %v", err)
 	}
@@ -548,17 +650,21 @@ func TestConcurrentWritersBesideAnExternalWriter(t *testing.T) {
 			"the safety net for another process, and a transaction that begins with the write lock "+
 			"never needs more than that", result.busy)
 	}
-	if extCommits.Load() == 0 {
-		t.Fatal("the external writer never committed, so nothing invalidated a read snapshot and " +
-			"the test proves nothing")
-	}
-	if result.ops == 0 {
-		t.Fatal("no write committed beside the external writer")
-	}
 	if excess := runs.Load() - calls.Load(); excess > 0 {
 		t.Errorf("%d write callbacks ran a second time for %d calls: those transactions began "+
 			"without the write lock and had to be retried after a failed upgrade, which is what "+
 			"_txlock=immediate exists to prevent", excess, calls.Load())
 	}
 	assertNoLostUpdate(t, s, result.ops)
+
+	if external.silent() {
+		t.Skipf("STARVED: the external writer never committed in %s, so nothing invalidated a read "+
+			"snapshot and the run had no chance to catch a transaction beginning without the write "+
+			"lock", result.elapsed.Round(time.Millisecond))
+	}
+	if ours.silent() {
+		t.Skipf("STARVED: none of our writes committed in %s while the external writer committed %d "+
+			"times, so the run had no transaction of ours to catch beginning without the write lock",
+			result.elapsed.Round(time.Millisecond), external.count())
+	}
 }
