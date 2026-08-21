@@ -37,6 +37,7 @@ This list is a contract (plans: 00 §4.11, 10 §3, 09 §3.3). None of it is "lat
 - Dynamic fan-out (steps that generate N steps at runtime) and conditional edges in the graph.
 - Built-in integrations: Slack, SMTP, S3, Kafka, Postgres clients. Those are one step running `curl`, `aws` or `psql`.
 - Multi-tenancy, users, roles, RBAC.
+- A cloud service or a hosted offering. paceq is a binary you run yourself.
 - Container executors (Docker or Kubernetes). A step can run `docker run`; that is enough.
 - Sub-second scheduling.
 - Built-in secrets management. Use environment variables, a systemd `EnvironmentFile`, or `LoadCredential`. paceq stores references to secrets, never the secrets themselves.
@@ -55,7 +56,7 @@ The DAG milestone ships static dependencies only (plans: 00 §3.1, 10 §6):
 
 ## Budgets
 
-A breach means something gets removed, not that the budget gets raised. The rule is from 10 §7; the figures are from 00 §4.9, which raised 10 §7's stricter caps (5 dependencies, 8000 lines, 25 MB) when the synthesis accepted cobra as the one heavy dependency. The figures below govern. The rule is not raised again.
+A breach means something gets removed, not that the budget gets raised. The rule is from 10 §7. The figures are from 00 §4.9, which raised 10 §7's stricter caps of 5 dependencies, 8000 lines and 25 MB; the same section accepts cobra as the one heavy dependency. The figures below govern. The rule is not raised again.
 
 | Budget | Cap |
 |---|---|
