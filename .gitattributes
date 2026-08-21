@@ -1,0 +1,14 @@
+* text=auto eol=lf
+
+*.go text eol=lf diff=golang
+*.sql text eol=lf
+*.md text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+Makefile text eol=lf
+.githooks/* text eol=lf
+
+go.sum -diff
+*.golden -diff
+*.db binary
+*.sqlite binary
