@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	_ "modernc.org/sqlite"
 
@@ -79,6 +81,16 @@ type Store struct {
 	r    *sql.DB
 	path string
 	clk  clock.Clock
+
+	// bootID is the machine's boot id reader. It is a field so a test can
+	// reproduce a machine restart, which no test can do to /proc.
+	bootID func() (string, error)
+	// bootWarn keeps the degradation notice to one line per store. Repeating it
+	// on every session would train the operator to ignore it.
+	bootWarn sync.Once
+	// bootChanged is written by StartSession and read by whoever reconciles, so
+	// it is atomic rather than a plain bool.
+	bootChanged atomic.Bool
 }
 
 // Open opens the database at path with a single-connection writer pool and a
@@ -129,7 +141,7 @@ func Open(ctx context.Context, path string, opt Options) (*Store, error) {
 		clk = clock.System()
 	}
 
-	s := &Store{w: w, r: r, path: path, clk: clk}
+	s := &Store{w: w, r: r, path: path, clk: clk, bootID: readBootID}
 	// ensureAutoVacuum can rewrite the file, so it runs first and the
 	// verification stays the last thing Open does. Verifying before the rewrite
 	// would describe a file the caller never gets.
