@@ -154,42 +154,103 @@ func TestHealthyInstallationHasNoFailures(t *testing.T) {
 	}
 }
 
-// TestEveryFindingThatIsNotOKCarriesANextStep is the error anatomy rule applied
-// to the report: a warning nobody can act on is a bug.
-func TestEveryFindingThatIsNotOKCarriesANextStep(t *testing.T) {
+// broken is the database paceq creates with one answer changed, so a case
+// fails for the reason it is named after and nothing else. A fake left at
+// schema 0 would warn about the schema in every case and hide whatever the
+// case is really about.
+func broken(dir string, change func(*fakeDB)) *fakeDB {
+	db := healthy(dir)
+	change(db)
+	return db
+}
+
+// TestEveryFindingIsTheOneTheStateCallsFor is the error anatomy rule applied to
+// the report, and the check that each state produces its own finding: a warning
+// nobody can act on is a bug, and so is a broken check that stays quiet because
+// another finding happens to carry the level.
+func TestEveryFindingIsTheOneTheStateCallsFor(t *testing.T) {
 	dir := stateDir(t)
-	reports := map[string]doctor.Report{
-		"missing state directory": doctor.Run(context.Background(), filepath.Join(t.TempDir(), ".paceq"), options(opening(nil, os.ErrNotExist))),
-		"wide state directory":    doctor.Run(context.Background(), widened(t, stateDir(t), 0o755), options(opening(nil, nil))),
-		"locked": doctor.Run(context.Background(), dir, options(opening(nil, &store.LockedError{
-			Path:  filepath.Join(dir, "paceq.lock"),
-			Owner: &store.Session{PID: 4711, Version: "0.1.0", StartedAt: time.Unix(0, 0).UTC()},
-		}))),
-		"unreadable database": doctor.Run(context.Background(), dir, options(opening(nil, errors.New("file is not a database")))),
-		"old schema":          doctor.Run(context.Background(), dir, options(opening(&fakeDB{path: filepath.Join(dir, "state.db"), schema: 0, journal: "wal", mode: store.AutoVacuumIncremental}, nil))),
-		"newer schema":        doctor.Run(context.Background(), dir, options(opening(&fakeDB{path: filepath.Join(dir, "state.db"), schema: 9999, journal: "wal", mode: store.AutoVacuumIncremental}, nil))),
-		"not wal":             doctor.Run(context.Background(), dir, options(opening(&fakeDB{path: filepath.Join(dir, "state.db"), journal: "delete", mode: store.AutoVacuumIncremental}, nil))),
-		"auto_vacuum none":    doctor.Run(context.Background(), dir, options(opening(&fakeDB{path: filepath.Join(dir, "state.db"), journal: "wal", mode: store.AutoVacuumNone}, nil))),
-		"low disk":            doctor.Run(context.Background(), dir, lowDisk(opening(healthy(dir), nil))),
-		"no tzdata":           doctor.Run(context.Background(), dir, noZones(opening(healthy(dir), nil))),
+	cases := []struct {
+		name   string
+		report doctor.Report
+		title  string
+		level  doctor.Level
+	}{
+		{
+			name:   "missing state directory",
+			report: doctor.Run(context.Background(), filepath.Join(t.TempDir(), ".paceq"), options(opening(nil, os.ErrNotExist))),
+			title:  "state directory",
+			level:  doctor.Warn,
+		},
+		{
+			name:   "wide state directory",
+			report: doctor.Run(context.Background(), widened(t, stateDir(t), 0o755), options(opening(nil, nil))),
+			title:  "state directory",
+			level:  doctor.Warn,
+		},
+		{
+			name: "locked",
+			report: doctor.Run(context.Background(), dir, options(opening(nil, &store.LockedError{
+				Path:  filepath.Join(dir, "paceq.lock"),
+				Owner: &store.Session{PID: 4711, Version: "0.1.0", StartedAt: time.Unix(0, 0).UTC()},
+			}))),
+			title: "write lock",
+			level: doctor.Warn,
+		},
+		{
+			name:   "unreadable database",
+			report: doctor.Run(context.Background(), dir, options(opening(nil, errors.New("file is not a database")))),
+			title:  "database contents",
+			level:  doctor.Fail,
+		},
+		{
+			name:   "old schema",
+			report: doctor.Run(context.Background(), dir, options(opening(broken(dir, func(db *fakeDB) { db.schema = 0 }), nil))),
+			title:  "schema version",
+			level:  doctor.Warn,
+		},
+		{
+			name:   "newer schema",
+			report: doctor.Run(context.Background(), dir, options(opening(broken(dir, func(db *fakeDB) { db.schema = 9999 }), nil))),
+			title:  "schema version",
+			level:  doctor.Fail,
+		},
+		{
+			name:   "not wal",
+			report: doctor.Run(context.Background(), dir, options(opening(broken(dir, func(db *fakeDB) { db.journal = "delete" }), nil))),
+			title:  "journal mode",
+			level:  doctor.Fail,
+		},
+		{
+			name:   "auto_vacuum none",
+			report: doctor.Run(context.Background(), dir, options(opening(broken(dir, func(db *fakeDB) { db.mode = store.AutoVacuumNone }), nil))),
+			title:  "auto_vacuum",
+			level:  doctor.Warn,
+		},
+		{
+			name:   "low disk",
+			report: doctor.Run(context.Background(), dir, lowDisk(opening(healthy(dir), nil))),
+			title:  "disk space",
+			level:  doctor.Warn,
+		},
+		{
+			name:   "no tzdata",
+			report: doctor.Run(context.Background(), dir, noZones(opening(healthy(dir), nil))),
+			title:  "time zone",
+			level:  doctor.Warn,
+		},
 	}
 
-	for name, report := range reports {
-		t.Run(name, func(t *testing.T) {
-			worst := doctor.OK
-			for _, f := range report.Findings {
-				if f.Level == doctor.OK {
-					continue
-				}
-				if f.Level > worst {
-					worst = f.Level
-				}
-				if len(f.Next) == 0 {
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			found := find(t, c.report, c.title)
+			if found.Level != c.level {
+				t.Errorf("%s is %s, want %s: %s", c.title, found.Level, c.level, found.Detail)
+			}
+			for _, f := range c.report.Findings {
+				if f.Level != doctor.OK && len(f.Next) == 0 {
 					t.Errorf("%s finding %q has no next step: %s", f.Level, f.Title, f.Detail)
 				}
-			}
-			if worst == doctor.OK {
-				t.Errorf("this state is not healthy, but every finding is ok: %v", titles(report))
 			}
 		})
 	}
@@ -346,6 +407,32 @@ func TestNewerSchemaFails(t *testing.T) {
 	}
 	if !strings.Contains(found.Detail, "9999") {
 		t.Errorf("detail %q does not name the version found", found.Detail)
+	}
+}
+
+// TestNonWalJournalModeFails is the check that keeps the concurrency promise
+// honest: in any other journal mode a reader and the writer block each other,
+// so a database that is not in WAL is a broken installation rather than a
+// preference.
+func TestNonWalJournalModeFails(t *testing.T) {
+	dir := stateDir(t)
+	db := healthy(dir)
+	db.journal = "delete"
+
+	report := doctor.Run(context.Background(), dir, options(opening(db, nil)))
+
+	found := find(t, report, "journal mode")
+	if found.Level != doctor.Fail {
+		t.Errorf("level is %s, want %s: %s", found.Level, doctor.Fail, found.Detail)
+	}
+	if !strings.Contains(found.Detail, "delete") {
+		t.Errorf("detail %q does not name the mode found", found.Detail)
+	}
+	if !strings.Contains(strings.Join(found.Next, " "), "journal_mode = WAL") {
+		t.Errorf("next steps %v do not offer the command that fixes it", found.Next)
+	}
+	if report.Worst() != doctor.Fail {
+		t.Errorf("worst level is %s, want %s", report.Worst(), doctor.Fail)
 	}
 }
 
