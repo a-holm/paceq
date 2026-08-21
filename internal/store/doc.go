@@ -61,6 +61,27 @@
 // Databases created before paceq set it keep NONE, and the doctor check reports
 // them.
 //
+// # The state directory
+//
+// A state directory holds one lock file and one database, and one process owns
+// both. OpenState takes an exclusive flock on the lock file before the database
+// is opened for writing, so a second paceq is refused before it touches a page
+// of a file somebody else owns, and it is told which process to stop. The lock
+// lives in the kernel: it is released when the process dies, however it dies,
+// so there is no stale lock to clean up and the lock file is kept between runs.
+//
+// The lock covers a state directory, not a database file. Two processes pointed
+// at the same database through different state directories both start, which
+// the role leases in M2-02 are what make safe.
+//
+// StartSession records who is running, from when, and on which boot. A session
+// row still open at the next start belongs to a run that never got to say
+// goodbye, and is marked crashed. The boot id, read from
+// /proc/sys/kernel/random/boot_id, is the strongest evidence in the system: a
+// changed one means the machine restarted, so no process paceq started can have
+// survived. Platforms without it degrade to lease expiry, which is slower and
+// still correct.
+//
 // # Migrations
 //
 // Migrate applies the SQL files embedded from the migrations directory, in

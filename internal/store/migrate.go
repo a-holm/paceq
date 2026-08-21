@@ -186,7 +186,10 @@ func (s *Store) lockMigrations(ctx context.Context) error {
 // tryLockMigrations takes the lock in one statement. It returns the current
 // holder when someone else owns a lock that has not expired yet.
 func (s *Store) tryLockMigrations(ctx context.Context) (string, error) {
-	me := lockHolder()
+	// The boot id is read here rather than inside the transaction: the write
+	// model forbids file I/O while the write lock is held.
+	boot := s.bootIdentity()
+	me := lockHolder(boot)
 	var holder string
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
 		now := s.clk.Now().UnixMilli()
@@ -211,7 +214,7 @@ WHERE schema_migration_lock.holder = ? OR schema_migration_lock.expires_at <= ?`
 			"SELECT holder FROM schema_migration_lock WHERE id = 1").Scan(&holder); err != nil {
 			return fmt.Errorf("read the migration lock holder: %w", err)
 		}
-		if !holderAlive(holder) {
+		if !holderAlive(holder, boot) {
 			// The holder died with the lock still valid. Without this the next
 			// start would wait out the whole TTL after every crash.
 			if _, err := tx.ExecContext(ctx, `UPDATE schema_migration_lock
@@ -229,9 +232,10 @@ WHERE id = 1 AND holder = ?`, me, now, now+migrationLockTTL.Milliseconds(), hold
 // unlockMigrations drops our own lock row so the next process starts at once.
 // A row left behind by a crash expires instead.
 func (s *Store) unlockMigrations(ctx context.Context) error {
+	me := lockHolder(s.bootIdentity())
 	return s.withTx(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx,
-			"DELETE FROM schema_migration_lock WHERE id = 1 AND holder = ?", lockHolder())
+			"DELETE FROM schema_migration_lock WHERE id = 1 AND holder = ?", me)
 		if err != nil {
 			return fmt.Errorf("release the migration lock: %w", err)
 		}
@@ -239,16 +243,19 @@ func (s *Store) unlockMigrations(ctx context.Context) error {
 	})
 }
 
-// holderAlive reports whether a lock holder still exists. Only a holder on this
-// host can be answered: paceq owns one database file on one machine, so a lock
-// row naming another host is left to expire on its own.
+// holderAlive reports whether a lock holder still exists, given the boot id of
+// the machine asking. Only a holder on this host can be answered: paceq owns
+// one database file on one machine, so a lock row naming another host is left
+// to expire on its own.
 //
-// A process id is not a stable identity. A recycled id makes a dead holder look
-// alive until its lock expires, and puts a live unrelated process in the error
-// message. Both are the safe direction, waiting rather than migrating alongside
-// somebody, and both go away with the instance identity in #45.
-func holderAlive(holder string) bool {
-	host, pid, found := strings.Cut(holder, "/")
+// The boot id is what makes a process id trustworthy. A pid is recycled on
+// every boot, so a lock row written before a restart names a number that may
+// well exist again, and without the boot id every machine restart would wait
+// out the lock for nothing. A holder from another boot is dead whatever its pid
+// says. Within one boot the pid can still be recycled, which stays the safe
+// direction: waiting rather than migrating alongside somebody.
+func holderAlive(holder, boot string) bool {
+	host, rest, found := strings.Cut(holder, "/")
 	if !found {
 		return true
 	}
@@ -256,21 +263,34 @@ func holderAlive(holder string) bool {
 	if err != nil || host != me {
 		return true
 	}
-	number, err := strconv.Atoi(pid)
+
+	// A holder without a boot id comes from a build that did not record one, or
+	// from a machine that cannot read one. Then the pid is all there is.
+	if holderBoot, holderPID, ok := strings.Cut(rest, "/"); ok {
+		if boot != "" && holderBoot != "" && holderBoot != boot {
+			return false
+		}
+		rest = holderPID
+	}
+
+	number, err := strconv.Atoi(rest)
 	if err != nil {
 		return true
 	}
 	return processAlive(number)
 }
 
-// lockHolder names this process in the lock row. It is what holderAlive parses,
-// so the host/pid shape is load bearing.
-func lockHolder() string {
+// lockHolder names this process in the lock row: host, the boot it runs on and
+// its process id. It is what holderAlive parses, so the shape is load bearing.
+func lockHolder(boot string) string {
 	host, err := os.Hostname()
 	if err != nil {
 		host = "unknown-host"
 	}
-	return host + "/" + strconv.Itoa(os.Getpid())
+	if boot == "" {
+		return host + "/" + strconv.Itoa(os.Getpid())
+	}
+	return host + "/" + boot + "/" + strconv.Itoa(os.Getpid())
 }
 
 // maxVersion is the highest version this binary carries. An empty set is

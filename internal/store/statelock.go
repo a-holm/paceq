@@ -56,8 +56,16 @@ func AcquireStateLock(dir string) (*StateLock, error) {
 		return nil, err
 	}
 
+	// The lock file is opened through an os.Root rooted at the state directory,
+	// so the name cannot resolve to a file outside it through a symlink.
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, fmt.Errorf("open the state directory: %w", err)
+	}
+	defer func() { _ = root.Close() }()
+
 	path := filepath.Join(dir, lockFileName)
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, lockMode)
+	f, err := root.OpenFile(lockFileName, os.O_CREATE|os.O_RDWR, lockMode)
 	if err != nil {
 		return nil, fmt.Errorf("open the state lock file: %w", err)
 	}

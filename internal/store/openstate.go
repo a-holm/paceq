@@ -96,12 +96,12 @@ func (e *LockedError) Error() string {
 	if e.Owner == nil {
 		return fmt.Sprintf("PQ1001: another process already holds %s, and no session row names it: "+
 			"it may be a foreign process, or a start that died before its first write\n"+
-			"  Run this instance elsewhere: paceq --state <other directory>\n"+
+			"  Run this instance against another state directory\n"+
 			"  Or find the holder: fuser %s", e.Path, e.Path)
 	}
 	return fmt.Sprintf("PQ1001: another paceq process already uses %s\n"+
 		"  owner: pid %d, version %s, started %s\n"+
-		"  Run this instance elsewhere: paceq --state <other directory>\n"+
+		"  Run this instance against another state directory\n"+
 		"  Or stop the running one: systemctl stop paceq, or kill %d",
 		e.Path, e.Owner.PID, e.Owner.Version, e.Owner.StartedAt.Format(time.RFC3339), e.Owner.PID)
 }

@@ -71,7 +71,7 @@ func TestOpenStateNamesTheProcessHoldingTheLock(t *testing.T) {
 		strconv.Itoa(owner.PID),
 		owner.Version,
 		sessionOrigin.Format("2006-01-02"),
-		"--state",
+		"another state directory",
 		"kill " + strconv.Itoa(owner.PID),
 	} {
 		if !strings.Contains(message, want) {
