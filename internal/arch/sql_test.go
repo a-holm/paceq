@@ -11,15 +11,28 @@ import (
 	"testing"
 )
 
-// sqlPackages are the import paths only internal/store may use.
+// sqlPackages are the import paths only internal/store may use. This is the guard
+// that actually holds: no package can execute SQL without one of them.
 var sqlPackages = map[string]bool{
 	"database/sql":        true,
 	"database/sql/driver": true,
 }
 
-// sqlPrefixes mark a string literal as a query. The trailing space keeps
-// ordinary words such as "updated" from matching.
-var sqlPrefixes = []string{"SELECT ", "INSERT ", "UPDATE ", "DELETE "}
+// sqlPrefixes mark a string literal as a query. Matching is case sensitive on
+// purpose: uppercase keywords are the project's SQL convention, and matching
+// case insensitively would flag ordinary prose such as "with %d retries".
+// Statement keywords carry a trailing space so "updated" cannot match.
+var sqlPrefixes = []string{
+	"SELECT ",
+	"INSERT ",
+	"UPDATE ",
+	"DELETE ",
+	"REPLACE ",
+	"PRAGMA ",
+	"WITH ",
+	"BEGIN ",
+	"CREATE TABLE",
+}
 
 func TestSQLStaysInStore(t *testing.T) {
 	root := repoRoot(t)
@@ -71,7 +84,7 @@ func TestSQLStaysInStore(t *testing.T) {
 			if err != nil {
 				return true
 			}
-			trimmed := strings.ToUpper(strings.TrimLeft(value, " \t\r\n"))
+			trimmed := strings.TrimLeft(value, " \t\r\n")
 			for _, prefix := range sqlPrefixes {
 				if strings.HasPrefix(trimmed, prefix) {
 					t.Errorf("%s holds an SQL literal starting with %q: forbidden, all SQL lives in internal/store",

@@ -1,71 +1,110 @@
 package arch_test
 
 import (
+	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
 
-// depBudget is the ceiling on direct runtime and test dependencies. Every new
-// direct dependency needs a line in docs/adr/0001-foundation.md.
-const depBudget = 8
+// runtimeDepBudget is the ceiling on direct runtime dependencies. Test-only
+// dependencies do not count. Every direct dependency, runtime or test, needs a
+// line in docs/adr/0001-foundation.md.
+const runtimeDepBudget = 8
 
-func TestDirectDependencyBudget(t *testing.T) {
-	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "go.mod"))
-	if err != nil {
-		t.Fatalf("read go.mod: %v", err)
+type goModFile struct {
+	Require []struct {
+		Path     string
+		Version  string
+		Indirect bool
 	}
-
-	direct := directRequires(string(raw))
-	if len(direct) > depBudget {
-		t.Errorf("go.mod has %d direct dependencies, budget is %d: %s",
-			len(direct), depBudget, strings.Join(direct, ", "))
-	}
-	t.Logf("direct dependencies: %d of %d used", len(direct), depBudget)
 }
 
-// directRequires returns the module paths required directly, meaning every
-// require entry that go mod tidy has not marked "// indirect".
-func directRequires(goMod string) []string {
-	var direct []string
-	inBlock := false
+func TestRuntimeDependencyBudget(t *testing.T) {
+	root := repoRoot(t)
+	direct := directRequires(t, filepath.Join(root, "go.mod"))
 
-	for _, line := range strings.Split(goMod, "\n") {
-		line = strings.TrimSpace(line)
-		if inBlock {
-			if line == ")" {
-				inBlock = false
-				continue
-			}
-		} else {
-			switch {
-			case line == "require (":
-				inBlock = true
-				continue
-			case strings.HasPrefix(line, "require "):
-				line = strings.TrimPrefix(line, "require ")
-			default:
-				continue
-			}
-		}
+	runtimeModules := modulesInGraph(t, "list", "-deps", "-f", moduleTemplate, "./...")
+	anyModules := modulesInGraph(t, "list", "-deps", "-test", "-f", moduleTemplate, "./...")
 
-		if line == "" || strings.HasPrefix(line, "//") {
-			continue
+	var runtimeDeps, testOnlyDeps, unusedDeps []string
+	for _, path := range direct {
+		switch {
+		case runtimeModules[path]:
+			runtimeDeps = append(runtimeDeps, path)
+		case anyModules[path]:
+			testOnlyDeps = append(testOnlyDeps, path)
+		default:
+			unusedDeps = append(unusedDeps, path)
 		}
-		if comment := strings.Index(line, "//"); comment >= 0 {
-			if strings.Contains(line[comment:], "indirect") {
-				continue
-			}
-			line = strings.TrimSpace(line[:comment])
-		}
-		fields := strings.Fields(line)
-		if len(fields) == 0 {
-			continue
-		}
-		direct = append(direct, fields[0])
 	}
+
+	if len(runtimeDeps) > runtimeDepBudget {
+		t.Errorf("go.mod has %d direct runtime dependencies, budget is %d: %s",
+			len(runtimeDeps), runtimeDepBudget, strings.Join(runtimeDeps, ", "))
+	}
+	if len(unusedDeps) > 0 {
+		t.Errorf("go.mod has direct requirements that nothing imports (%s): run go mod tidy",
+			strings.Join(unusedDeps, ", "))
+	}
+	t.Logf("direct runtime dependencies: %d of %d used%s", len(runtimeDeps), runtimeDepBudget, listing(runtimeDeps))
+	t.Logf("direct test-only dependencies: %d, outside the budget%s", len(testOnlyDeps), listing(testOnlyDeps))
+}
+
+func listing(deps []string) string {
+	if len(deps) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(deps, ", ") + ")"
+}
+
+// moduleTemplate prints the module path of every package, blank for the standard
+// library, which has no module.
+const moduleTemplate = "{{if .Module}}{{.Module.Path}}{{end}}"
+
+func modulesInGraph(t *testing.T, args ...string) map[string]bool {
+	t.Helper()
+
+	modules := map[string]bool{}
+	for _, line := range strings.Split(runGo(t, args...), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			modules[line] = true
+		}
+	}
+	return modules
+}
+
+// directRequires returns the module paths required directly. The go tool does the
+// parsing: go.mod comment placement is subtle enough that hand-parsing it produced
+// silent false negatives.
+func directRequires(t *testing.T, goModPath string) []string {
+	t.Helper()
+
+	cmd := exec.Command("go", "mod", "edit", "-json", goModPath)
+	out, err := cmd.Output()
+	if err != nil {
+		var stderr []byte
+		if ee, ok := err.(*exec.ExitError); ok {
+			stderr = ee.Stderr
+		}
+		t.Fatalf("go mod edit -json %s: %v\n%s", goModPath, err, stderr)
+	}
+
+	var parsed goModFile
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatalf("decode go mod edit -json output: %v", err)
+	}
+
+	var direct []string
+	for _, r := range parsed.Require {
+		if !r.Indirect {
+			direct = append(direct, r.Path)
+		}
+	}
+	sort.Strings(direct)
 	return direct
 }
 
@@ -75,7 +114,10 @@ func TestDirectRequiresParsing(t *testing.T) {
 		goMod string
 		want  []string
 	}{
-		{name: "no require at all", goMod: "module example.com/x\n\ngo 1.25\n"},
+		{
+			name:  "no require at all",
+			goMod: "module example.com/x\n\ngo 1.25\n",
+		},
 		{
 			name:  "single line require",
 			goMod: "module example.com/x\n\ngo 1.25\n\nrequire example.com/a v1.0.0\n",
@@ -84,14 +126,39 @@ func TestDirectRequiresParsing(t *testing.T) {
 		{
 			name: "block with indirect entries",
 			goMod: "module example.com/x\n\ngo 1.25\n\nrequire (\n\texample.com/a v1.0.0\n" +
-				"\texample.com/b v2.0.0 // indirect\n\texample.com/c v3.0.0\n)\n",
+				"\texample.com/b v1.0.0 // indirect\n\texample.com/c v1.0.0\n)\n",
 			want: []string{"example.com/a", "example.com/c"},
+		},
+		{
+			name: "block opener carries a trailing comment",
+			goMod: "module example.com/x\n\ngo 1.25\n\nrequire ( // runtime deps\n" +
+				"\texample.com/a v1.0.0\n\texample.com/b v1.0.0\n)\n",
+			want: []string{"example.com/a", "example.com/b"},
+		},
+		{
+			name: "several require blocks",
+			goMod: "module example.com/x\n\ngo 1.25\n\nrequire (\n\texample.com/a v1.0.0\n)\n\n" +
+				"require example.com/b v1.0.0\n\nrequire (\n\texample.com/c v1.0.0 // indirect\n" +
+				"\texample.com/d v1.0.0\n)\n",
+			want: []string{"example.com/a", "example.com/b", "example.com/d"},
+		},
+		{
+			name: "comment merely containing the word indirect",
+			goMod: "module example.com/x\n\ngo 1.25\n\nrequire (\n" +
+				"\texample.com/a v1.0.0 // not indirect, we import it\n" +
+				"\texample.com/b v1.0.0 // indirect\n" +
+				"\texample.com/c v1.0.0 // indirect; pulled in by a\n)\n",
+			want: []string{"example.com/a"},
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := directRequires(tc.goMod)
+			path := filepath.Join(t.TempDir(), "go.mod")
+			if err := os.WriteFile(path, []byte(tc.goMod), 0o600); err != nil {
+				t.Fatalf("write fixture: %v", err)
+			}
+			got := directRequires(t, path)
 			if strings.Join(got, ",") != strings.Join(tc.want, ",") {
 				t.Errorf("directRequires() = %v, want %v", got, tc.want)
 			}
