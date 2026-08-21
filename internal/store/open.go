@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	_ "modernc.org/sqlite"
+
+	"github.com/a-holm/paceq/internal/clock"
 )
 
 // driverName is the database/sql name registered by modernc.org/sqlite.
@@ -64,6 +66,10 @@ type Options struct {
 
 	// AllowNetworkFS skips the refusal to run on a network or FUSE filesystem.
 	AllowNetworkFS bool
+
+	// Clock is the clock the retry backoff waits on. A nil Clock means
+	// clock.System(). Tests that want the backoff to be instant pass their own.
+	Clock clock.Clock
 }
 
 // Store owns every connection to the database file. Both handles are private:
@@ -72,6 +78,7 @@ type Store struct {
 	w    *sql.DB
 	r    *sql.DB
 	path string
+	clk  clock.Clock
 }
 
 // Open opens the database at path with a single-connection writer pool and a
@@ -117,7 +124,12 @@ func Open(ctx context.Context, path string, opt Options) (*Store, error) {
 	r.SetConnMaxLifetime(0)
 	r.SetConnMaxIdleTime(0)
 
-	s := &Store{w: w, r: r, path: path}
+	clk := opt.Clock
+	if clk == nil {
+		clk = clock.System()
+	}
+
+	s := &Store{w: w, r: r, path: path, clk: clk}
 	if err := s.verifyPragmas(ctx, sync); err != nil {
 		_ = s.Close()
 		return nil, err

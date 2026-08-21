@@ -57,10 +57,12 @@ func (s *Store) withTx(ctx context.Context, fn func(*sql.Tx) error) error {
 		if err == nil || attempt == maxWriteAttempts || !isBusySnapshot(err) {
 			return err
 		}
+		timer := s.clk.NewTimer(time.Duration(attempt) * retryBackoff)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return ctx.Err()
-		case <-time.After(time.Duration(attempt) * retryBackoff):
+		case <-timer.C:
 		}
 	}
 }
