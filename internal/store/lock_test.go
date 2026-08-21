@@ -1,4 +1,4 @@
-package store_test
+package store
 
 import (
 	"context"
@@ -45,7 +45,7 @@ func TestWithTxTakesTheWriteLockAtBegin(t *testing.T) {
 
 	attempts := 0
 	var extErr error
-	err := s.WithTx(context.Background(), func(tx *sql.Tx) error {
+	err := s.withTx(context.Background(), func(tx *sql.Tx) error {
 		attempts++
 		var n int
 		if err := tx.QueryRow("SELECT n FROM counter WHERE id = 1").Scan(&n); err != nil {
@@ -59,14 +59,14 @@ func TestWithTxTakesTheWriteLockAtBegin(t *testing.T) {
 		return err
 	})
 	if err != nil {
-		t.Fatalf("WithTx: %v", err)
+		t.Fatalf("withTx: %v", err)
 	}
 	if attempts != 1 {
-		t.Errorf("WithTx ran the callback %d times, want 1: the transaction had to be retried, "+
+		t.Errorf("withTx ran the callback %d times, want 1: the transaction had to be retried, "+
 			"so it did not hold the write lock from BEGIN", attempts)
 	}
 	if extErr == nil {
-		t.Error("the competing writer committed while WithTx was open: BEGIN did not take the write lock")
+		t.Error("the competing writer committed while withTx was open: BEGIN did not take the write lock")
 	}
 	if got := readCounter(t, s); got != 1 {
 		t.Errorf("counter = %d, want 1", got)
@@ -91,7 +91,7 @@ func TestConcurrentReadThenWriteNeverReportsBusy(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for range iterations {
-				err := s.WithTx(context.Background(), func(tx *sql.Tx) error {
+				err := s.withTx(context.Background(), func(tx *sql.Tx) error {
 					var n int
 					if err := tx.QueryRow("SELECT n FROM counter WHERE id = 1").Scan(&n); err != nil {
 						return err
@@ -112,7 +112,7 @@ func TestConcurrentReadThenWriteNeverReportsBusy(t *testing.T) {
 		if strings.Contains(strings.ToLower(err.Error()), "busy") {
 			t.Fatalf("SQLITE_BUSY from our own writers: %v", err)
 		}
-		t.Fatalf("WithTx: %v", err)
+		t.Fatalf("withTx: %v", err)
 	}
 
 	if got := readCounter(t, s); got != writers*iterations {

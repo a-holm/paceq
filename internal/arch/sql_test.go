@@ -16,6 +16,10 @@ import (
 var sqlPackages = map[string]bool{
 	"database/sql":        true,
 	"database/sql/driver": true,
+	"modernc.org/sqlite":  true,
+	// lib is a standalone port of the C API and reaches the database without
+	// going through database/sql at all.
+	"modernc.org/sqlite/lib": true,
 }
 
 // sqlPrefixes mark a string literal as a query. Matching is case sensitive on

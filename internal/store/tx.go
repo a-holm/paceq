@@ -28,15 +28,15 @@ const (
 	busySnapshotCode = 517
 )
 
-// Reader is the read side of the database. It is deliberately narrower than
+// reader is the read side of the database. It is deliberately narrower than
 // *sql.DB: there is no BeginTx, so a read path cannot open an explicit
 // transaction even by accident.
-type Reader interface {
+type reader interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-// WithTx runs fn inside one BEGIN IMMEDIATE transaction on the single write
+// withTx runs fn inside one BEGIN IMMEDIATE transaction on the single write
 // connection. It commits when fn returns nil and rolls back otherwise.
 //
 // Rules, from the locked write model. Breaking one is a review stopper:
@@ -51,7 +51,7 @@ type Reader interface {
 // fn receives only *sql.Tx. It gets no context, because a context inside a
 // write transaction is an invitation to call out of the process while holding
 // the write lock.
-func (s *Store) WithTx(ctx context.Context, fn func(*sql.Tx) error) error {
+func (s *Store) withTx(ctx context.Context, fn func(*sql.Tx) error) error {
 	for attempt := 1; ; attempt++ {
 		err := s.withTxOnce(ctx, fn)
 		if err == nil || attempt == maxWriteAttempts || !isBusySnapshot(err) {
@@ -97,10 +97,10 @@ func (s *Store) withTxOnce(ctx context.Context, fn func(*sql.Tx) error) error {
 	return nil
 }
 
-// WithRead runs fn against the read-only pool, never an explicit transaction.
+// withRead runs fn against the read-only pool, never an explicit transaction.
 // The context handed to fn carries a deadline so no read can hold a read
 // snapshot open indefinitely.
-func (s *Store) WithRead(ctx context.Context, fn func(context.Context, Reader) error) error {
+func (s *Store) withRead(ctx context.Context, fn func(context.Context, reader) error) error {
 	ctx, cancel := context.WithTimeout(ctx, readDeadline)
 	defer cancel()
 	return fn(ctx, s.r)

@@ -117,19 +117,19 @@ func TestWithTxRetriesBusySnapshotUpToThreeAttempts(t *testing.T) {
 
 		attempts := 0
 		start := time.Now()
-		err := s.WithTx(t.Context(), func(*sql.Tx) error {
+		err := s.withTx(t.Context(), func(*sql.Tx) error {
 			attempts++
 			return codedError{code: busySnapshotCode}
 		})
 
 		if !isBusySnapshot(err) {
-			t.Errorf("WithTx error = %v, want the busy snapshot error to bubble out after the last attempt", err)
+			t.Errorf("withTx error = %v, want the busy snapshot error to bubble out after the last attempt", err)
 		}
 		if attempts != maxWriteAttempts {
-			t.Errorf("WithTx ran the callback %d times, want %d", attempts, maxWriteAttempts)
+			t.Errorf("withTx ran the callback %d times, want %d", attempts, maxWriteAttempts)
 		}
 		if waited := time.Since(start); waited == 0 {
-			t.Error("WithTx retried without any backoff")
+			t.Error("withTx retried without any backoff")
 		}
 	})
 }
@@ -139,16 +139,16 @@ func TestWithTxDoesNotRetryOtherErrors(t *testing.T) {
 
 	sentinel := errors.New("not retryable")
 	attempts := 0
-	err := s.WithTx(context.Background(), func(*sql.Tx) error {
+	err := s.withTx(context.Background(), func(*sql.Tx) error {
 		attempts++
 		return sentinel
 	})
 
 	if !errors.Is(err, sentinel) {
-		t.Errorf("WithTx error = %v, want %v", err, sentinel)
+		t.Errorf("withTx error = %v, want %v", err, sentinel)
 	}
 	if attempts != 1 {
-		t.Errorf("WithTx ran the callback %d times, want 1", attempts)
+		t.Errorf("withTx ran the callback %d times, want 1", attempts)
 	}
 }
 
@@ -158,17 +158,17 @@ func TestWithTxStopsRetryingWhenTheContextIsCancelled(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(t.Context())
 		attempts := 0
-		err := s.WithTx(ctx, func(*sql.Tx) error {
+		err := s.withTx(ctx, func(*sql.Tx) error {
 			attempts++
 			cancel()
 			return codedError{code: busySnapshotCode}
 		})
 
 		if !errors.Is(err, context.Canceled) {
-			t.Errorf("WithTx error = %v, want %v", err, context.Canceled)
+			t.Errorf("withTx error = %v, want %v", err, context.Canceled)
 		}
 		if attempts != 1 {
-			t.Errorf("WithTx ran the callback %d times, want 1 before the context was cancelled", attempts)
+			t.Errorf("withTx ran the callback %d times, want 1 before the context was cancelled", attempts)
 		}
 	})
 }
@@ -180,17 +180,17 @@ func TestWithTxLeavesNoOpenTransaction(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	err := s.WithTx(ctx, func(*sql.Tx) error {
+	err := s.withTx(ctx, func(*sql.Tx) error {
 		t.Error("the callback ran with an already cancelled context")
 		return nil
 	})
 	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("WithTx error = %v, want %v", err, context.Canceled)
+		t.Fatalf("withTx error = %v, want %v", err, context.Canceled)
 	}
 
 	done := make(chan error, 1)
 	go func() {
-		done <- s.WithTx(context.Background(), func(tx *sql.Tx) error {
+		done <- s.withTx(context.Background(), func(tx *sql.Tx) error {
 			_, err := tx.Exec("CREATE TABLE after_cancel (id INTEGER PRIMARY KEY)")
 			return err
 		})
@@ -210,14 +210,14 @@ func TestWithTxLeavesNoOpenTransaction(t *testing.T) {
 func TestWriterConnectionIsNeverRecycled(t *testing.T) {
 	s := openTestStore(t, Options{})
 
-	if err := s.WithTx(context.Background(), func(tx *sql.Tx) error {
+	if err := s.withTx(context.Background(), func(tx *sql.Tx) error {
 		_, err := tx.Exec("CREATE TABLE counter (id INTEGER PRIMARY KEY, n INTEGER NOT NULL)")
 		return err
 	}); err != nil {
 		t.Fatalf("create table: %v", err)
 	}
 	for i := range 200 {
-		if err := s.WithTx(context.Background(), func(tx *sql.Tx) error {
+		if err := s.withTx(context.Background(), func(tx *sql.Tx) error {
 			_, err := tx.Exec("INSERT INTO counter (id, n) VALUES (?, ?)", i, i)
 			return err
 		}); err != nil {

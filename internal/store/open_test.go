@@ -1,12 +1,10 @@
-package store_test
+package store
 
 import (
 	"context"
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/a-holm/paceq/internal/store"
 )
 
 // tempPath is a database path inside t.TempDir(). Every store test uses a real
@@ -20,7 +18,7 @@ func tempPath(t *testing.T) string {
 func TestOpenCreatesTheDatabaseFile(t *testing.T) {
 	path := tempPath(t)
 
-	s, err := store.Open(context.Background(), path, store.Options{})
+	s, err := Open(context.Background(), path, Options{})
 	if err != nil {
 		t.Fatalf("Open(%q): %v", path, err)
 	}

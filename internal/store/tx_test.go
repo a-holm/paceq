@@ -1,4 +1,4 @@
-package store_test
+package store
 
 import (
 	"context"
@@ -6,17 +6,15 @@ import (
 	"errors"
 	"strings"
 	"testing"
-
-	"github.com/a-holm/paceq/internal/store"
 )
 
 // newStore opens a store on a real file and creates the one table the
 // transaction tests write to. The schema itself lands in a later issue, so the
 // test owns it.
-func newStore(t *testing.T) *store.Store {
+func newStore(t *testing.T) *Store {
 	t.Helper()
 
-	s, err := store.Open(context.Background(), tempPath(t), store.Options{})
+	s, err := Open(context.Background(), tempPath(t), Options{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -26,7 +24,7 @@ func newStore(t *testing.T) *store.Store {
 		}
 	})
 
-	err = s.WithTx(context.Background(), func(tx *sql.Tx) error {
+	err = s.withTx(context.Background(), func(tx *sql.Tx) error {
 		_, err := tx.Exec("CREATE TABLE counter (id INTEGER PRIMARY KEY, n INTEGER NOT NULL)")
 		if err != nil {
 			return err
@@ -40,11 +38,11 @@ func newStore(t *testing.T) *store.Store {
 	return s
 }
 
-func readCounter(t *testing.T, s *store.Store) int {
+func readCounter(t *testing.T, s *Store) int {
 	t.Helper()
 
 	var n int
-	err := s.WithRead(context.Background(), func(ctx context.Context, r store.Reader) error {
+	err := s.withRead(context.Background(), func(ctx context.Context, r reader) error {
 		return r.QueryRowContext(ctx, "SELECT n FROM counter WHERE id = 1").Scan(&n)
 	})
 	if err != nil {
@@ -56,12 +54,12 @@ func readCounter(t *testing.T, s *store.Store) int {
 func TestWithTxCommitsWhenTheCallbackSucceeds(t *testing.T) {
 	s := newStore(t)
 
-	err := s.WithTx(context.Background(), func(tx *sql.Tx) error {
+	err := s.withTx(context.Background(), func(tx *sql.Tx) error {
 		_, err := tx.Exec("UPDATE counter SET n = 7 WHERE id = 1")
 		return err
 	})
 	if err != nil {
-		t.Fatalf("WithTx: %v", err)
+		t.Fatalf("withTx: %v", err)
 	}
 	if got := readCounter(t, s); got != 7 {
 		t.Errorf("counter = %d, want 7", got)
@@ -72,14 +70,14 @@ func TestWithTxRollsBackWhenTheCallbackFails(t *testing.T) {
 	s := newStore(t)
 	sentinel := errors.New("callback refused")
 
-	err := s.WithTx(context.Background(), func(tx *sql.Tx) error {
+	err := s.withTx(context.Background(), func(tx *sql.Tx) error {
 		if _, err := tx.Exec("UPDATE counter SET n = 42 WHERE id = 1"); err != nil {
 			return err
 		}
 		return sentinel
 	})
 	if !errors.Is(err, sentinel) {
-		t.Fatalf("WithTx error = %v, want %v", err, sentinel)
+		t.Fatalf("withTx error = %v, want %v", err, sentinel)
 	}
 	if got := readCounter(t, s); got != 0 {
 		t.Errorf("counter = %d after a rolled back transaction, want 0", got)
@@ -92,15 +90,15 @@ func TestWithTxRollsBackWhenTheCallbackFails(t *testing.T) {
 func TestWithReadCannotWrite(t *testing.T) {
 	s := newStore(t)
 
-	err := s.WithRead(context.Background(), func(ctx context.Context, r store.Reader) error {
+	err := s.withRead(context.Background(), func(ctx context.Context, r reader) error {
 		_, err := r.QueryContext(ctx, "INSERT INTO counter (id, n) VALUES (2, 1)")
 		return err
 	})
 	if err == nil {
-		t.Fatal("an INSERT through WithRead succeeded, want a readonly database error")
+		t.Fatal("an INSERT through withRead succeeded, want a readonly database error")
 	}
 	if !strings.Contains(err.Error(), "readonly") {
-		t.Errorf("WithRead error = %q, want it to mention a readonly database", err)
+		t.Errorf("withRead error = %q, want it to mention a readonly database", err)
 	}
 	if got := readCounter(t, s); got != 0 {
 		t.Errorf("counter = %d, want the reader pool to have changed nothing", got)

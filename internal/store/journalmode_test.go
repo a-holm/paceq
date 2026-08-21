@@ -1,4 +1,4 @@
-package store_test
+package store
 
 import (
 	"context"
@@ -6,8 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/a-holm/paceq/internal/store"
+	"time"
 )
 
 // writeDeleteModeDatabase builds a database the way a foreign tool would: no
@@ -42,7 +41,7 @@ func TestOpenAgainstAFileAlreadyInJournalModeDelete(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
 	writeDeleteModeDatabase(t, path)
 
-	s, err := store.Open(context.Background(), path, store.Options{})
+	s, err := Open(context.Background(), path, Options{})
 	if err != nil {
 		t.Fatalf("Open against a DELETE-mode file: %v", err)
 	}
@@ -62,7 +61,7 @@ func TestOpenAgainstAnEmptyUnmigratedFile(t *testing.T) {
 		t.Fatalf("create empty file: %v", err)
 	}
 
-	s, err := store.Open(context.Background(), path, store.Options{})
+	s, err := Open(context.Background(), path, Options{})
 	if err != nil {
 		t.Fatalf("Open against an empty file: %v", err)
 	}
@@ -72,12 +71,102 @@ func TestOpenAgainstAnEmptyUnmigratedFile(t *testing.T) {
 }
 
 func TestOpenRejectsAnUnsupportedSynchronousValue(t *testing.T) {
-	s, err := store.Open(context.Background(), tempPath(t), store.Options{Synchronous: "off"})
+	s, err := Open(context.Background(), tempPath(t), Options{Synchronous: "off"})
 	if err == nil {
 		_ = s.Close()
 		t.Fatal("Open accepted synchronous=off, want an error")
 	}
 	if got := err.Error(); got == "" {
 		t.Error("Open returned an empty error message")
+	}
+}
+
+// TestOpenRefusesAnInMemoryDatabase is what makes testutil.TempStore's real
+// file mandatory rather than conventional. ":memory:" gives the writer and the
+// reader two unrelated databases and no WAL, and the startup verification
+// refuses it.
+func TestOpenRefusesAnInMemoryDatabase(t *testing.T) {
+	for _, path := range []string{":memory:", ":memory:?cache=shared"} {
+		t.Run(path, func(t *testing.T) {
+			s, err := Open(context.Background(), path, Options{})
+			if err == nil {
+				_ = s.Close()
+				t.Fatalf("Open(%q) succeeded, want a refusal", path)
+			}
+			t.Logf("Open(%q) = %v", path, err)
+		})
+	}
+}
+
+// TestReturningRowsMustBeConsumed pins the documented consequence of a
+// single-connection writer pool: an unread *sql.Rows from RETURNING holds the
+// only write connection, and the next statement on that transaction deadlocks
+// against the process itself rather than failing.
+func TestReturningRowsMustBeConsumed(t *testing.T) {
+	s := newStore(t)
+
+	err := s.withTx(context.Background(), func(tx *sql.Tx) error {
+		rows, err := tx.Query("UPDATE counter SET n = n + 1 WHERE id = 1 RETURNING n")
+		if err != nil {
+			return err
+		}
+		var n int
+		for rows.Next() {
+			if err := rows.Scan(&n); err != nil {
+				return err
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		if n != 1 {
+			t.Errorf("RETURNING gave n = %d, want 1", n)
+		}
+		_, err = tx.Exec("UPDATE counter SET n = n + 1 WHERE id = 1")
+		return err
+	})
+	if err != nil {
+		t.Fatalf("withTx: %v", err)
+	}
+	if got := readCounter(t, s); got != 2 {
+		t.Errorf("counter = %d, want 2", got)
+	}
+}
+
+// TestUnconsumedReturningIsNotADeadlockToday records what the driver actually
+// does when RETURNING rows are left open and the transaction runs another
+// statement. It does not deadlock: the result set is materialised before Query
+// returns. The discipline stays a rule anyway, because nothing in database/sql
+// or in the driver's contract promises that, and the writer pool has exactly
+// one connection to lose.
+func TestUnconsumedReturningIsNotADeadlockToday(t *testing.T) {
+	s := newStore(t)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- s.withTx(context.Background(), func(tx *sql.Tx) error {
+			rows, err := tx.Query("UPDATE counter SET n = n + 1 WHERE id = 1 RETURNING n")
+			if err != nil {
+				return err
+			}
+			defer func() { _ = rows.Close() }()
+			_, err = tx.Exec("UPDATE counter SET n = n + 1 WHERE id = 1")
+			return err
+		})
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("withTx with an unconsumed RETURNING result: %v", err)
+		}
+		if got := readCounter(t, s); got != 2 {
+			t.Errorf("counter = %d, want 2", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("an unconsumed RETURNING result deadlocked the single write connection")
 	}
 }
