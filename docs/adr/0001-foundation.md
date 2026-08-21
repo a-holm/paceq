@@ -62,12 +62,16 @@ The direction is `cli -> engine -> store -> model`. `internal/model`, `internal/
 
 Test files are held to the same table, read from `TestImports` and `XTestImports`. A rule that only covers production files is a rule with a `_test.go` shaped hole in it. One relaxation: test files may also import `internal/testutil`, which exists for no other purpose. Failure messages say which import list the edge came from.
 
+`internal/testutil` has a row of its own, `{model, clock, id, store}`, so the relaxation cannot be used as a detour. Without it, a test in `internal/model` could reach `internal/engine` transitively through a helper, and the rule that `model` depends on nothing would hold only on paper.
+
 Packages with no rule in the table are unconstrained for now, except for the `internal/cli` rule, which is universal. The plan does not fix the remaining directions yet, and enforcing a guess is worse than enforcing nothing. The test asserts that every package named in the table exists, so a rename cannot silently empty a rule.
 
 All SQL lives in `internal/store`. The same test scans every `.go` file outside `internal/store` for two things:
 
-1. Imports of `database/sql` or `database/sql/driver`. This is the guard that actually holds. No package can execute SQL without one of them, so the direction cannot be broken while this passes.
-2. String literals starting with `SELECT `, `INSERT `, `UPDATE `, `DELETE `, `REPLACE `, `PRAGMA `, `WITH `, `BEGIN ` or `CREATE TABLE`. `PRAGMA` and `BEGIN` are on the list because connection setup and transaction control are store-owned too, not only queries.
+1. Imports of `database/sql` or `database/sql/driver`. This is the guard that actually holds. No package can execute SQL without one of them, so the direction cannot be broken while this passes. When the driver lands in #28, `modernc.org/sqlite` and `modernc.org/sqlite/lib` join this list: `lib` is a standalone port of the C API and reaches the database without going through `database/sql` at all.
+2. String literals starting with a statement keyword: the four DML verbs, plus `REPLACE `, `PRAGMA `, `ATTACH `, `WITH `, `BEGIN `, and the DDL `CREATE TABLE`, `CREATE INDEX`, `ALTER TABLE`, `DROP TABLE`. `PRAGMA` and `BEGIN` are there because connection setup and transaction control are store-owned too, not only queries. `ATTACH` is there because multi-file databases are ruled out outright, so any occurrence is a mistake. `VACUUM` and `ANALYZE` are deliberately left off: they are bare single-word statements with no operand to anchor on, and the maintenance paths that issue them go through the `PRAGMA` rule already.
+
+Runs of whitespace are collapsed before matching, so `CREATE  TABLE` does not slip through on a stray second space.
 
 The literal scan matches case sensitively. Uppercase keywords are the project's SQL convention, and matching case insensitively would flag ordinary prose: a literal such as `"with %d retries left"` starts with `WITH ` once upper-cased. The cost is that lowercase SQL slips past the literal scan. That is acceptable, because it cannot be executed without an import the first guard already blocks. The literal scan is a tripwire on top of the import guard, not the guard itself.
 
@@ -95,7 +99,15 @@ The budget is **8 direct runtime dependencies**. Test-only dependencies are outs
 
 A test enforces this. It gets the direct requirements from `go mod edit -json`, which reports the `Indirect` flag, and never parses `go.mod` by hand: comment placement in `go.mod` is subtle enough that a hand parser reads `require ( // runtime deps` as a single dependency named `(` and then reports a nine-dependency module as one.
 
-Runtime and test-only are separated by reachability, not by naming convention. A module reached by `go list -deps ./...` is runtime. A module reached only by `go list -deps -test ./...` is test-only. A direct requirement reached by neither is unused, and the test says so, because `go mod tidy` should have removed it.
+Runtime and test-only are separated by reachability, not by naming convention. A module reached from the product's own packages is runtime. A module reached only through test files is test-only.
+
+Three details make that classification survive contact with real code:
+
+1. The graph is walked for `linux`, `darwin` and `windows` and unioned. A dependency behind `//go:build windows` is a runtime dependency, and a walk on the host alone cannot see it. This matters directly: the plan keeps `mattn/go-sqlite3` behind a build tag as an escape hatch, and `internal/runner` will need platform-specific process handling.
+2. `internal/testutil` is left out of the runtime roots. It is an ordinary package, so a naive walk counts everything it imports as shipping in the product, when in fact it is only ever imported by test files. Its own row in the dependency table is what keeps that exclusion safe.
+3. A direct requirement reached by neither walk is **counted as runtime**, and logged as unreachable rather than reported as an error. It is most likely gated behind a build tag this walk does not set, so counting it as runtime is the conservative reading, and refusing to guess the other way keeps a hole out of the budget.
+
+The test deliberately does **not** assert that every direct requirement is reachable. `go mod tidy` resolves across every platform and build tag, so it correctly keeps a requirement that only a `//go:build windows` file imports, and a test that calls that unused fails on a green tree while telling the developer to run the command they already ran. Staleness is `go mod tidy -diff` in CI (#22), which is the tool that can actually be right about it.
 
 The skeleton has **zero** direct dependencies of either kind. The standard library covers everything it does.
 
@@ -110,6 +122,8 @@ Every dependency added later needs a line in this table. The choices below are f
 | `github.com/oklog/ulid/v2` | runtime | time-sortable, prefix-searchable identifiers for `internal/id` |
 | `golang.org/x/sync` | runtime | `errgroup` and `semaphore` for structured startup and shutdown |
 | `github.com/google/go-cmp` | test | readable diffs in tests |
+| `github.com/rogpeppe/go-internal` | test | `testscript` for CLI golden tests, where `--json` output is a public interface |
+| `pgregory.net/rapid` | test | property tests for the state machine against real SQLite |
 
 That is six runtime dependencies of eight, leaving two slots. Anything beyond needs an ADR that says what it replaced.
 
