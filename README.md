@@ -10,10 +10,8 @@ The project is fully planned, from empty repo to v1.0:
 
 - [Project board](https://github.com/users/a-holm/projects/2) — all 80 issues with priority, estimate, epic, dates and dependencies, across 9 milestones (M0–M8).
 - [docs/PLAN.md](docs/PLAN.md) — the master plan: final decisions, milestones and the complete issue backlog.
-- [docs/plans/00-SYNTESE.md](docs/plans/00-SYNTESE.md) — architecture synthesis and how every contested decision was settled.
-- [docs/plans/](docs/plans/) — 11 independent project plans written from different perspectives (minimalist, reliability, CLI/DX, prior art, Go architecture, SRE, database, security, product, pre-mortem, distributed systems).
 
-Note: the planning documents and issues are written in Norwegian; everything else in the project is in English.
+Note: the master plan and the issues are written in Norwegian; everything else in the project is in English.
 
 ## Status
 

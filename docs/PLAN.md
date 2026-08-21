@@ -1,7 +1,8 @@
 # Pulseq — masterplan (tom repo → v1.0)
 
-> Endelig plan per 2026-08-21. Alle arkitektur- og teknologibeslutninger med full begrunnelse:
-> `docs/plans/00-SYNTESE.md` (heretter «SYNTESE»). Én utvikler med AI-assistanse, start 2026-08-25.
+> Endelig plan per 2026-08-21. Referansene «SYNTESE §…» og «NN-… §…» i planen peker til
+> plandokumentene fra planleggingsfasen; de ligger i git-historikken, ikke i aktiv kode.
+> Én utvikler med AI-assistanse, start 2026-08-25.
 
 ---
 
