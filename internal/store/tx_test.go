@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"runtime"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -150,5 +152,138 @@ func TestWithReadShortensButNeverExtendsTheCallerDeadline(t *testing.T) {
 	}
 	if left > 50*time.Millisecond {
 		t.Errorf("withRead deadline is %v away, want no more than the caller's 50ms", left)
+	}
+}
+
+// waitForFinishedTransaction blocks until database/sql has finished the
+// rollback it starts from its own goroutine when the context ends. Without the
+// wait a test races that goroutine and only sometimes reaches the state it is
+// written to describe.
+func waitForFinishedTransaction(t *testing.T, tx *sql.Tx) error {
+	t.Helper()
+
+	for range 10000 {
+		_, err := tx.Exec("SELECT 1")
+		if errors.Is(err, sql.ErrTxDone) {
+			return err
+		}
+		if err != nil {
+			t.Fatalf("statement inside the transaction whose context ended: %v", err)
+		}
+		runtime.Gosched()
+	}
+	t.Fatal("database/sql never finished the transaction whose context ended")
+	return nil
+}
+
+// TestWithTxReportsTheContextError pins what a caller sees when its context
+// ends inside a write transaction. database/sql rolls the transaction back from
+// its own goroutine, so the next statement and the commit both meet a finished
+// transaction and report sql.ErrTxDone. The cancellation is what happened, and
+// a caller deciding whether to retry has to be able to see it.
+func TestWithTxReportsTheContextError(t *testing.T) {
+	contexts := []struct {
+		name string
+		want error
+		open func(context.Context) (context.Context, context.CancelFunc)
+		end  func(context.CancelFunc)
+	}{
+		{
+			name: "cancelled",
+			want: context.Canceled,
+			open: context.WithCancel,
+			end:  func(cancel context.CancelFunc) { cancel() },
+		},
+		{
+			name: "deadline exceeded",
+			want: context.DeadlineExceeded,
+			open: func(parent context.Context) (context.Context, context.CancelFunc) {
+				return context.WithTimeout(parent, time.Second)
+			},
+			end: func(context.CancelFunc) {},
+		},
+	}
+	points := []struct {
+		name            string
+		fromTheCallback bool
+	}{
+		{name: "the callback meets it", fromTheCallback: true},
+		{name: "the commit meets it", fromTheCallback: false},
+	}
+
+	for _, ctxCase := range contexts {
+		for _, point := range points {
+			t.Run(ctxCase.name+"/"+point.name, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					s := newStore(t)
+					ctx, cancel := ctxCase.open(context.Background())
+					defer cancel()
+
+					err := s.withTx(ctx, func(tx *sql.Tx) error {
+						if _, err := tx.Exec("UPDATE counter SET n = 3 WHERE id = 1"); err != nil {
+							return err
+						}
+						ctxCase.end(cancel)
+						<-ctx.Done()
+						finished := waitForFinishedTransaction(t, tx)
+						if point.fromTheCallback {
+							return finished
+						}
+						return nil
+					})
+
+					if !errors.Is(err, ctxCase.want) {
+						t.Errorf("withTx error = %v, want it to report %v", err, ctxCase.want)
+					}
+					if !errors.Is(err, sql.ErrTxDone) {
+						t.Errorf("withTx error = %v, want %v to stay inspectable", err, sql.ErrTxDone)
+					}
+					if got := readCounter(t, s); got != 0 {
+						t.Errorf("counter = %d, want the cancelled write to have rolled back", got)
+					}
+				})
+			})
+		}
+	}
+}
+
+// TestWithTxLeavesAFinishedTransactionAlone is the other half of the rule. A
+// transaction that is finished for its own reasons, with a live context, keeps
+// reporting exactly that. Only a cancellation gets the context error in front.
+func TestWithTxLeavesAFinishedTransactionAlone(t *testing.T) {
+	s := newStore(t)
+
+	err := s.withTx(context.Background(), func(tx *sql.Tx) error {
+		if err := tx.Rollback(); err != nil {
+			return err
+		}
+		_, err := tx.Exec("UPDATE counter SET n = 5 WHERE id = 1")
+		return err
+	})
+
+	if err != sql.ErrTxDone {
+		t.Fatalf("withTx error = %v, want exactly %v", err, sql.ErrTxDone)
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("withTx error = %v, want no context error while the context is live", err)
+	}
+}
+
+// TestWithReadReportsTheContextError records why the read path needs no help
+// with this. withRead opens no explicit transaction, so there is nothing for
+// database/sql to finish behind the caller's back and the context error arrives
+// as itself.
+func TestWithReadReportsTheContextError(t *testing.T) {
+	s := newStore(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := s.withRead(ctx, func(ctx context.Context, r reader) error {
+		var n int
+		return r.QueryRowContext(ctx, "SELECT n FROM counter WHERE id = 1").Scan(&n)
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("withRead error = %v, want %v", err, context.Canceled)
 	}
 }

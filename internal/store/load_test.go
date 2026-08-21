@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"slices"
@@ -89,12 +88,6 @@ func runLoad(ctx context.Context, workers int, work func(ctx context.Context, wo
 						sh.failed = append(sh.failed, err)
 					}
 				case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-					return
-				case ctx.Err() != nil && errors.Is(err, sql.ErrTxDone):
-					// database/sql rolls a transaction back from its own
-					// goroutine when the context ends, so a write in flight when
-					// the window closes reports the finished transaction rather
-					// than the context. It is the window closing, not a failure.
 					return
 				default:
 					sh.failed = append(sh.failed, err)
