@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 )
 
 // migrationFile builds one entry for a fixture migration set.
@@ -313,5 +314,151 @@ func TestMigrateRefusesAMigrationInsertedBeforeAnAppliedOne(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "0001") {
 		t.Errorf("error %q does not name the out of order migration", err)
+	}
+}
+
+// TestMigrateRollsBackAFailingMigration proves the transaction boundary from
+// the other side: a migration whose second statement fails leaves neither the
+// first statement's table nor a ledger row.
+func TestMigrateRollsBackAFailingMigration(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	broken := fstest.MapFS{
+		"0001_init.sql": migrationFile(
+			"CREATE TABLE widgets (id INTEGER PRIMARY KEY) STRICT;\n" +
+				"CREATE TABLE gadgets (id INTEGER PRIMARY KEY) STRICT;\n" +
+				"CREATE TABLE widgets (id INTEGER PRIMARY KEY) STRICT;\n"),
+	}
+	if err := s.migrateFS(ctx, broken); err == nil {
+		t.Fatal("migrate reported success for a failing migration")
+	}
+
+	for _, name := range []string{"widgets", "gadgets"} {
+		if tableExists(t, s, name) {
+			t.Errorf("table %q survived the failed migration", name)
+		}
+	}
+	applied, err := s.appliedMigrations(ctx)
+	if err != nil {
+		t.Fatalf("read applied migrations: %v", err)
+	}
+	if len(applied) != 0 {
+		t.Errorf("ledger holds %d rows after a failed migration, want 0", len(applied))
+	}
+	if got := userVersion(t, s); got != 0 {
+		t.Errorf("user_version is %d after a failed migration, want 0", got)
+	}
+}
+
+// openStore opens a second connection pair to an existing database file, which
+// is what a second paceq process amounts to.
+func openStore(t *testing.T, path string) *Store {
+	t.Helper()
+
+	s, err := Open(context.Background(), path, Options{})
+	if err != nil {
+		t.Fatalf("open store at %q: %v", path, err)
+	}
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("close store at %q: %v", path, err)
+		}
+	})
+	return s
+}
+
+// TestMigrateRunsOnceWhenTwoProcessesStartTogether is the overlapping restart:
+// two paceq processes come up against the same file at the same moment. One
+// migrates, the other finds the work done. Neither reports an error, and no
+// migration runs twice.
+func TestMigrateRunsOnceWhenTwoProcessesStartTogether(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	first := openStore(t, path)
+	second := openStore(t, path)
+	ctx := context.Background()
+
+	errs := make(chan error, 2)
+	start := make(chan struct{})
+	for _, s := range []*Store{first, second} {
+		go func() {
+			<-start
+			errs <- s.migrateFS(ctx, twoMigrations)
+		}()
+	}
+	close(start)
+	for i := 0; i < 2; i++ {
+		if err := <-errs; err != nil {
+			t.Errorf("concurrent migrate: %v", err)
+		}
+	}
+
+	applied, err := first.appliedMigrations(ctx)
+	if err != nil {
+		t.Fatalf("read applied migrations: %v", err)
+	}
+	if len(applied) != 2 {
+		t.Fatalf("ledger holds %d rows, want 2: a migration ran twice or not at all", len(applied))
+	}
+	if got := userVersion(t, first); got != 2 {
+		t.Errorf("user_version is %d, want 2", got)
+	}
+}
+
+// TestMigrateWaitsThenReportsAHeldLock covers the process that never lets go:
+// the second start waits for its budget and then says who is holding the
+// database, instead of migrating alongside it.
+func TestMigrateWaitsThenReportsAHeldLock(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	defer func(previous time.Duration) { migrationLockWait = previous }(migrationLockWait)
+	migrationLockWait = 20 * time.Millisecond
+
+	if err := s.ensureMigrationTables(ctx); err != nil {
+		t.Fatalf("create ledger tables: %v", err)
+	}
+	held := s.clk.Now().Add(time.Hour).UnixMilli()
+	_, err := s.w.ExecContext(ctx,
+		"INSERT INTO schema_migration_lock (id, holder, acquired_at, expires_at) VALUES (1, 'other-host/42', 0, ?)",
+		held)
+	if err != nil {
+		t.Fatalf("hold the lock: %v", err)
+	}
+
+	err = s.migrateFS(ctx, twoMigrations)
+	if err == nil {
+		t.Fatal("migrate ran while another process held the lock")
+	}
+	if !strings.Contains(err.Error(), "other-host/42") {
+		t.Errorf("error %q does not name the holder", err)
+	}
+	if tableExists(t, s, "widgets") {
+		t.Error("migrate applied a migration while the lock was held")
+	}
+}
+
+// TestMigrateTakesOverAnExpiredLock keeps a killed process from blocking every
+// later start forever.
+func TestMigrateTakesOverAnExpiredLock(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	if err := s.ensureMigrationTables(ctx); err != nil {
+		t.Fatalf("create ledger tables: %v", err)
+	}
+	expired := s.clk.Now().Add(-time.Hour).UnixMilli()
+	_, err := s.w.ExecContext(ctx,
+		"INSERT INTO schema_migration_lock (id, holder, acquired_at, expires_at) VALUES (1, 'dead-host/7', 0, ?)",
+		expired)
+	if err != nil {
+		t.Fatalf("leave an expired lock: %v", err)
+	}
+
+	if err := s.migrateFS(ctx, twoMigrations); err != nil {
+		t.Fatalf("migrate over an expired lock: %v", err)
+	}
+	if got := userVersion(t, s); got != 2 {
+		t.Errorf("user_version is %d, want 2", got)
 	}
 }

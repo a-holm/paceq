@@ -8,9 +8,12 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io/fs"
+	"os"
 	"regexp"
 	"sort"
 	"strconv"
+	"strings"
+	"time"
 )
 
 // migrationFS carries the SQL files into the binary. The whole directory is
@@ -21,8 +24,29 @@ import (
 //go:embed migrations
 var migrationFS embed.FS
 
+// beforeCommit is the fault point the crash test kills the process at: between
+// a migration's DDL and its commit. Nothing sets it outside tests, and it is
+// the forerunner of the fault injection package the reliability work brings.
+var beforeCommit func()
+
 // migrationDir is the path migrationFS is rooted at.
 const migrationDir = "migrations"
+
+const (
+	// migrationLockTTL is how long a lock row stays valid. A process killed
+	// while migrating blocks the next start for at most this long, and a
+	// migration that runs longer than this loses the lock without losing
+	// correctness, because applying re-checks the ledger inside its own
+	// transaction.
+	migrationLockTTL = 5 * time.Minute
+
+	// migrationLockPoll is how often a waiting process retries.
+	migrationLockPoll = 50 * time.Millisecond
+)
+
+// migrationLockWait is how long a start waits for another process to finish
+// migrating before it gives up and says so. Tests shorten it.
+var migrationLockWait = 30 * time.Second
 
 // fileRE is the only accepted migration file name: a four digit version, an
 // underscore, a lower case name. Anything else fails loading rather than being
@@ -69,7 +93,7 @@ func (s *Store) migrateFS(ctx context.Context, fsys fs.FS) error {
 	if err := s.checkUserVersion(ctx, maxVersion(all)); err != nil {
 		return err
 	}
-	if err := s.ensureMigrationTable(ctx); err != nil {
+	if err := s.ensureMigrationTables(ctx); err != nil {
 		return err
 	}
 	applied, err := s.appliedMigrations(ctx)
@@ -79,13 +103,145 @@ func (s *Store) migrateFS(ctx context.Context, fsys fs.FS) error {
 	if err := checkApplied(all, applied); err != nil {
 		return err
 	}
+	if len(pending(all, applied)) == 0 {
+		// The common start: nothing to do, so nothing is written and no lock is
+		// taken. This is what makes Migrate cheap enough to call every time.
+		return nil
+	}
 
+	if err := s.lockMigrations(ctx); err != nil {
+		return err
+	}
+	defer func() { _ = s.unlockMigrations(ctx) }()
+
+	// The set is read again under the lock: the process that held it before us
+	// may have applied some or all of what we saw as pending.
+	applied, err = s.appliedMigrations(ctx)
+	if err != nil {
+		return err
+	}
+	if err := checkApplied(all, applied); err != nil {
+		return err
+	}
 	for _, m := range pending(all, applied) {
 		if err := s.applyOne(ctx, m); err != nil {
 			return fmt.Errorf("migration %s: %w", m.File, err)
 		}
 	}
 	return nil
+}
+
+// lockMigrations takes the single migrator lock, waiting for whoever holds it.
+// Two paceq processes starting together is ordinary, so waiting is the normal
+// path and the error is for the process that never finishes.
+//
+// The lock is a convenience, not the correctness argument. Applying a migration
+// re-reads the ledger inside its own IMMEDIATE transaction, which is what makes
+// applying the same migration twice impossible even with the lock ignored.
+func (s *Store) lockMigrations(ctx context.Context) error {
+	deadline := s.clk.Mark()
+	for {
+		holder, err := s.tryLockMigrations(ctx)
+		if err != nil || holder == "" {
+			return err
+		}
+		if s.clk.Since(deadline) >= migrationLockWait {
+			return fmt.Errorf("another paceq process (%s) is migrating this database and has not "+
+				"finished within %s: wait for it, or stop it and start again", holder, migrationLockWait)
+		}
+		timer := s.clk.NewTimer(migrationLockPoll)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+// tryLockMigrations takes the lock in one statement. It returns the current
+// holder when someone else owns a lock that has not expired yet.
+func (s *Store) tryLockMigrations(ctx context.Context) (string, error) {
+	me := lockHolder()
+	var holder string
+	err := s.withTx(ctx, func(tx *sql.Tx) error {
+		now := s.clk.Now().UnixMilli()
+		result, err := tx.ExecContext(ctx, `INSERT INTO schema_migration_lock
+	(id, holder, acquired_at, expires_at) VALUES (1, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET holder = ?, acquired_at = ?, expires_at = ?
+WHERE schema_migration_lock.holder = ? OR schema_migration_lock.expires_at <= ?`,
+			me, now, now+migrationLockTTL.Milliseconds(),
+			me, now, now+migrationLockTTL.Milliseconds(),
+			me, now)
+		if err != nil {
+			return fmt.Errorf("take the migration lock: %w", err)
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("take the migration lock: %w", err)
+		}
+		if changed > 0 {
+			return nil
+		}
+		if err := tx.QueryRowContext(ctx,
+			"SELECT holder FROM schema_migration_lock WHERE id = 1").Scan(&holder); err != nil {
+			return fmt.Errorf("read the migration lock holder: %w", err)
+		}
+		if !holderAlive(holder) {
+			// The holder died with the lock still valid. Without this the next
+			// start would wait out the whole TTL after every crash.
+			if _, err := tx.ExecContext(ctx, `UPDATE schema_migration_lock
+SET holder = ?, acquired_at = ?, expires_at = ?
+WHERE id = 1 AND holder = ?`, me, now, now+migrationLockTTL.Milliseconds(), holder); err != nil {
+				return fmt.Errorf("take over the migration lock: %w", err)
+			}
+			holder = ""
+		}
+		return nil
+	})
+	return holder, err
+}
+
+// unlockMigrations drops our own lock row so the next process starts at once.
+// A row left behind by a crash expires instead.
+func (s *Store) unlockMigrations(ctx context.Context) error {
+	return s.withTx(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx,
+			"DELETE FROM schema_migration_lock WHERE id = 1 AND holder = ?", lockHolder())
+		if err != nil {
+			return fmt.Errorf("release the migration lock: %w", err)
+		}
+		return nil
+	})
+}
+
+// holderAlive reports whether a lock holder still exists. Only a holder on this
+// host can be answered: paceq owns one database file on one machine, so a lock
+// row naming another host is left to expire on its own.
+func holderAlive(holder string) bool {
+	host, pid, found := strings.Cut(holder, "/")
+	if !found {
+		return true
+	}
+	me, err := os.Hostname()
+	if err != nil || host != me {
+		return true
+	}
+	number, err := strconv.Atoi(pid)
+	if err != nil {
+		return true
+	}
+	return processAlive(number)
+}
+
+// lockHolder names this process in the lock row. It is what holderAlive parses,
+// so the host/pid shape is load bearing.
+func lockHolder() string {
+	host, err := os.Hostname()
+	if err != nil {
+		host = "unknown-host"
+	}
+	return host + "/" + strconv.Itoa(os.Getpid())
 }
 
 // maxVersion is the highest version this binary carries. An empty set is
@@ -223,10 +379,11 @@ func loadMigrations(fsys fs.FS) ([]migration, error) {
 	return all, nil
 }
 
-// ensureMigrationTable creates the ledger the engine keeps its own state in. It
-// is not itself a migration: a migration cannot record that it ran before the
-// table that records it exists.
-func (s *Store) ensureMigrationTable(ctx context.Context) error {
+// ensureMigrationTables creates the two tables the engine keeps its own state
+// in. They are not themselves migrations: a migration cannot record that it ran
+// before the table that records it exists, and the lock that guards migrating
+// has to exist before the first migration runs.
+func (s *Store) ensureMigrationTables(ctx context.Context) error {
 	return s.withTx(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
 	version    INTEGER PRIMARY KEY,
@@ -236,6 +393,15 @@ func (s *Store) ensureMigrationTable(ctx context.Context) error {
 ) STRICT`)
 		if err != nil {
 			return fmt.Errorf("create schema_migrations: %w", err)
+		}
+		_, err = tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migration_lock (
+	id          INTEGER PRIMARY KEY CHECK (id = 1),
+	holder      TEXT    NOT NULL,
+	acquired_at INTEGER NOT NULL,
+	expires_at  INTEGER NOT NULL
+) STRICT`)
+		if err != nil {
+			return fmt.Errorf("create schema_migration_lock: %w", err)
 		}
 		return nil
 	})
@@ -270,6 +436,18 @@ func (s *Store) appliedMigrations(ctx context.Context) ([]appliedMigration, erro
 // a half applied migration cannot exist.
 func (s *Store) applyOne(ctx context.Context, m migration) error {
 	return s.withTx(ctx, func(tx *sql.Tx) error {
+		// Re-read under the write lock. Another process may have applied this
+		// migration between our read of the ledger and this transaction, and
+		// IMMEDIATE serialises the two, so this is what makes applying a
+		// migration twice impossible.
+		var already int
+		if err := tx.QueryRowContext(ctx,
+			"SELECT count(*) FROM schema_migrations WHERE version = ?", m.Version).Scan(&already); err != nil {
+			return fmt.Errorf("check whether the migration is applied: %w", err)
+		}
+		if already > 0 {
+			return nil
+		}
 		if _, err := tx.ExecContext(ctx, m.SQL); err != nil {
 			return err
 		}
@@ -279,7 +457,13 @@ func (s *Store) applyOne(ctx context.Context, m migration) error {
 		if err != nil {
 			return fmt.Errorf("record migration: %w", err)
 		}
-		return setUserVersion(ctx, tx, m.Version)
+		if err := setUserVersion(ctx, tx, m.Version); err != nil {
+			return err
+		}
+		if beforeCommit != nil {
+			beforeCommit()
+		}
+		return nil
 	})
 }
 
