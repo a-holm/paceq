@@ -1,0 +1,30 @@
+version: 2
+
+# Suggestions only. Every bump is a pull request that has to pass ci and be
+# reviewed; nothing here merges on its own.
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    labels:
+      - type:infra
+    commit-message:
+      prefix: deps
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    labels:
+      - type:infra
+    commit-message:
+      prefix: deps

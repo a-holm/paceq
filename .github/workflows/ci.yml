@@ -1,0 +1,87 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# One run per branch. Superseded pull request runs are cancelled; runs on main
+# are left to finish so every commit there keeps a result.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CGO_ENABLED: "0"
+  GOFLAGS: -mod=readonly
+  # No implicit toolchain downloads: the Go version below builds everything.
+  GOTOOLCHAIN: local
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.26.x
+          # The module has no dependencies yet, so go.mod is the cache key. What
+          # the cache is really holding is the build cache for the pinned tools.
+          cache-dependency-path: go.mod
+
+      # Each gate is its own step so a red run names the gate that failed. The
+      # steps are the targets of `make ci`, which is the local equivalent.
+      - name: gofumpt
+        run: make fmt-check
+
+      - name: go vet
+        run: make vet
+
+      - name: staticcheck
+        run: make staticcheck
+
+      - name: gosec
+        run: make gosec
+
+      - name: govulncheck
+        run: make govulncheck
+
+      - name: go.mod and go.sum are tidy
+        run: make tidy-check
+
+      # -race needs cgo, so this step alone builds with a C toolchain. The
+      # shipped binary is proven cgo free in the cross-build job.
+      - name: go test -race
+        run: make test
+
+      - name: build
+        run: make build
+
+  cross-build:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          # Not a supported platform for v1.0. It smoke tests that
+          # Linux-specific code stays behind build tags.
+          - goos: darwin
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.26.x
+          # Caching is off here on purpose: this job shares a cache key with
+          # verify, and the last writer wins. The verify cache is worth more.
+          cache: false
+
+      - name: cross build and assert cgo free
+        run: scripts/cross-build.sh "${{ matrix.goos }}" "${{ matrix.goarch }}"
