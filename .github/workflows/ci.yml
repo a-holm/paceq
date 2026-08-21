@@ -57,6 +57,12 @@ jobs:
       - name: go test -race
         run: make test
 
+      # The gate runs without the race detector: it is where the throughput
+      # floor is asserted, and a number measured under the detector would only
+      # describe the detector. Roughly 15 s of runner time.
+      - name: concurrency gate and throughput floor
+        run: make gate
+
       - name: build
         run: make build
 
