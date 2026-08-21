@@ -34,9 +34,12 @@ const migrationDir = "migrations"
 
 const (
 	// rebuildDirective marks a migration as a table rebuild, and
-	// rebuildDirectiveLines is how far into the file it is read.
+	// rebuildDirectiveLines is how far into the file it counts.
 	rebuildDirective      = "-- +paceq rebuild"
 	rebuildDirectiveLines = 5
+
+	// migrationReadme is the one file that may sit beside the migrations.
+	migrationReadme = "README.md"
 
 	// migrationLockTTL is how long a lock row stays valid. A process killed
 	// while migrating blocks the next start for at most this long, and a
@@ -340,16 +343,24 @@ func shortSum(sum string) string {
 // loadMigrations reads and orders the migration set. Ordering is numeric on the
 // version prefix, never lexicographic on the file name.
 func loadMigrations(fsys fs.FS) ([]migration, error) {
-	names, err := fs.Glob(fsys, "*.sql")
+	// Everything in the directory is listed, not just *.sql, so a file that was
+	// meant to be a migration and is not named like one fails loading instead
+	// of being skipped. A skipped file is a schema that differs between
+	// machines, which is the whole reason the name rules exist.
+	names, err := fs.Glob(fsys, "*")
 	if err != nil {
 		return nil, fmt.Errorf("list migrations: %w", err)
 	}
 
 	all := make([]migration, 0, len(names))
 	for _, name := range names {
+		if name == migrationReadme {
+			continue
+		}
 		match := fileRE.FindStringSubmatch(name)
 		if match == nil {
-			return nil, fmt.Errorf("migration file %q does not match NNNN_name.sql", name)
+			return nil, fmt.Errorf("file %q in the migrations directory does not match "+
+				"NNNN_name.sql: rename it, or move it out of the directory", name)
 		}
 		version, err := strconv.Atoi(match[1])
 		if err != nil {
@@ -359,10 +370,14 @@ func loadMigrations(fsys fs.FS) ([]migration, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read migration %q: %w", name, err)
 		}
+		rebuild, err := rebuildDirectiveIn(name, string(body))
+		if err != nil {
+			return nil, err
+		}
 		sum := sha256.Sum256(body)
 		all = append(all, migration{
 			Version:  version,
-			Rebuild:  hasRebuildDirective(string(body)),
+			Rebuild:  rebuild,
 			Name:     match[2],
 			File:     name,
 			SQL:      string(body),
@@ -388,20 +403,28 @@ func loadMigrations(fsys fs.FS) ([]migration, error) {
 	return all, nil
 }
 
-// hasRebuildDirective reports whether the file opts into the table rebuild
-// path. The marker has to sit in the first few lines so it is visible in a
-// review without scrolling.
-func hasRebuildDirective(body string) bool {
-	lines := strings.SplitN(body, "\n", rebuildDirectiveLines+1)
-	for i, line := range lines {
-		if i == rebuildDirectiveLines {
-			break
+// rebuildDirectiveIn reports whether the file opts into the table rebuild path.
+// The marker has to be a line of its own within the first few lines, so it is
+// visible in a review without scrolling.
+//
+// The whole file is scanned, not just that window. A directive further down
+// would otherwise be ignored in silence and the migration would run in the
+// wrong mode, which only shows up later as a schema nobody meant to write.
+func rebuildDirectiveIn(file, body string) (bool, error) {
+	found := false
+	for i, line := range strings.Split(body, "\n") {
+		if !strings.Contains(line, rebuildDirective) {
+			continue
 		}
-		if strings.TrimSpace(line) == rebuildDirective {
-			return true
+		if i >= rebuildDirectiveLines || strings.TrimSpace(line) != rebuildDirective {
+			return false, fmt.Errorf("migration %s line %d holds %q where it does not count: the "+
+				"directive has to be a line of its own within the first %d lines, otherwise the "+
+				"migration runs without the table rebuild sequence",
+				file, i+1, rebuildDirective, rebuildDirectiveLines)
 		}
+		found = true
 	}
-	return false
+	return found, nil
 }
 
 // ensureMigrationTables creates the two tables the engine keeps its own state

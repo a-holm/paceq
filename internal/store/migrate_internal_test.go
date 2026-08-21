@@ -128,6 +128,22 @@ func TestLoadMigrationsRefusesAMalformedSet(t *testing.T) {
 			wantErr: "0001_again.sql",
 		},
 		{
+			name: "uppercase sql extension",
+			files: fstest.MapFS{
+				"0001_init.sql": migrationFile("CREATE TABLE a (id INTEGER PRIMARY KEY) STRICT;"),
+				"0003_late.SQL": migrationFile("CREATE TABLE c (id INTEGER PRIMARY KEY) STRICT;"),
+			},
+			wantErr: "0003_late.SQL",
+		},
+		{
+			name: "a file that is neither a migration nor the README",
+			files: fstest.MapFS{
+				"0001_init.sql": migrationFile("CREATE TABLE a (id INTEGER PRIMARY KEY) STRICT;"),
+				"notes.txt":     migrationFile("scratch"),
+			},
+			wantErr: "notes.txt",
+		},
+		{
 			name:    "file name without a version prefix",
 			files:   fstest.MapFS{"init.sql": migrationFile("CREATE TABLE a (id INTEGER PRIMARY KEY) STRICT;")},
 			wantErr: "init.sql",
@@ -475,19 +491,35 @@ INSERT INTO child (id, parent_id) VALUES (10, 1);`
 // path a file takes.
 func TestLoadMigrationsReadsTheRebuildDirective(t *testing.T) {
 	cases := []struct {
-		name string
-		body string
-		want bool
+		name    string
+		body    string
+		want    bool
+		wantErr string
 	}{
 		{name: "first line", body: "-- +paceq rebuild\nCREATE TABLE a (id INTEGER PRIMARY KEY) STRICT;", want: true},
 		{name: "fifth line", body: "--\n--\n--\n--\n-- +paceq rebuild\nCREATE TABLE a (id INTEGER PRIMARY KEY) STRICT;", want: true},
-		{name: "sixth line", body: "--\n--\n--\n--\n--\n-- +paceq rebuild\nCREATE TABLE a (id INTEGER PRIMARY KEY) STRICT;", want: false},
+		{
+			name:    "sixth line",
+			body:    "--\n--\n--\n--\n--\n-- +paceq rebuild\nCREATE TABLE a (id INTEGER PRIMARY KEY) STRICT;",
+			wantErr: "line 6",
+		},
 		{name: "absent", body: "CREATE TABLE a (id INTEGER PRIMARY KEY) STRICT;", want: false},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			all, err := loadMigrations(fstest.MapFS{"0001_init.sql": migrationFile(tc.body)})
+			if tc.wantErr != "" {
+				if err == nil {
+					t.Fatalf("loadMigrations accepted a directive that does not count, want an error")
+				}
+				for _, want := range []string{tc.wantErr, "0001_init.sql"} {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("error %q does not mention %q", err, want)
+					}
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("loadMigrations: %v", err)
 			}
