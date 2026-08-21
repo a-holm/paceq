@@ -134,6 +134,10 @@ func Open(ctx context.Context, path string, opt Options) (*Store, error) {
 		_ = s.Close()
 		return nil, err
 	}
+	if err := s.ensureAutoVacuum(ctx); err != nil {
+		_ = s.Close()
+		return nil, err
+	}
 	return s, nil
 }
 
