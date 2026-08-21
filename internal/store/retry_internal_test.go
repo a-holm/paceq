@@ -187,6 +187,9 @@ func TestWithTxStopsRetryingWhenTheContextIsCancelled(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Errorf("withTx error = %v, want %v", err, context.Canceled)
 		}
+		if !isBusySnapshot(err) {
+			t.Errorf("withTx error = %v, want the error it gave up on to stay inspectable", err)
+		}
 		if attempts != 1 {
 			t.Errorf("withTx ran the callback %d times, want 1 before the context was cancelled", attempts)
 		}

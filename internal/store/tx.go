@@ -61,7 +61,7 @@ func (s *Store) withTx(ctx context.Context, fn func(*sql.Tx) error) error {
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return ctx.Err()
+			return joinContextErr(ctx, err)
 		case <-timer.C:
 		}
 	}
@@ -87,16 +87,36 @@ func isBusySnapshot(err error) bool {
 func (s *Store) withTxOnce(ctx context.Context, fn func(*sql.Tx) error) error {
 	tx, err := s.w.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin write transaction: %w", err)
+		return joinContextErr(ctx, fmt.Errorf("begin write transaction: %w", err))
 	}
 	if err := fn(tx); err != nil {
 		_ = tx.Rollback()
-		return err
+		return joinContextErr(ctx, err)
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit write transaction: %w", err)
+		return joinContextErr(ctx, fmt.Errorf("commit write transaction: %w", err))
 	}
 	return nil
+}
+
+// joinContextErr puts the context error in front of a failure that happened
+// while the context was ending. err must not be nil.
+//
+// database/sql rolls a transaction back from its own goroutine as soon as the
+// context ends, so the statement or the commit that loses that race reports
+// sql.ErrTxDone and the cancellation disappears behind it. A caller deciding
+// whether to retry has to be able to tell the two apart.
+//
+// Both errors stay in the chain, so errors.Is and errors.As still find the
+// driver error. A failure with a live context is returned untouched: a
+// transaction that really is finished must not start looking like a
+// cancellation.
+func joinContextErr(ctx context.Context, err error) error {
+	ctxErr := ctx.Err()
+	if ctxErr == nil || errors.Is(err, ctxErr) {
+		return err
+	}
+	return fmt.Errorf("%w: %w", ctxErr, err)
 }
 
 // withRead runs fn against the read-only pool, never an explicit transaction.
