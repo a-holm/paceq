@@ -18,7 +18,7 @@ export GOFLAGS = -mod=readonly
 # Platforms cross built and asserted cgo free on every pull request.
 CROSS_TARGETS := linux/amd64 linux/arm64 darwin/arm64
 
-.PHONY: all build test fmt fmt-check vet staticcheck lint gosec govulncheck \
+.PHONY: all build test gate bench fmt fmt-check vet staticcheck lint gosec govulncheck \
 	tidy-check cross ci hooks clean
 
 all: build
@@ -30,6 +30,19 @@ build:
 # never the artifact built by the build target.
 test:
 	CGO_ENABLED=1 $(GO) test -race -count=1 ./...
+
+# The concurrency gate and the throughput floor. It runs without the race
+# detector on purpose: the detector multiplies the cost of every transaction, so
+# a throughput number measured under it says nothing about the driver. The test
+# target above still runs the same concurrency assertions with -race, over a
+# shorter window.
+gate:
+	$(GO) test ./internal/store -run 'TestConcurrentWriters|TestWALRecoveryUnderKill|TestLoadHarness' -count=1 -v
+
+# Detailed numbers behind the gate, including what synchronous=FULL costs.
+# Not part of ci: a benchmark on a shared runner measures the runner.
+bench:
+	$(GO) test ./internal/store -run '^$$' -bench . -benchtime 2s -count=1
 
 fmt:
 	$(GO) run $(GOFUMPT) -l -w .
@@ -68,7 +81,7 @@ cross:
 		scripts/cross-build.sh "$${target%/*}" "$${target#*/}" || exit 1; \
 	done
 
-ci: fmt-check vet staticcheck gosec govulncheck tidy-check test build cross
+ci: fmt-check vet staticcheck gosec govulncheck tidy-check test gate build cross
 
 hooks:
 	git config core.hooksPath .githooks
