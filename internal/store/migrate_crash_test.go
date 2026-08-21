@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // crashEnv carries the database path to the child process. Its presence is what
@@ -23,6 +24,12 @@ func TestMigrateCrashLeavesNothingBehind(t *testing.T) {
 	if os.Getenv(crashEnv) != "" {
 		t.Skip("child process, driven by the parent test")
 	}
+
+	// The recovery below has to take over the dead child's lock at once. With
+	// the full budget a broken takeover would still pass, it would just wait
+	// half a minute first.
+	defer func(previous time.Duration) { migrationLockWait = previous }(migrationLockWait)
+	migrationLockWait = 20 * time.Millisecond
 
 	path := filepath.Join(t.TempDir(), "state.db")
 	cmd := exec.Command(os.Args[0], "-test.run=TestMigrateCrashChild", "-test.count=1")

@@ -242,6 +242,11 @@ func (s *Store) unlockMigrations(ctx context.Context) error {
 // holderAlive reports whether a lock holder still exists. Only a holder on this
 // host can be answered: paceq owns one database file on one machine, so a lock
 // row naming another host is left to expire on its own.
+//
+// A process id is not a stable identity. A recycled id makes a dead holder look
+// alive until its lock expires, and puts a live unrelated process in the error
+// message. Both are the safe direction, waiting rather than migrating alongside
+// somebody, and both go away with the instance identity in #45.
 func holderAlive(holder string) bool {
 	host, pid, found := strings.Cut(holder, "/")
 	if !found {
