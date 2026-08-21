@@ -117,10 +117,23 @@ func TestWithTxRetriesBusySnapshotUpToThreeAttempts(t *testing.T) {
 
 		attempts := 0
 		start := time.Now()
+
+		// The overrun error is deliberately not a busy snapshot, so a retry
+		// loop that lost its attempt bound stops here instead of spinning
+		// until the package test timeout kills it with a goroutine dump.
+		var overrun error
 		err := s.withTx(t.Context(), func(*sql.Tx) error {
 			attempts++
+			if attempts > maxWriteAttempts {
+				overrun = fmt.Errorf("withTx ran the callback %d times, want at most %d",
+					attempts, maxWriteAttempts)
+				return overrun
+			}
 			return codedError{code: busySnapshotCode}
 		})
+		if overrun != nil {
+			t.Fatal(overrun)
+		}
 
 		if !isBusySnapshot(err) {
 			t.Errorf("withTx error = %v, want the busy snapshot error to bubble out after the last attempt", err)
