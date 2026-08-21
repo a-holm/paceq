@@ -135,8 +135,9 @@ func classify(ctx context.Context, err error) *Error {
 
 	var perm *store.PermissionError
 	if errors.As(err, &perm) {
+		// The store's refusal already carries the chmod that fixes it, so the
+		// only step worth adding is the one that finds the others.
 		return validationError(err.Error(), err,
-			fmt.Sprintf("chmod %#o %s", perm.Want, perm.Path),
 			"paceq doctor  reports every path whose mode is wider than paceq accepts")
 	}
 
