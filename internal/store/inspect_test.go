@@ -165,7 +165,7 @@ func TestOpenStateRefusalCarriesThePermissionType(t *testing.T) {
 		t.Fatalf("close: %v", err)
 	}
 
-	dbPath := filepath.Join(dir, dbFileName)
+	dbPath := filepath.Join(dir, DatabaseFileName)
 	if err := os.Chmod(dbPath, 0o644); err != nil {
 		t.Fatalf("chmod %s: %v", dbPath, err)
 	}
@@ -189,7 +189,7 @@ func TestOpenStateRefusalCarriesThePermissionType(t *testing.T) {
 func openTempStore(t *testing.T) *Store {
 	t.Helper()
 
-	path := filepath.Join(stateDir(t), dbFileName)
+	path := filepath.Join(stateDir(t), DatabaseFileName)
 	s, err := Open(context.Background(), path, Options{})
 	if err != nil {
 		t.Fatalf("open %s: %v", path, err)
