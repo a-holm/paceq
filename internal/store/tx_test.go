@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // newStore opens a store on a real file and creates the one table the
@@ -102,5 +103,52 @@ func TestWithReadCannotWrite(t *testing.T) {
 	}
 	if got := readCounter(t, s); got != 0 {
 		t.Errorf("counter = %d, want the reader pool to have changed nothing", got)
+	}
+}
+
+// TestWithReadAppliesADefaultDeadline covers the WAL hygiene rule: no read may
+// hold a snapshot open indefinitely, whatever context the caller passes.
+func TestWithReadAppliesADefaultDeadline(t *testing.T) {
+	s := newStore(t)
+
+	var deadline time.Time
+	var ok bool
+	err := s.withRead(context.Background(), func(ctx context.Context, _ reader) error {
+		deadline, ok = ctx.Deadline()
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("withRead: %v", err)
+	}
+	if !ok {
+		t.Fatal("withRead handed the callback a context with no deadline")
+	}
+	if left := time.Until(deadline); left <= 0 || left > readDeadline {
+		t.Errorf("withRead deadline is %v away, want (0, %v]", left, readDeadline)
+	}
+}
+
+// TestWithReadShortensButNeverExtendsTheCallerDeadline keeps the cap from
+// overriding a caller that wants a tighter one.
+func TestWithReadShortensButNeverExtendsTheCallerDeadline(t *testing.T) {
+	s := newStore(t)
+
+	caller, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	var left time.Duration
+	err := s.withRead(caller, func(ctx context.Context, _ reader) error {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Fatal("withRead dropped the caller deadline")
+		}
+		left = time.Until(deadline)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("withRead: %v", err)
+	}
+	if left > 50*time.Millisecond {
+		t.Errorf("withRead deadline is %v away, want no more than the caller's 50ms", left)
 	}
 }
