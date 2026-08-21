@@ -1,5 +1,9 @@
 #!/bin/sh
 # Fast gate. Anything slower belongs in pre-push.
+#
+# The checks run against a materialised copy of the index, not the working tree.
+# Checking the working tree passes commits whose staged content is broken, which
+# is exactly the case a partial "git add" produces.
 set -e
 
 if ! command -v gofumpt >/dev/null 2>&1; then
@@ -7,18 +11,24 @@ if ! command -v gofumpt >/dev/null 2>&1; then
 	exit 1
 fi
 
-staged=$(git diff --cached --name-only --diff-filter=ACMR -- '*.go')
-if [ -n "$staged" ]; then
-	unformatted=$(printf '%s\n' "$staged" | xargs gofumpt -l)
-	if [ -n "$unformatted" ]; then
-		echo "pre-commit: these files are not gofumpt clean:" >&2
-		printf '%s\n' "$unformatted" >&2
-		echo "pre-commit: run 'make fmt' and stage the result." >&2
-		exit 1
-	fi
+if [ -z "$(git diff --cached --name-only --diff-filter=ACMR -- '*.go')" ]; then
+	exit 0
 fi
 
-if ! go vet ./...; then
-	echo "pre-commit: go vet failed." >&2
+staged_tree=$(mktemp -d)
+trap 'rm -rf "$staged_tree"' EXIT INT TERM
+
+git checkout-index -a -f --prefix="$staged_tree/"
+
+unformatted=$(cd "$staged_tree" && gofumpt -l .)
+if [ -n "$unformatted" ]; then
+	echo "pre-commit: these staged files are not gofumpt clean:" >&2
+	printf '%s\n' "$unformatted" >&2
+	echo "pre-commit: run 'make fmt' and stage the result." >&2
+	exit 1
+fi
+
+if ! (cd "$staged_tree" && go vet ./...); then
+	echo "pre-commit: go vet failed on the staged content." >&2
 	exit 1
 fi
