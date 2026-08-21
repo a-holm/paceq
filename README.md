@@ -1,14 +1,26 @@
 # paceq
 
+> Cron can only ask "is it time yet?". paceq can ask "did something new arrive?", and it can tell you exactly why it did not.
+
 A lightweight orchestrator ("pace queue") for Linux and server environments. It combines cron-like schedules with event-based sensors and small DAGs — written in Go, with SQLite as the state store.
 
 Core idea: keep "deciding to start work" (scheduler/sensors) separate from "doing the work" (workers). Small core, readable decisions, CLI-first.
+
+## Why not Dagu, cron or systemd timers?
+
+cron and systemd timers fire and forget: no history, no status, and nothing to ask when a job stays silent. Dagu is the closest match, one Go binary with YAML DAGs, but its state lives in files and it has no general sensor with a cursor. paceq keeps every decision, including the decision not to run, in SQLite. Sensors with a cursor make events a first-class trigger, and `paceq explain` answers why last night was quiet.
+
+## Scope, security and guarantees
+
+- [SCOPE.md](SCOPE.md) — who paceq is for, what it will never do through 1.0, and the gate a feature request has to pass.
+- [SECURITY.md](SECURITY.md) — the threat model, what has to be right from day one, what we explicitly do not defend against, and how to report a vulnerability.
+- [docs/guarantees.md](docs/guarantees.md) — the guarantees, the non-guarantees, the invariants, and what `synchronous=NORMAL` costs.
 
 ## Planning
 
 The project is fully planned, from empty repo to v1.0:
 
-- [Project board](https://github.com/users/a-holm/projects/2) — all 80 issues with priority, estimate, epic, dates and dependencies, across 9 milestones (M0–M8).
+- [Project board](https://github.com/users/a-holm/projects/2) — the full backlog with priority, estimate, epic, dates and dependencies, across 9 milestones (M0–M8).
 - [docs/PLAN.md](docs/PLAN.md) — the master plan: final decisions, milestones and the complete issue backlog.
 
 Note: the master plan and the issues are written in Norwegian; everything else in the project is in English.
