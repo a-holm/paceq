@@ -172,6 +172,10 @@ func TestTimeStaysInClock(t *testing.T) {
 // tests included, because the point is that the qualifier is always there to
 // read. staticcheck ST1001 flags dot imports too; this test is what the rule
 // rests on, so the guard does not depend on an external tool's default set.
+//
+// Unlike TestTimeStaysInClock, this walk deliberately includes testdata. A
+// fixture is read by people and copied from, nothing under testdata has any
+// reason to dot import, and a fixture is exactly where an unread file would sit.
 func TestNoDotImportOfTime(t *testing.T) {
 	root := repoRoot(t)
 	fset := token.NewFileSet()

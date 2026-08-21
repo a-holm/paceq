@@ -76,4 +76,11 @@ func TestOpenDefaultsToTheSystemClock(t *testing.T) {
 	if s.clk.Now().IsZero() {
 		t.Error("the default clock reads the zero time")
 	}
+	// Some clock is not enough: the default has to be the real one, and a fixed
+	// fake satisfies every other assertion here. The tolerance is wide because
+	// the only thing being ruled out is a clock that does not track wall time.
+	if drift := s.clk.Now().Sub(time.Now().UTC()); drift > time.Minute || drift < -time.Minute {
+		t.Errorf("the default clock reads %v, %v away from the real clock: Open must default to clock.System()",
+			s.clk.Now(), drift)
+	}
 }

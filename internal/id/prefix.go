@@ -30,7 +30,10 @@ func NormalizePrefix(s string) (string, error) {
 
 	// Upper casing byte by byte, rather than with strings.ToUpper, keeps the
 	// offsets into the normalised prefix and into what the user typed the same,
-	// so the error can quote the character back the way they wrote it.
+	// so the error can quote the character back the way they wrote it. The
+	// position reported is a byte offset. It equals the character position only
+	// because the alphabet is single byte ASCII, and the first multi-byte
+	// character is where the loop stops anyway.
 	prefix := []byte(typed)
 	for i, c := range prefix {
 		if c >= 'a' && c <= 'z' {
