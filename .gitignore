@@ -1,0 +1,26 @@
+# Binaries
+/pulseq
+/bin/
+/dist/
+
+# Test/coverage
+*.test
+*.out
+coverage.html
+
+# SQLite
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Editor/OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Env
+.env
+.env.*
