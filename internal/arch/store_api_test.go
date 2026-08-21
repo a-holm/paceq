@@ -51,11 +51,10 @@ var handleTypes = map[string][]string{
 //   - A package-local name that reaches a handle through a type declared in
 //     another package. Naming a handle needs an import of database/sql, and
 //     TestSQLStaysInStore forbids that import in every module package outside
-//     internal/store, this package included only as far as its own non-test
-//     files go. The fixture packages under testdata sit inside that exemption
-//     window, so this guard itself is what keeps them honest: they are read by
-//     these tests and never built into anything. A generic type is read from
-//     its instantiation, box[*sql.DB], for the same reason: binding a type
+//     internal/store, skipping this directory whole, testdata included. That
+//     exemption is why this guard reads the fixture packages itself: this guard
+//     is what keeps them honest. A generic type is read from its
+//     instantiation, box[*sql.DB], for the same reason: binding a type
 //     parameter to a handle means naming the handle somewhere.
 //
 // Two rules from the write model cannot be checked mechanically and stay review
