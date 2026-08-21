@@ -38,10 +38,6 @@ steps:
     run: ["echo", "hello from paceq"]
 `
 
-// gitignoreEntry keeps the state directory out of version control. The database
-// is machine state, and a merge conflict in it is unrecoverable.
-const gitignoreEntry = stateDirName + "/"
-
 func newInitCmd(env Env, g *globals) *cobra.Command {
 	return &cobra.Command{
 		Use:   "init",
@@ -129,7 +125,8 @@ func runInit(ctx context.Context, env Env, g *globals, out *ui) error {
 	if err := createPrivate(root, filepath.Join(jobsDir, exampleJob), exampleJobBody); err != nil {
 		return err
 	}
-	ignore, err := updateGitignore(root)
+	entry := gitignoreEntry(env.Dir, stateDir)
+	ignored, err := updateGitignore(root, entry)
 	if err != nil {
 		return err
 	}
@@ -145,8 +142,8 @@ func runInit(ctx context.Context, env Env, g *globals, out *ui) error {
 			{Command: "paceq run hello", Note: "run the example job (arrives in M1)"},
 		},
 	}
-	if ignore {
-		report.Created = append(report.Created, created{Path: gitignoreFile, Note: gitignoreEntry + " added"})
+	if ignored {
+		report.Created = append(report.Created, created{Path: gitignoreFile, Note: entry + " added"})
 	}
 	return writeInitReport(out, report)
 }
@@ -256,16 +253,37 @@ func createPrivate(root *os.Root, name, body string) error {
 	return nil
 }
 
-// updateGitignore adds the state directory to .gitignore, and reports whether
-// it had to. An entry that is already there is left alone, and so is every
-// other line in the file.
-func updateGitignore(root *os.Root) (bool, error) {
+// gitignoreEntry is the line that keeps this run's state out of version
+// control. The database is machine state, and a merge conflict in it is
+// unrecoverable, so the entry names the directory the state actually landed in
+// rather than the default one.
+//
+// There is nothing to write when that directory is not somewhere inside the
+// project: git ignores paths relative to the file, so a state directory beside
+// or above the project cannot be named, and one that is the project directory
+// itself could only be named by ignoring everything.
+func gitignoreEntry(projectDir, stateDir string) string {
+	rel, err := filepath.Rel(projectDir, stateDir)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return ""
+	}
+	return filepath.ToSlash(rel) + "/"
+}
+
+// updateGitignore adds the entry to .gitignore, and reports whether it had to.
+// An entry that is already there is left alone, and so is every other line in
+// the file.
+func updateGitignore(root *os.Root, entry string) (bool, error) {
+	if entry == "" {
+		return false, nil
+	}
+
 	existing, err := root.ReadFile(gitignoreFile)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return false, internalError("could not read "+gitignoreFile, err)
 	}
 	for _, line := range strings.Split(string(existing), "\n") {
-		if strings.TrimSpace(line) == gitignoreEntry {
+		if strings.TrimSpace(line) == entry {
 			return false, nil
 		}
 	}
@@ -274,7 +292,7 @@ func updateGitignore(root *os.Root) (bool, error) {
 	if body != "" && !strings.HasSuffix(body, "\n") {
 		body += "\n"
 	}
-	body += gitignoreEntry + "\n"
+	body += entry + "\n"
 	if err := root.WriteFile(gitignoreFile, []byte(body), store.DatabaseMode); err != nil {
 		return false, internalError("could not write "+gitignoreFile, err)
 	}

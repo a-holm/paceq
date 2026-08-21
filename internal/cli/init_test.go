@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -256,4 +257,90 @@ func checksum(t *testing.T, path string) string {
 	}
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
+}
+
+// TestGitignoreNamesTheStateDirectoryThatWasUsed is the --db case. The entry
+// has to cover the directory the database actually landed in: an entry for the
+// default name leaves the state untracked but not ignored, and the next
+// git add . commits a database.
+func TestGitignoreNamesTheStateDirectoryThatWasUsed(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	dbPath := filepath.Join("state", store.DatabaseFileName)
+
+	got := runCLI(t, dir, nil, "init", "--db", dbPath)
+
+	if got.code != ExitOK {
+		t.Fatalf("paceq init --db %s = %d, want %d\n%s", dbPath, got.code, ExitOK, got.stderr)
+	}
+	ignore := readFile(t, filepath.Join(dir, gitignoreFile))
+	if !strings.Contains(ignore, "state/") {
+		t.Errorf("%s does not exclude the state directory that was used:\n%s", gitignoreFile, ignore)
+	}
+	if strings.Contains(ignore, stateDirName) {
+		t.Errorf("%s excludes %s, which this run never created:\n%s", gitignoreFile, stateDirName, ignore)
+	}
+	if out := git(t, dir, "status", "--porcelain"); strings.Contains(out, "state/") {
+		t.Errorf("git offers the state directory for the next commit:\n%s", out)
+	}
+	if _, err := gitError(t, dir, "check-ignore", "-q", dbPath); err != nil {
+		t.Errorf("git does not ignore %s: %v", dbPath, err)
+	}
+}
+
+// TestGitignoreIsLeftAloneWhenTheStateIsOutsideTheProject. A directory git
+// cannot name is not git's business, and an entry for one that does not exist
+// only teaches the reader the wrong path.
+func TestGitignoreIsLeftAloneWhenTheStateIsOutsideTheProject(t *testing.T) {
+	project := t.TempDir()
+	gitInit(t, project)
+	elsewhere := filepath.Join(t.TempDir(), "state", store.DatabaseFileName)
+
+	got := runCLI(t, project, nil, "init", "--db", elsewhere)
+
+	if got.code != ExitOK {
+		t.Fatalf("paceq init --db %s = %d, want %d\n%s", elsewhere, got.code, ExitOK, got.stderr)
+	}
+	if _, err := os.Stat(filepath.Join(project, gitignoreFile)); !os.IsNotExist(err) {
+		t.Errorf("init wrote %s for a state directory outside the project: %s",
+			gitignoreFile, readFile(t, filepath.Join(project, gitignoreFile)))
+	}
+	if strings.Contains(got.stdout, gitignoreFile) {
+		t.Errorf("the report claims a %s it did not write:\n%s", gitignoreFile, got.stdout)
+	}
+}
+
+// gitInit makes dir a repository, so what init writes can be judged by git
+// itself rather than by reading the file paceq just wrote.
+func gitInit(t *testing.T, dir string) {
+	t.Helper()
+
+	git(t, dir, "init", "-q")
+}
+
+// git runs one git command in dir and returns its output. The configuration
+// files are cut off: a developer's global core.excludesFile would otherwise
+// decide what this test proves.
+func git(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+
+	out, err := gitError(t, dir, args...)
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+	}
+	return out
+}
+
+func gitError(t *testing.T, dir string, args ...string) (string, error) {
+	t.Helper()
+
+	path, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("this test judges what paceq writes with git itself, and git is not installed: %v", err)
+	}
+	cmd := exec.Command(path, args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	out, err := cmd.CombinedOutput()
+	return string(out), err
 }
