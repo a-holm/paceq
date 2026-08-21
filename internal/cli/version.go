@@ -76,9 +76,8 @@ func writeVersion(out *ui) error {
 	return nil
 }
 
-// text is the human form, built as one string so --version and the version
-// command cannot drift apart: cobra renders the flag from a template, and the
-// template is this.
+// text is the human form, built as one string so the command and the --version
+// flag print exactly the same report.
 func (r versionReport) text() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "paceq %s", r.Version)
@@ -92,23 +91,4 @@ func (r versionReport) text() string {
 		fmt.Fprintf(&b, "\n  %s %s", pad(row[0], len("schema version")), row[1])
 	}
 	return b.String()
-}
-
-// versionTemplate is what paceq --version prints. A build whose schema cannot
-// be read still answers, because the version of a broken build is exactly what
-// a bug report needs.
-func versionTemplate() string {
-	known, err := store.KnownSchemaVersion()
-	if err != nil {
-		known = 0
-	}
-	report := versionReport{
-		Version:       version,
-		Commit:        commit,
-		Built:         buildTime,
-		Go:            runtime.Version(),
-		Platform:      runtime.GOOS + "/" + runtime.GOARCH,
-		SchemaVersion: known,
-	}
-	return report.text() + "\n"
 }

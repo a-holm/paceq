@@ -72,6 +72,7 @@ Output follows the stream: a terminal gets human text, a pipe gets JSON.
 
 func newRoot(env Env) *cobra.Command {
 	var g globals
+	showVersion := false
 
 	root := &cobra.Command{
 		Use:   "paceq",
@@ -83,17 +84,22 @@ func newRoot(env Env) *cobra.Command {
 		SilenceErrors: true,
 		Args:          cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
+			switch {
+			case showVersion:
+				// --version is what people type before they find the command.
+				// It answers from the same code, so the two cannot drift.
+				out, err := g.ui(env)
+				if err != nil {
+					return err
+				}
+				return writeVersion(out)
+			case len(args) == 0:
 				return cmd.Help()
 			}
 			return usageError(fmt.Sprintf("%q is not a paceq command", args[0]),
 				"paceq --help  lists every command")
 		},
 	}
-	// --version is what people type before they find the command. It renders
-	// the same report, from the same values.
-	root.Version = version
-	root.SetVersionTemplate(versionTemplate())
 	root.SetOut(env.Stdout)
 	root.SetErr(env.Stderr)
 	root.CompletionOptions.DisableDefaultCmd = true
@@ -107,6 +113,7 @@ func newRoot(env Env) *cobra.Command {
 	flags.BoolVarP(&g.quiet, "quiet", "q", false, "only report what needs attention")
 	flags.CountVarP(&g.verbose, "verbose", "v", "progress on stderr, repeatable: -v, -vv")
 	flags.BoolVar(&g.noColor, "no-color", false, "no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE)")
+	root.Flags().BoolVar(&showVersion, "version", false, "same as paceq version")
 
 	root.AddCommand(
 		newVersionCmd(env, &g),
