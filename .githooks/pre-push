@@ -1,0 +1,13 @@
+#!/bin/sh
+# Full gate before code leaves the machine. CI is the backstop, not the first check.
+set -e
+
+if ! command -v make >/dev/null 2>&1; then
+	echo "pre-push: make not found." >&2
+	exit 1
+fi
+
+if ! make ci; then
+	echo "pre-push: 'make ci' failed. Fix it before pushing." >&2
+	exit 1
+fi

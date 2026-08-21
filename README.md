@@ -15,4 +15,27 @@ Note: the master plan and the issues are written in Norwegian; everything else i
 
 ## Status
 
-Planning phase. Implementation starts with milestone [M0 — Foundation and persistence](https://github.com/a-holm/pulseq/milestone/1).
+Milestone [M0 — Foundation and persistence](https://github.com/a-holm/pulseq/milestone/1) is under way. The binary builds and prints help; no orchestration yet.
+
+## Build
+
+Requires Go 1.25 or newer. No C toolchain: the binary is built with `CGO_ENABLED=0` and is statically linked.
+
+```
+make build     # bin/pulseq
+make test      # go test -race ./...
+make lint      # go vet + staticcheck
+make ci        # fmt-check, lint, test, build
+```
+
+Run `make hooks` once after cloning. It points git at `.githooks`, so formatting and `go vet` run against the staged content before each commit and `make ci` runs before each push. `core.hooksPath` is shared by every worktree of the repository but resolved against each worktree's own root, so a worktree checked out before `.githooks` existed runs no hooks and says nothing about it.
+
+`make fmt` and `make lint` need [gofumpt](https://github.com/mvdan/gofumpt) and [staticcheck](https://staticcheck.dev) on your PATH.
+
+## Architecture
+
+Decisions that later work depends on are recorded in [docs/adr](docs/adr). The dependency direction between packages is enforced by tests in `internal/arch`, not by review: `internal/model` imports nothing internal, and all SQL lives in `internal/store`.
+
+## License
+
+[Apache License 2.0](LICENSE).
