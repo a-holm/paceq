@@ -1,11 +1,20 @@
 # Pulseq
 
-Lettvekt orchestrator ("pulse queue") for Linux/servermiljøer. Kombinerer cron-lignende schedules med event-baserte sensors og små DAG-er — skrevet i Go, med SQLite som state-lager.
+A lightweight orchestrator ("pulse queue") for Linux and server environments. It combines cron-like schedules with event-based sensors and small DAGs — written in Go, with SQLite as the state store.
 
-Kjerneidé: skill "beslutning om å starte arbeid" (scheduler/sensors) fra "utføring av arbeid" (workers). Liten kjerne, lesbare beslutninger, CLI-first.
+Core idea: keep "deciding to start work" (scheduler/sensors) separate from "doing the work" (workers). Small core, readable decisions, CLI-first.
 
-Se [docs/prosjektbeskrivelse.md](docs/prosjektbeskrivelse.md) for full beskrivelse, og [docs/plans/](docs/plans/) for planleggingsdokumenter.
+## Planning
+
+The project is fully planned, from empty repo to v1.0:
+
+- [Project board](https://github.com/users/a-holm/projects/2) — all 80 issues with priority, estimate, epic, dates and dependencies, across 9 milestones (M0–M8).
+- [docs/PLAN.md](docs/PLAN.md) — the master plan: final decisions, milestones and the complete issue backlog.
+- [docs/plans/00-SYNTESE.md](docs/plans/00-SYNTESE.md) — architecture synthesis and how every contested decision was settled.
+- [docs/plans/](docs/plans/) — 11 independent project plans written from different perspectives (minimalist, reliability, CLI/DX, prior art, Go architecture, SRE, database, security, product, pre-mortem, distributed systems).
+
+Note: the planning documents and issues are written in Norwegian; everything else in the project is in English.
 
 ## Status
 
-Planleggingsfase. Se GitHub issues for roadmap.
+Planning phase. Implementation starts with milestone [M0 — Foundation and persistence](https://github.com/a-holm/pulseq/milestone/1).
