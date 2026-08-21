@@ -60,7 +60,7 @@ No row is marked verified. Verification of every row point by point is its own p
 | T11 | A job spec names an artifact path like `../../etc/cron.d/x` | `os.Root` based file access for every spec-driven path, so traversal is rejected and a symlink cannot point out of the root | M1 |
 | T12 | A cron expression like `0 0 30 2 *` never matches and loops the scheduler | hard iteration limit and horizon in the next-tick search; an expression with no match inside the horizon is rejected at load time | M2 |
 | T13 | A YAML spec with recursive aliases (billion laughs) | strict YAML parsing with unknown fields rejected, alias, depth and size limits, and every scalar validated against the schema | M1 |
-| T14 | A2 sets a different execution user in a job spec | the spec has no field for it. v1 runs everything as the daemon's own user; an admin-controlled allowlist arrives with per-job uid | accepted |
+| T14 | A2 sets a different execution user in a job spec | the spec has no field for an execution user and the parser rejects unknown fields (T13), so the escalation has nothing to write to. Everything runs as the daemon's own user. When per-job uid arrives post-1.0, the allowlist lives in system config and never in a job spec | M1 |
 | T15 | A compromised Go module steals secrets in `init()` | minimal dependency tree with a stated budget, `go.sum`, `govulncheck` and `gosec` in CI, an ADR per new direct dependency, no in-process plugins | M0 |
 | T16 | An attacker with database write access deletes the audit trail | `run_events` is append-only and every transition is written in the same transaction as the transition. A hash chain in the same file the attacker can write is not tamper evident on its own; journald mirroring and a signed anchor are post-1.0 | post-1.0 |
 | T17 | A7 reads another job's logs through the filesystem | the job process never touches a log file. It gets a pipe; the daemon reads it and writes the log as the log owner, 0600 in a 0700 directory | M1 |
@@ -82,6 +82,12 @@ The dividing line for MVP security is not "what matters most". It is "what canno
 - `go.sum`, `govulncheck`, `gosec` and a dependency budget in CI. Dependency trees only grow.
 - This document, with its non-goals stated. It sets expectations before anyone builds the wrong thing around the product.
 
+This list is 08 §6 with two departures and two additions, all four inherited from the synthesis (plans: 00 §3.7).
+
+The two departures. 08 §6 makes the split between a job author and an operator a day-one item, because a role model is a contract. In v1 there is no role model to contract: the socket API has no spec write endpoint at all, specs are files, and the privilege that matters is filesystem write access. The distinction is therefore carried by the actor table (A2 against A3) and by T4 rather than by a role table, and it becomes a day-one item on the day a write endpoint exists. 08 §6 also makes an audit table with a hash chain a day-one item, on the argument that missing history cannot be reconstructed backwards. The history ships from day one: `run_events` is append-only and every transition is written in the same transaction as the transition (see G10 in [docs/guarantees.md](docs/guarantees.md)). The chain over it does not, for the reason stated in T16: a chain living in the same file an attacker can rewrite is not tamper evident on its own, so it is only worth its cost together with journald mirroring or a signed anchor, and those are post-1.0. The reconstruction argument applies to the history, and the history is not deferred.
+
+The two additions. The empty environment baseline and the fail-closed permission check are not in 08 §6. They belong on this list by the same test: an inherited environment cannot be shrunk later without breaking jobs, and permissions on an existing installation are hard to correct afterwards (plans: 00 §3.7, 08 §3.9).
+
 ## Non-goals
 
 We do not hide these (plans: 08 §2.4).
@@ -95,6 +101,8 @@ We do not hide these (plans: 08 §2.4).
 ## Reporting a vulnerability
 
 Report privately through GitHub private vulnerability reporting on <https://github.com/a-holm/paceq/security/advisories/new>. Do not open a public issue for a vulnerability, and do not report it in a pull request.
+
+If that channel is unavailable to you, use the contact details on the maintainer's GitHub profile at <https://github.com/a-holm> and say only that you have a security report. Do not put the details in a public channel; wait for a private one.
 
 Include what you can: affected version or commit, configuration, reproduction steps, and what an attacker gains.
 
