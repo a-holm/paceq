@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	modulePath     = "github.com/a-holm/pulseq"
+	modulePath     = "github.com/a-holm/paceq"
 	internalPrefix = modulePath + "/internal/"
 )
 

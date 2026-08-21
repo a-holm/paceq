@@ -10,7 +10,7 @@ fi
 
 goos=$1
 goarch=$2
-out="bin/pulseq-$goos-$goarch"
+out="bin/paceq-$goos-$goarch"
 
 # 30 MB, the binary budget in docs/PLAN.md.
 size_budget=31457280
@@ -28,12 +28,12 @@ fail() {
 # instead of reporting them, so the probe would pass on a package that only
 # builds through cgo.
 leaks=$(CGO_ENABLED=1 GOOS="$goos" GOARCH="$goarch" go list -deps \
-	-f '{{if and .CgoFiles (not .Standard)}}{{.ImportPath}}{{end}}' ./cmd/pulseq)
+	-f '{{if and .CgoFiles (not .Standard)}}{{.ImportPath}}{{end}}' ./cmd/paceq)
 if [ -n "$leaks" ]; then
 	fail "cgo leak for $goos/$goarch: these packages need cgo: $(printf '%s' "$leaks" | tr '\n' ' ')"
 fi
 
-CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath -o "$out" ./cmd/pulseq
+CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath -o "$out" ./cmd/paceq
 
 cgo_setting=$(go version -m "$out" | awk '$1 == "build" && $2 ~ /^CGO_ENABLED=/ { print $2 }')
 if [ "$cgo_setting" != "CGO_ENABLED=0" ]; then

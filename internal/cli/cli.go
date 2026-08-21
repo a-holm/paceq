@@ -7,10 +7,10 @@ import (
 	"os"
 )
 
-const usage = `pulseq - schedules, sensors and small DAGs, in one static binary.
+const usage = `paceq - schedules, sensors and small DAGs, in one static binary.
 
 Usage:
-  pulseq <command> [flags]
+  paceq <command> [flags]
 
 Commands:
   help      Show this help text
@@ -34,10 +34,10 @@ func run(_ context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stdout, usage)
 		return 0
 	case "version", "--version":
-		fmt.Fprintln(stdout, "pulseq (development build)")
+		fmt.Fprintln(stdout, "paceq (development build)")
 		return 0
 	default:
-		fmt.Fprintf(stderr, "pulseq: unknown command %q\n\n", args[0])
+		fmt.Fprintf(stderr, "paceq: unknown command %q\n\n", args[0])
 		fmt.Fprint(stderr, usage)
 		return 2
 	}

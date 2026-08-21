@@ -1,5 +1,5 @@
 GO ?= go
-BIN := bin/pulseq
+BIN := bin/paceq
 
 # Tool versions. Every gate runs through `go run`, so the pipeline and a local
 # `make ci` execute the same tool binaries. Bump versions here; no workflow
@@ -24,7 +24,7 @@ CROSS_TARGETS := linux/amd64 linux/arm64 darwin/arm64
 all: build
 
 build:
-	$(GO) build -trimpath -o $(BIN) ./cmd/pulseq
+	$(GO) build -trimpath -o $(BIN) ./cmd/paceq
 
 # The race detector is the one thing that needs cgo. It affects the test run only,
 # never the artifact built by the build target.
