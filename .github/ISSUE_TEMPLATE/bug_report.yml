@@ -1,0 +1,45 @@
+name: Bug report
+description: Something behaves differently from what the documentation says
+labels: ["type:bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not report a vulnerability here. Use [private vulnerability reporting](https://github.com/a-holm/paceq/security/advisories/new); see [SECURITY.md](https://github.com/a-holm/paceq/blob/main/SECURITY.md).
+
+        Check [docs/guarantees.md](https://github.com/a-holm/paceq/blob/main/docs/guarantees.md) first. Behaviour listed there as a non-guarantee is not a bug.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `paceq --version`, or the commit you built from.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected, and what happened instead
+      description: Name the documented behaviour you expected, and where it is documented.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: The smallest job spec, command sequence or sensor script that shows the problem.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Relevant output of `paceq explain`, `paceq status`, and the daemon log.
+      render: shell
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS and version, kernel, filesystem holding the state directory, and how paceq was installed.
+    validations:
+      required: true

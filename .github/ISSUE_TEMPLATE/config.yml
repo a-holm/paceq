@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a vulnerability
+    url: https://github.com/a-holm/paceq/security/advisories/new
+    about: Security reports go through private vulnerability reporting, never through a public issue.
+  - name: Scope and non-goals
+    url: https://github.com/a-holm/paceq/blob/main/SCOPE.md
+    about: What paceq will never do through 1.0, and the gate a feature request has to pass.

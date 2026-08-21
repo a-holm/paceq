@@ -1,0 +1,45 @@
+name: Feature request
+description: Propose functionality that paceq does not have
+labels: ["type:feature"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Read [SCOPE.md](https://github.com/a-holm/paceq/blob/main/SCOPE.md) first. It lists what paceq will never do through 1.0 and the budgets every feature is measured against.
+
+        The gate is narrow and it is the same for everyone: a feature needs one job you run in production today that is blocked without it. Not slower, not uglier: blocked.
+
+        A request that conflicts with a non-goal has to argue that the non-goal is wrong. Arguing that the feature would be nice is not an answer to a non-goal.
+  - type: textarea
+    id: blocked-job
+    attributes:
+      label: Which job you run in production is blocked without this?
+      description: Describe the actual job, what it does, and where it stops.
+    validations:
+      required: true
+  - type: textarea
+    id: workaround
+    attributes:
+      label: What did you try?
+      description: The extension surface is a program that reads JSON on stdin and writes JSON on stdout. Show why a step, a shell script or an exec sensor does not solve this.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What you want paceq to do, concretely. Config sketches and CLI transcripts help.
+    validations:
+      required: true
+  - type: textarea
+    id: non-goal
+    attributes:
+      label: Does this conflict with a non-goal in SCOPE.md?
+      description: If it does, name the non-goal and argue why it is wrong. If it does not, write "no".
+    validations:
+      required: true
+  - type: textarea
+    id: cost
+    attributes:
+      label: Cost
+      description: New dependencies, new configuration keys, new CLI commands. If it breaks a budget in SCOPE.md, name what should be removed to pay for it.
