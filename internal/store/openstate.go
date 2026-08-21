@@ -10,9 +10,9 @@ import (
 	"time"
 )
 
-// dbFileName is the database inside a state directory. The name is fixed so a
+// DatabaseFileName is the database inside a state directory. The name is fixed so a
 // state directory is self describing: one lock, one database, one owner.
-const dbFileName = "state.db"
+const DatabaseFileName = "state.db"
 
 // OpenState claims a state directory and opens the database in it.
 //
@@ -20,7 +20,7 @@ const dbFileName = "state.db"
 // writing, so a second paceq is refused before it can touch a single page of a
 // file another process owns. The returned store holds the lock until Close.
 func OpenState(ctx context.Context, dir string, opt Options) (*Store, error) {
-	dbPath := filepath.Join(dir, dbFileName)
+	dbPath := filepath.Join(dir, DatabaseFileName)
 
 	// The filesystem is checked before the lock is taken. flock on NFS or FUSE
 	// is the one operation whose semantics are undefined there, so performing it
@@ -63,12 +63,12 @@ func OpenState(ctx context.Context, dir string, opt Options) (*Store, error) {
 // left to the environment.
 func privateDatabase(dbPath string, fresh bool) error {
 	if fresh {
-		if err := os.Chmod(dbPath, lockMode); err != nil {
+		if err := os.Chmod(dbPath, DatabaseMode); err != nil {
 			return fmt.Errorf("restrict %s: %w", dbPath, err)
 		}
 		return nil
 	}
-	return checkPerm(dbPath, lockMode)
+	return CheckMode(dbPath, DatabaseMode)
 }
 
 // lockOwner reads the session row of whoever holds the state directory. It

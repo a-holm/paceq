@@ -13,11 +13,11 @@ const (
 	// would give the next process a new inode and therefore no lock at all.
 	lockFileName = "paceq.lock"
 
-	// dirMode and lockMode are the only modes paceq accepts. Anything wider
-	// means the state was readable by another user, which is a refusal rather
-	// than something to correct quietly.
-	dirMode  fs.FileMode = 0o700
-	lockMode fs.FileMode = 0o600
+	// DirMode and DatabaseMode are the only modes paceq accepts on its own
+	// state. Anything wider means the state was readable by another user, which
+	// is a refusal rather than something to correct quietly.
+	DirMode      fs.FileMode = 0o700
+	DatabaseMode fs.FileMode = 0o600
 )
 
 // StateLock is the exclusive claim on one state directory. It is held by an open
@@ -49,10 +49,10 @@ func (e *LockedError) Unwrap() error { return e.Err }
 // The lock is taken before the database is opened for writing, which is what
 // makes two writers impossible rather than merely unlikely.
 func AcquireStateLock(dir string) (*StateLock, error) {
-	if err := os.MkdirAll(dir, dirMode); err != nil {
+	if err := os.MkdirAll(dir, DirMode); err != nil {
 		return nil, fmt.Errorf("create the state directory: %w", err)
 	}
-	if err := checkPerm(dir, dirMode); err != nil {
+	if err := CheckMode(dir, DirMode); err != nil {
 		return nil, err
 	}
 
@@ -65,11 +65,11 @@ func AcquireStateLock(dir string) (*StateLock, error) {
 	defer func() { _ = root.Close() }()
 
 	path := filepath.Join(dir, lockFileName)
-	f, err := root.OpenFile(lockFileName, os.O_CREATE|os.O_RDWR, lockMode)
+	f, err := root.OpenFile(lockFileName, os.O_CREATE|os.O_RDWR, DatabaseMode)
 	if err != nil {
 		return nil, fmt.Errorf("open the state lock file: %w", err)
 	}
-	if err := checkPerm(path, lockMode); err != nil {
+	if err := CheckMode(path, DatabaseMode); err != nil {
 		_ = f.Close()
 		return nil, err
 	}
@@ -98,19 +98,33 @@ func (l *StateLock) Release() error {
 	return nil
 }
 
-// checkPerm refuses a path that is readable by anyone but its owner. Widening
+// PermissionError is a path another user can read. It is a distinct type so a
+// caller can tell a refusal it can explain and act on from a failure it cannot,
+// and so the CLI can map it to its own exit code rather than report it as an
+// internal error.
+type PermissionError struct {
+	Path string
+	Got  fs.FileMode
+	Want fs.FileMode
+}
+
+func (e *PermissionError) Error() string {
+	return fmt.Sprintf("PQ1002: %s has mode %#o, paceq requires %#o and refuses to start "+
+		"with state another user can read\n  Fix it and start again: chmod %#o %s",
+		e.Path, e.Got, e.Want, e.Want, e.Path)
+}
+
+// CheckMode refuses a path that is readable by anyone but its owner. Widening
 // permissions back is deliberately not offered: correcting them quietly would
 // hide that the state has been exposed, which is the fact an operator needs.
-func checkPerm(path string, want fs.FileMode) error {
+func CheckMode(path string, want fs.FileMode) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		return fmt.Errorf("stat %s: %w", path, err)
 	}
 	got := info.Mode().Perm()
 	if got&^want != 0 {
-		return fmt.Errorf("PQ1002: %s has mode %#o, paceq requires %#o and refuses to start "+
-			"with state another user can read. Fix it and start again: chmod %#o %s",
-			path, got, want, want, path)
+		return &PermissionError{Path: path, Got: got, Want: want}
 	}
 	return nil
 }

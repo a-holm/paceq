@@ -74,4 +74,7 @@ func TestAutoVacuumUnreadableFails(t *testing.T) {
 	if !strings.Contains(got.Detail, "disk on fire") {
 		t.Errorf("detail loses the underlying error: %q", got.Detail)
 	}
+	if len(got.Next) == 0 {
+		t.Fatal("the finding carries no next step, and a report a user reads has one on every line that is not ok")
+	}
 }

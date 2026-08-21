@@ -67,6 +67,7 @@ func CheckAutoVacuum(ctx context.Context, db AutoVacuumReader) Finding {
 			Level:  Fail,
 			Title:  "auto_vacuum",
 			Detail: fmt.Sprintf("could not read the setting: %v", err),
+			Next:   []string{"run paceq doctor again, and check the disk for I/O errors"},
 		}
 	}
 	if mode == store.AutoVacuumIncremental {

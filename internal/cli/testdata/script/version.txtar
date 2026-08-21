@@ -1,0 +1,24 @@
+# version answers on a machine with no state directory at all.
+
+# A pipe gets JSON, with every field a bug report needs.
+exec paceq version
+stdout '"version":'
+stdout '"commit":'
+stdout '"built":'
+stdout '"go":'
+stdout '"platform":'
+stdout '"schema_version":'
+
+# -o text is the same facts for a person.
+exec paceq version -o text
+stdout 'paceq '
+stdout 'schema version'
+
+# --json is the short way to the same document.
+exec paceq version --json
+stdout '"schema_version":'
+
+# A flag that does not exist is a usage error, and says where to look.
+! exec paceq version --nope
+stderr 'unknown flag'
+stderr 'paceq version --help'

@@ -34,8 +34,8 @@ func TestOpenStateTakesTheLockBeforeTheDatabase(t *testing.T) {
 	if !errors.As(err, &locked) {
 		t.Fatalf("error %v is not a *LockedError", err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, dbFileName)); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("the refused start created %s, so the database was opened before the lock was taken", dbFileName)
+	if _, err := os.Stat(filepath.Join(dir, DatabaseFileName)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the refused start created %s, so the database was opened before the lock was taken", DatabaseFileName)
 	}
 }
 
@@ -153,7 +153,7 @@ func TestOpenStateKeepsTheDatabasePrivate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open the state directory: %v", err)
 	}
-	dbPath := filepath.Join(dir, dbFileName)
+	dbPath := filepath.Join(dir, DatabaseFileName)
 	if got := statMode(t, dbPath); got != 0o600 {
 		t.Errorf("database mode is %#o, want %#o", got, 0o600)
 	}

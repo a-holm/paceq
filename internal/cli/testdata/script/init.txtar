@@ -1,0 +1,24 @@
+# init creates a project that works, and never touches one that is already there.
+
+exec paceq init -o text
+stdout 'Created:'
+stdout 'Next steps:'
+exists paceq.yaml
+exists jobs/hello.yaml
+exists .paceq/state.db
+exists .gitignore
+
+# The example job runs an argv array, never a shell string.
+grep 'run: \[' jobs/hello.yaml
+
+# The state directory is kept out of version control.
+grep '^\.paceq/$' .gitignore
+
+# What init created, doctor approves of.
+exec paceq doctor
+stdout '"status":"ok"'
+
+# A second init refuses, and says how to start over.
+! exec paceq init
+stderr 'already initialised'
+stderr 'paceq doctor'

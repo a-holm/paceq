@@ -1,6 +1,18 @@
 GO ?= go
 BIN := bin/paceq
 
+# Build metadata, stamped into the binary with -ldflags. The time comes from the
+# last commit rather than from the clock, so two builds of one commit produce
+# the same binary. Each value falls back to what a plain `go build` reports.
+VERSION   ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT    ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+BUILDTIME ?= $(shell git log -1 --format=%cI 2>/dev/null || echo unknown)
+
+BUILDVARS := github.com/a-holm/paceq/internal/cli
+LDFLAGS   := -X $(BUILDVARS).version=$(VERSION) \
+	-X $(BUILDVARS).commit=$(COMMIT) \
+	-X $(BUILDVARS).buildTime=$(BUILDTIME)
+
 # Tool versions. Every gate runs through `go run`, so the pipeline and a local
 # `make ci` execute the same tool binaries. Bump versions here; no workflow
 # repeats them.
@@ -24,7 +36,7 @@ CROSS_TARGETS := linux/amd64 linux/arm64 darwin/arm64
 all: build
 
 build:
-	$(GO) build -trimpath -o $(BIN) ./cmd/paceq
+	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/paceq
 
 # The race detector is the one thing that needs cgo. It affects the test run only,
 # never the artifact built by the build target.
