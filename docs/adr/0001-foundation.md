@@ -109,7 +109,7 @@ Three details make that classification survive contact with real code:
 
 The test deliberately does **not** assert that every direct requirement is reachable. `go mod tidy` resolves across every platform and build tag, so it correctly keeps a requirement that only a `//go:build windows` file imports, and a test that calls that unused fails on a green tree while telling the developer to run the command they already ran. Staleness is `go mod tidy -diff` in CI (#22), which is the tool that can actually be right about it.
 
-`modernc.org/sqlite` is the first direct dependency, added with `internal/store` in #28. Everything else in the table is still unspent.
+`modernc.org/sqlite` is the first direct dependency, added with `internal/store` in #28. `github.com/oklog/ulid/v2` is the second, added with `internal/id` in #41. Everything else in the table is still unspent.
 
 Every dependency added later needs a line in this table. The choices below are fixed by PLAN.md §A and SYNTESE §4.9, not open questions:
 
@@ -119,12 +119,12 @@ Every dependency added later needs a line in this table. The choices below are f
 | `github.com/spf13/cobra` | runtime | command tree, flag handling and shell completion for the CLI |
 | `github.com/goccy/go-yaml` | runtime | job file parsing with line and column positions in errors; `gopkg.in/yaml.v3` is archived |
 | `github.com/adhocore/gronx` | runtime | cron expression parser. The iterator, `Between` and the DST policy are our code, in `internal/cronx` |
-| `github.com/oklog/ulid/v2` | runtime | time-sortable, prefix-searchable identifiers for `internal/id` |
+| `github.com/oklog/ulid/v2` v2.1.2 | runtime | time-sortable, prefix-searchable identifiers for `internal/id`. Pinned: the id format is a storage format, and a ULID that changed its encoding or its monotonic entropy behaviour would reorder existing rows |
 | `golang.org/x/sync` | runtime | `errgroup` and `semaphore` for structured startup and shutdown |
 | `github.com/google/go-cmp` | test | readable diffs in tests |
 | `github.com/rogpeppe/go-internal` | test | `testscript` for CLI golden tests, where `--json` output is a public interface |
 | `pgregory.net/rapid` | test | property tests for the state machine against real SQLite |
 
-That is six runtime dependencies of eight, one of them spent, leaving two slots. Anything beyond needs an ADR that says what it replaced.
+That is six runtime dependencies of eight, two of them spent, leaving two slots. Anything beyond needs an ADR that says what it replaced.
 
 The CLI library is the one entry worth flagging: PLAN.md §A picks cobra, while the Go architecture draft argued for stdlib `flag` and a hand-written router. The skeleton does not settle it, because the stub only prints help text and stdlib does that for free. Issue #51 decides and spends the slot if it picks cobra.
