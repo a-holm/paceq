@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestStateLockRefusesASecondHolder is the whole point of the state lock: two
@@ -36,6 +37,54 @@ func TestStateLockRefusesASecondHolder(t *testing.T) {
 	}
 	if want := filepath.Join(dir, lockFileName); locked.Path != want {
 		t.Errorf("LockedError names %q, want %q", locked.Path, want)
+	}
+}
+
+// refusalDeadline is how long a refused start may take. The lock is taken with
+// LOCK_NB, so the answer comes back in microseconds; the budget is generous
+// because what it separates is "fast" from "waiting forever", not one speed
+// from another.
+const refusalDeadline = 2 * time.Second
+
+// TestStateLockNeverWaits is what pins LOCK_NB. A blocking flock would make the
+// second start hang with no output until the operator kills it, which reads as
+// a hung daemon rather than as the second daemon it is.
+//
+// The attempt runs in its own goroutine because the failure being guarded
+// against is a call that never returns: waiting on it in the test would hang
+// the whole suite until the test timeout, which is the very outcome under test.
+func TestStateLockNeverWaits(t *testing.T) {
+	dir := stateDir(t)
+
+	held, err := AcquireStateLock(dir)
+	if err != nil {
+		t.Fatalf("acquire the state lock: %v", err)
+	}
+	defer func() { _ = held.Release() }()
+
+	type attempt struct {
+		lock *StateLock
+		err  error
+	}
+	done := make(chan attempt, 1)
+	go func() {
+		lock, err := AcquireStateLock(dir)
+		done <- attempt{lock: lock, err: err}
+	}()
+
+	select {
+	case got := <-done:
+		if got.err == nil {
+			_ = got.lock.Release()
+			t.Fatal("a second holder took the state lock")
+		}
+		var locked *LockedError
+		if !errors.As(got.err, &locked) {
+			t.Fatalf("error %v is not a *LockedError", got.err)
+		}
+	case <-time.After(refusalDeadline):
+		t.Fatalf("the second attempt was still waiting after %s: the lock blocks instead of "+
+			"refusing, so a second start hangs at boot with no output", refusalDeadline)
 	}
 }
 

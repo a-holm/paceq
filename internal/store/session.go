@@ -111,6 +111,11 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value`, bootKey, boot); err != n
 // BootChanged reports whether the machine has restarted since the last session
 // ran. It answers for the session StartSession opened, and is false until then.
 //
+// The evidence lasts for one start. StartSession reads the recorded boot id and
+// overwrites it in the same transaction, so the first start after a reboot is
+// the only one that sees the change: every later start on that boot reports
+// false. Whoever reconciles has to act on it then, or the fact is gone.
+//
 // False is not the same as "no restart": a platform without a boot id reports
 // false, and then a surviving process can only be ruled out by waiting for its
 // lease to expire.

@@ -22,6 +22,13 @@ const dbFileName = "state.db"
 func OpenState(ctx context.Context, dir string, opt Options) (*Store, error) {
 	dbPath := filepath.Join(dir, dbFileName)
 
+	// The filesystem is checked before the lock is taken. flock on NFS or FUSE
+	// is the one operation whose semantics are undefined there, so performing it
+	// to find out whether the filesystem is supported would be the wrong order.
+	if err := guardFilesystem(dir, opt.AllowNetworkFS); err != nil {
+		return nil, err
+	}
+
 	lock, err := AcquireStateLock(dir)
 	if err != nil {
 		var locked *LockedError
@@ -81,6 +88,10 @@ func lockOwner(ctx context.Context, dbPath string) *Session {
 	}
 	defer func() { _ = db.Close() }()
 
+	// A store with only a reader. withRead needs nothing else, and this is an
+	// error path: giving it a clock or a writer would couple the refusal to
+	// machinery that has no business running when we are already being told to
+	// keep our hands off somebody else's database.
 	probe := &Store{r: db}
 	session, found, err := probe.OpenSession(ctx)
 	if err != nil || !found {

@@ -125,6 +125,23 @@ func TestOpenStateReleasesTheLockOnClose(t *testing.T) {
 	}
 }
 
+// TestOpenStateCloseIsIdempotent covers the shutdown path that runs twice: a
+// deferred Close beside an explicit one. The second call has to be a no-op, not
+// an attempt to unlock a descriptor that is already gone.
+func TestOpenStateCloseIsIdempotent(t *testing.T) {
+	dir := stateDir(t)
+
+	s, err := OpenState(context.Background(), dir, Options{})
+	if err != nil {
+		t.Fatalf("open the state directory: %v", err)
+	}
+	for call := 1; call <= 2; call++ {
+		if err := s.Close(); err != nil {
+			t.Errorf("close call %d: %v", call, err)
+		}
+	}
+}
+
 // TestOpenStateKeepsTheDatabasePrivate covers the file paceq creates itself.
 // SQLite creates it under the process umask, which is nothing paceq controls,
 // so a fresh database is narrowed here and a widened one is refused.

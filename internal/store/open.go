@@ -216,7 +216,12 @@ func (s *Store) Close() error {
 	rErr := s.r.Close()
 	wErr := s.w.Close()
 	if s.lock != nil {
-		if err := s.lock.Release(); err != nil && wErr == nil && rErr == nil {
+		lock := s.lock
+		// Forgotten before the result is checked: a released lock must not be
+		// released twice, and a failed release leaves nothing this store can
+		// retry either.
+		s.lock = nil
+		if err := lock.Release(); err != nil && wErr == nil && rErr == nil {
 			return err
 		}
 	}
