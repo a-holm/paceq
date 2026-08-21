@@ -87,7 +87,14 @@ func scanGateLine(name, line string) []string {
 	}
 	for _, pattern := range []string{"|| true", "|| :", "|| exit 0", "|| echo"} {
 		if strings.Contains(normalised, pattern) {
-			add(pattern + " swallows the failure of the command before it")
+			// A Makefile $(shell ...) assignment computes a value with a
+			// fallback, such as the build metadata's "|| echo dev": it
+			// decides what a variable holds, never whether the gate
+			// passes. Everywhere else the pattern swallows the failure
+			// of the command before it.
+			if !strings.Contains(normalised, "$(shell") {
+				add(pattern + " swallows the failure of the command before it")
+			}
 			break
 		}
 	}
@@ -351,6 +358,7 @@ func TestGateCheckerCatchesEveryWayPastARedGate(t *testing.T) {
 		{"suppress with colon", "pre-push", "make ci || :"},
 		{"suppress with exit 0", "ci.yml", "  run: make gate || exit 0"},
 		{"suppress with echo", "ci.yml", "  run: make test || echo 'look later'"},
+		{"suppress with echo in make", "Makefile", "	make ci || echo failed; true"},
 		{"until loop", "pre-push", "until make ci; do sleep 60; done"},
 		{"negated while loop", "ci.yml", "  run: while ! make test; do :; done"},
 		{"while true loop", "ci.yml", "  run: while true; do make test && break; done"},
@@ -374,7 +382,8 @@ func TestGateCheckerCatchesEveryWayPastARedGate(t *testing.T) {
 	}{
 		{"a gate step", "ci.yml", "  run: make test"},
 		{"count with a value", "Makefile", "\tCGO_ENABLED=1 $(GO) test -race -count=1 ./..."},
-		{"a for loop that propagates", "Makefile", "\t\tscripts/cross-build.sh \"$${target%/*}\" \"$${target#*/}\" || exit 1; \\"},
+		{"a for loop that propagates", "Makefile", "		scripts/cross-build.sh \"$${target%/*}\" \"$${target#*/}\" || exit 1; \\"},
+		{"a shell value fallback, not a gate decision", "Makefile", "VERSION   ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)"},
 		{"a comment about the rule", "ci.yml", "  # retries are forbidden, see internal/arch"},
 	}
 	for _, tc := range clean {
