@@ -101,8 +101,12 @@ func renderSchema(t *testing.T, s *Store) string {
 	return out.String()
 }
 
-// normaliseSQL drops the whitespace SQLite preserved from the migration file so
-// a reindented migration is not reported as a schema change.
+// normaliseSQL trims trailing whitespace and blank lines, and nothing else.
+// SQLite stores a declaration as the migration wrote it, and the golden file
+// pins that text verbatim: reindenting a table is a change to the file a
+// reviewer reads, so it is reported like any other schema change. Only line
+// endings and invisible trailing characters are normalised away, because those
+// carry no meaning and no reviewer can see them in a diff.
 func normaliseSQL(sql string) string {
 	lines := strings.Split(strings.ReplaceAll(sql, "\r\n", "\n"), "\n")
 	kept := lines[:0]

@@ -110,10 +110,13 @@ func TestSchemaRejectsInvalidRows(t *testing.T) {
 	}
 }
 
-// TestOpenSessionLookupUsesThePartialIndex pins the query the daemon runs on
-// every start. The partial index is the pattern the whole schema scales with:
-// index only the rows a hot query can match.
-func TestOpenSessionLookupUsesThePartialIndex(t *testing.T) {
+// TestOpenSessionLookupUsesAnIndex pins the query the daemon runs on every
+// start: it has to be an index lookup, not a scan of every session ever
+// recorded.
+//
+// That the index is partial is pinned by TestGoldenSchema, which holds the
+// WHERE clause verbatim. This test passes with either kind of index.
+func TestOpenSessionLookupUsesAnIndex(t *testing.T) {
 	ctx := context.Background()
 	s := migratedStore(t)
 

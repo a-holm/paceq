@@ -130,11 +130,14 @@ func Open(ctx context.Context, path string, opt Options) (*Store, error) {
 	}
 
 	s := &Store{w: w, r: r, path: path, clk: clk}
-	if err := s.verifyPragmas(ctx, sync); err != nil {
+	// ensureAutoVacuum can rewrite the file, so it runs first and the
+	// verification stays the last thing Open does. Verifying before the rewrite
+	// would describe a file the caller never gets.
+	if err := s.ensureAutoVacuum(ctx); err != nil {
 		_ = s.Close()
 		return nil, err
 	}
-	if err := s.ensureAutoVacuum(ctx); err != nil {
+	if err := s.verifyPragmas(ctx, sync); err != nil {
 		_ = s.Close()
 		return nil, err
 	}
