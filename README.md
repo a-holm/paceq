@@ -41,7 +41,7 @@ make cross     # linux/amd64, linux/arm64, darwin/arm64, each asserted cgo free
 make ci        # the full gate, the same set the ci workflow runs
 ```
 
-Run `make hooks` once after cloning. It points git at `.githooks`, so formatting and `go vet` run against the staged content before each commit and `make ci` runs before each push. `core.hooksPath` is shared by every worktree of the repository but resolved against each worktree's own root, so a worktree checked out before `.githooks` existed runs no hooks and says nothing about it.
+Run `make hooks` once after cloning. It points git at `.githooks`, so formatting and `go vet` run against the staged content before each commit and `make ci` runs before each push. One exception: a push that only deletes remote refs moves no code, so the pre-push hook skips the gate for it. `core.hooksPath` is shared by every worktree of the repository but resolved against each worktree's own root, so a worktree checked out before `.githooks` existed runs no hooks and says nothing about it.
 
 [gofumpt](https://github.com/mvdan/gofumpt), [staticcheck](https://staticcheck.dev), [gosec](https://github.com/securego/gosec) and [govulncheck](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck) run through `go run` at the versions pinned at the top of the Makefile, so none of them has to be on your PATH. The first run compiles them; later runs come out of the Go build cache. `make govulncheck` queries the vulnerability database at vuln.go.dev and needs network access.
 

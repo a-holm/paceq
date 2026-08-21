@@ -1,5 +1,11 @@
 #!/bin/sh
 # Full gate before code leaves the machine. CI is the backstop, not the first check.
+#
+# git passes one line per pushed ref: "<local ref> <local sha> <remote ref> <remote
+# sha>". A deletion carries the zero sha in the local sha field, a branch being
+# created carries it in the remote sha field, so the field position is what tells
+# them apart. A push that only deletes remote refs moves no code, and the gate has
+# nothing to say about it.
 set -e
 
 if ! command -v make >/dev/null 2>&1; then
@@ -7,7 +13,24 @@ if ! command -v make >/dev/null 2>&1; then
 	exit 1
 fi
 
-if ! make ci; then
+# git offers the ref lines once. They are kept so the gate is handed the same bytes
+# it read before this hook classified anything.
+refs=$(mktemp)
+trap 'rm -f "$refs"' EXIT INT TERM
+cat >"$refs"
+
+# Skipping needs at least one ref line and a deletion on every one of them. Every
+# other push runs the gate, a line that does not parse included.
+if awk -v zero=0000000000000000000000000000000000000000 '
+	{ lines++ }
+	$2 == zero { deletions++ }
+	END { exit !(lines > 0 && lines == deletions) }
+' "$refs"; then
+	echo "pre-push: deletion only, skipping the gate."
+	exit 0
+fi
+
+if ! make ci <"$refs"; then
 	echo "pre-push: 'make ci' failed. Fix it before pushing." >&2
 	exit 1
 fi
