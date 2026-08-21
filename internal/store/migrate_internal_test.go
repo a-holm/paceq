@@ -672,3 +672,36 @@ func TestEmbeddedMigrationsLoad(t *testing.T) {
 		t.Fatalf("load embedded migrations: %v", err)
 	}
 }
+
+// TestApplyOneSkipsAMigrationAnotherProcessApplied covers the guarantee the
+// lock does not give: a process that read the ledger before another process
+// migrated still holds a stale list of pending migrations. Applying one has to
+// notice, inside its own transaction, that the work is already done.
+func TestApplyOneSkipsAMigrationAnotherProcessApplied(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	first := openStore(t, path)
+	stale := openStore(t, path)
+	ctx := context.Background()
+
+	all, err := loadMigrations(twoMigrations)
+	if err != nil {
+		t.Fatalf("loadMigrations: %v", err)
+	}
+	if err := first.migrateFS(ctx, twoMigrations); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	for _, m := range all {
+		if err := stale.applyOne(ctx, m); err != nil {
+			t.Fatalf("apply %s from a stale view: %v", m.File, err)
+		}
+	}
+
+	applied, err := first.appliedMigrations(ctx)
+	if err != nil {
+		t.Fatalf("read applied migrations: %v", err)
+	}
+	if len(applied) != 2 {
+		t.Errorf("ledger holds %d rows, want 2", len(applied))
+	}
+}

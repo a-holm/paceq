@@ -31,6 +31,14 @@
 //  5. The database never runs on a network or FUSE filesystem. SQLite file
 //     locking is undefined there and the corruption shows up weeks later.
 //
+// # Migrations
+//
+// Migrate applies the SQL files embedded from the migrations directory, in
+// version order, on the write connection. Forward only, one migration per
+// transaction, sha256 pinned per applied file, and PRAGMA user_version as the
+// fence that stops an old binary from writing to a newer database. The rules a
+// migration file has to follow are in migrations/README.md.
+//
 // PRAGMA values are read back from both pools at startup. A mismatch fails
 // Open, naming the setting. Misconfigured durability is a startup error, never
 // a warning and never a quiet degradation.
