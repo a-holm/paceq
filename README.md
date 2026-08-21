@@ -2,7 +2,7 @@
 
 > Cron can only ask "is it time yet?". paceq can ask "did something new arrive?", and it can tell you exactly why it did not.
 
-A lightweight orchestrator ("pace queue") for Linux and server environments. It combines cron-like schedules with event-based sensors and small DAGs — written in Go, with SQLite as the state store.
+A lightweight orchestrator ("pace queue") for Linux and server environments. It combines cron-like schedules with event-based sensors and small DAGs, written in Go, with SQLite as the state store.
 
 Core idea: keep "deciding to start work" (scheduler/sensors) separate from "doing the work" (workers). Small core, readable decisions, CLI-first.
 
@@ -12,22 +12,22 @@ cron and systemd timers fire and forget: no history, no status, and nothing to a
 
 ## Scope, security and guarantees
 
-- [SCOPE.md](SCOPE.md) — who paceq is for, what it will never do through 1.0, and the gate a feature request has to pass.
-- [SECURITY.md](SECURITY.md) — the threat model, what has to be right from day one, what we explicitly do not defend against, and how to report a vulnerability.
-- [docs/guarantees.md](docs/guarantees.md) — the guarantees, the non-guarantees, the invariants, and what `synchronous=NORMAL` costs.
+- [SCOPE.md](SCOPE.md): who paceq is for, what it will never do through 1.0, and the gate a feature request has to pass.
+- [SECURITY.md](SECURITY.md): the threat model, what has to be right from day one, what we explicitly do not defend against, and how to report a vulnerability.
+- [docs/guarantees.md](docs/guarantees.md): the guarantees, the non-guarantees, the invariants, and what `synchronous=NORMAL` costs.
 
 ## Planning
 
 The project is fully planned, from empty repo to v1.0:
 
-- [Project board](https://github.com/users/a-holm/projects/2) — the full backlog with priority, estimate, epic, dates and dependencies, across 9 milestones (M0–M8).
-- [docs/PLAN.md](docs/PLAN.md) — the master plan: final decisions, milestones and the complete issue backlog.
+- [Project board](https://github.com/users/a-holm/projects/2): the full backlog with priority, estimate, epic, dates and dependencies, across 9 milestones (M0 to M8).
+- [docs/PLAN.md](docs/PLAN.md): the master plan with final decisions, milestones and the complete issue backlog.
 
 Note: the master plan and the issues are written in Norwegian; everything else in the project is in English.
 
 ## Status
 
-Milestone [M0 — Foundation and persistence](https://github.com/a-holm/paceq/milestone/1) is under way. The binary builds and prints help; no orchestration yet.
+Milestone [M0, foundation and persistence](https://github.com/a-holm/paceq/milestone/1) is under way. The binary builds and prints help; no orchestration yet.
 
 ## Build
 
