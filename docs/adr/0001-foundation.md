@@ -15,9 +15,9 @@ The `go` directive in `go.mod` is `go 1.25`. `testing/synctest` became stable in
 
 Newer toolchains are fine for development. The directive states the minimum, not the toolchain in use.
 
-## Decision 2: Module path `github.com/a-holm/pulseq`
+## Decision 2: Module path `github.com/a-holm/paceq`
 
-The name "pulseq" is a working title. The naming decision is open (issue #26), so the module path is kept rename-cheap: it appears in `go.mod`, in one import in `cmd/pulseq/main.go`, and in one constant in the architecture test. A rename is a single search and replace across three files plus the directory name under `cmd/`.
+The module path follows the product name settled in ADR-0002. It is spelled out in three places only: `go.mod`, one import in `cmd/paceq/main.go`, and one constant in the architecture test.
 
 Consequence: documentation and examples do not spell out the module path unless they have to.
 
@@ -35,7 +35,7 @@ The `LICENSE` file holds the canonical text, and `README.md` links to it.
 ## Decision 4: Package layout and dependency direction
 
 ```
-cmd/pulseq/        thin main: signals, then internal/cli
+cmd/paceq/         thin main: signals, then internal/cli
 internal/
   cli/             argument parsing, subcommands, output rendering, exit codes
   store/           SQLite: pools, PRAGMAs, migrations, every SQL query
