@@ -618,7 +618,7 @@ Budsjetter: ≤8 runtime-deps, ≤12 000 linjer kjerne-Go, binær <30 MB, `statu
 - **Prioritet:** P1
 - **Estimat:** M
 - **Avhenger av:** M1-06, M4-02
-- **Spek:** Steget skriver NDJSON til `$PACEQ_OUTPUT` (artefaktreferanser: name/uri/size/checksum + videreførte params); Paceq leser etter exit → `artifacts`-rader; `$PACEQ_INPUTS` = flettet JSON fra oppstrøms steg. Referanser, aldri innhold; ingen lineage-graf (04 §6: hold porten til asset-modellen lukket).
+- **Spek:** Steget skriver NDJSON til `$PACEQ_OUTPUT` (artefaktreferanser: name/uri/size/checksum + videreførte params); paceq leser etter exit → `artifacts`-rader; `$PACEQ_INPUTS` = flettet JSON fra oppstrøms steg. Referanser, aldri innhold; ingen lineage-graf (04 §6: hold porten til asset-modellen lukket).
   Akseptanse:
   - Filsti fra steg A tilgjengelig i steg B uten avtale ut av båndet (09 US-13).
 
@@ -747,7 +747,7 @@ Budsjetter: ≤8 runtime-deps, ≤12 000 linjer kjerne-Go, binær <30 MB, `statu
 - **Avhenger av:** M5-01, M5-02, M5-03, M5-04, M5-05, M5-06, M5-07, M5-08, M4-07
 - **Spek:** Tag v0.1 «Cron som husker». Demosetning: «jeg spør hvorfor backupen ikke gikk i natt, og den svarer» (09 §8).
   Akseptanse (kill-kriterium K1 fra 10 §7):
-  - ≥3 av utviklerens egne, ekte jobber kjører i produksjon på Paceq med crontab-linjene deaktivert.
+  - ≥3 av utviklerens egne, ekte jobber kjører i produksjon på paceq med crontab-linjene deaktivert.
   - Hvis nei: STOPP og re-evaluer scope før M6 (10: «du bygger noe du selv ikke vil bruke»).
 
 ---
@@ -775,7 +775,7 @@ Budsjetter: ≤8 runtime-deps, ≤12 000 linjer kjerne-Go, binær <30 MB, `statu
 - **Avhenger av:** M5-04, M2-05
 - **Spek:** `--shadow`: hele planleggeren kjører, hver tick registreres i historikken, INGENTING utføres. `paceq shadow report`: diff mot faktisk cron-oppførsel, avdekk tidssonefeil og overlapp brukeren ikke visste om («wow»-øyeblikk 3 — 09 §5.2).
   Akseptanse:
-  - Rapporten viser per jobb: samsvar, avvik med årsak, overlapp Paceq ville stoppet.
+  - Rapporten viser per jobb: samsvar, avvik med årsak, overlapp paceq ville stoppet.
 
 ### [M6-03] cutover og rollback
 - **Epic:** Migrering fra cron
