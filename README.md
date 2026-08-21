@@ -19,7 +19,7 @@ Milestone [M0 — Foundation and persistence](https://github.com/a-holm/pulseq/m
 
 ## Build
 
-Requires Go 1.25 or newer. No C toolchain: the binary is built with `CGO_ENABLED=0` and is statically linked. The race detector in `make test` is the single exception. It builds the test binaries with cgo and never touches the shipped artifact.
+Building requires Go 1.25 or newer. The full local gate needs Go 1.26 or newer, or `GOTOOLCHAIN=auto`, because staticcheck declares Go 1.26. No C toolchain: the binary is built with `CGO_ENABLED=0` and is statically linked. The race detector in `make test` is the single exception. It builds the test binaries with cgo and never touches the shipped artifact.
 
 ```
 make build     # bin/pulseq

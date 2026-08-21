@@ -12,7 +12,7 @@ goos=$1
 goarch=$2
 out="bin/pulseq-$goos-$goarch"
 
-# 30 MB, the binary budget in docs/plans/00-SYNTESE.md section 4.9.
+# 30 MB, the binary budget in docs/PLAN.md.
 size_budget=31457280
 
 fail() {
