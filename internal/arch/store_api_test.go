@@ -181,6 +181,15 @@ func TestGuardLeavesHiddenHandlesAlone(t *testing.T) {
 	}
 }
 
+// TestHandleFixturesCompile builds both fixture packages. They live under
+// testdata, so no other target ever compiles them, and a shape the compiler
+// rejects is not a laundering shape: it is a fixture that proves nothing.
+func TestHandleFixturesCompile(t *testing.T) {
+	for _, name := range []string{"badhandle", "goodhandle"} {
+		runGo(t, "build", "./internal/arch/testdata/"+name)
+	}
+}
+
 func assertFindings(t *testing.T, want []string, found []finding) {
 	t.Helper()
 
