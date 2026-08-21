@@ -56,15 +56,31 @@ func TestNormalizePrefix(t *testing.T) {
 }
 
 func TestNormalizePrefixNamesTheOffendingCharacter(t *testing.T) {
-	_, err := id.NormalizePrefix("01IQ8")
-	if err == nil {
-		t.Fatal("NormalizePrefix(\"01IQ8\") = nil error")
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"upper case input", "01IQ8", `"I"`},
+		{"lower case input", "01iq8", `"i"`},
+		{"non ascii input", "01JQå", `"å"`},
 	}
-	if !strings.Contains(err.Error(), "I") {
-		t.Errorf("error %q does not name the character it rejected", err)
-	}
-	if !strings.Contains(err.Error(), id.Alphabet) {
-		t.Errorf("error %q does not show the alphabet it accepts", err)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := id.NormalizePrefix(tc.in)
+			if err == nil {
+				t.Fatalf("NormalizePrefix(%q) = nil error", tc.in)
+			}
+			// The character is quoted back as the user typed it. An error naming
+			// a character that is not on their screen sends them hunting.
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error %q does not name the rejected character as %s", err, tc.want)
+			}
+			if !strings.Contains(err.Error(), id.Alphabet) {
+				t.Errorf("error %q does not show the alphabet it accepts", err)
+			}
+		})
 	}
 }
 

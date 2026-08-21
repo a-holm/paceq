@@ -3,6 +3,7 @@ package id
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 // Range is the half-open interval of ids that share a prefix: Lower is the
@@ -22,21 +23,31 @@ type Range struct {
 // trimmed, upper case, and every character checked against the alphabet. Rejects
 // the empty prefix, because it matches everything and is never what was meant.
 func NormalizePrefix(s string) (string, error) {
-	prefix := strings.ToUpper(strings.TrimSpace(s))
-	switch {
-	case prefix == "":
+	typed := strings.TrimSpace(s)
+	if typed == "" {
 		return "", fmt.Errorf("empty prefix is %w: give at least one character", ErrInvalid)
-	case len(prefix) > Length:
+	}
+
+	// Upper casing byte by byte, rather than with strings.ToUpper, keeps the
+	// offsets into the normalised prefix and into what the user typed the same,
+	// so the error can quote the character back the way they wrote it.
+	prefix := []byte(typed)
+	for i, c := range prefix {
+		if c >= 'a' && c <= 'z' {
+			c -= 'a' - 'A'
+		}
+		if strings.IndexByte(Alphabet, c) < 0 {
+			_, size := utf8.DecodeRuneInString(typed[i:])
+			return "", fmt.Errorf("%q is %w: character %q at position %d is not in the alphabet %s",
+				s, ErrInvalid, typed[i:i+size], i, Alphabet)
+		}
+		prefix[i] = c
+	}
+	if len(prefix) > Length {
 		return "", fmt.Errorf("%q is %w: an id is %d characters, this is %d",
 			s, ErrInvalid, Length, len(prefix))
 	}
-	for i := range len(prefix) {
-		if strings.IndexByte(Alphabet, prefix[i]) < 0 {
-			return "", fmt.Errorf("%q is %w: character %q at position %d is not in the alphabet %s",
-				s, ErrInvalid, prefix[i:i+1], i, Alphabet)
-		}
-	}
-	return prefix, nil
+	return string(prefix), nil
 }
 
 // PrefixRange is the range scan for a prefix. The prefix is normalised first, so
