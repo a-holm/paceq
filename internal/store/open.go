@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -82,6 +83,9 @@ func Open(ctx context.Context, path string, opt Options) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := guardFilesystem(filepath.Dir(path), opt.AllowNetworkFS); err != nil {
+		return nil, err
+	}
 
 	w, err := sql.Open(driverName, dsn(path, "_txlock=immediate", writerSpecs(sync)))
 	if err != nil {
@@ -148,6 +152,15 @@ func verifyPool(ctx context.Context, db *sql.DB, pool string, specs []pragmaSpec
 		}
 	}
 	return nil
+}
+
+// guardFilesystem refuses to run on a filesystem where SQLite locking is
+// undefined. AllowNetworkFS is the deliberate way out, not a default.
+func guardFilesystem(dir string, allowNetworkFS bool) error {
+	if allowNetworkFS {
+		return nil
+	}
+	return checkLocalFS(dir)
 }
 
 // Path is the database file this store was opened against.
