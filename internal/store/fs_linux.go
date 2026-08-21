@@ -21,6 +21,7 @@ const (
 	magicGFS2   = 0x01161970
 	magicOCFS2  = 0x7461636F
 	magicAFS    = 0x5346414F
+	magicKAFS   = 0x6B414653
 	magicLustre = 0x0BD00BD0
 )
 
@@ -45,7 +46,7 @@ func magicOf(st syscall.Statfs_t) uint64 {
 func classifyFSMagic(dir string, magic uint64) error {
 	switch magic {
 	case magicNFS, magicSMB, magicCIFS, magicSMB2, magicFUSE,
-		magic9P, magicCeph, magicGFS2, magicOCFS2, magicAFS, magicLustre:
+		magic9P, magicCeph, magicGFS2, magicOCFS2, magicAFS, magicKAFS, magicLustre:
 		return fmt.Errorf("%s is on a network or FUSE filesystem (magic %#x): SQLite file "+
 			"locking is undefined there and the database will corrupt without warning, weeks "+
 			"after the mistake. Move the state directory to a local disk, or pass "+

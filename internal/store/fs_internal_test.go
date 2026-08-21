@@ -22,6 +22,7 @@ func TestClassifyFSMagicRefusesNetworkAndFuseFilesystems(t *testing.T) {
 		{name: "gfs2", magic: 0x01161970},
 		{name: "ocfs2", magic: 0x7461636F},
 		{name: "afs", magic: 0x5346414F},
+		{name: "kafs", magic: 0x6B414653},
 		{name: "lustre", magic: 0x0BD00BD0},
 	}
 
