@@ -56,13 +56,20 @@ internal/
   arch/            no production code, hosts the architecture tests
 ```
 
-The direction is `cli -> engine -> store -> model`. `internal/model`, `internal/id` and `internal/clock` import nothing under `internal/` at all, which is what keeps the domain types usable from every layer without a cycle.
+The direction is `cli -> engine -> store -> model`. `internal/model`, `internal/id` and `internal/clock` import nothing under `internal/` at all, which is what keeps the domain types usable from every layer without a cycle. `internal/cli` is the top layer: nothing under `internal/` may import it, whether or not the importing package has a row of its own.
 
 `internal/arch` enforces this over **direct** imports, not transitive ones. Transitive enforcement would be wrong: `engine` may import `runner`, and `cli` imports `engine`, but `cli` still may not reach for `runner` itself.
 
-Packages with no rule in the table are unconstrained for now. The plan does not fix their direction yet, and enforcing a guess is worse than enforcing nothing. The test asserts that every package named in the table exists, so a rename cannot silently empty a rule.
+Test files are held to the same table, read from `TestImports` and `XTestImports`. A rule that only covers production files is a rule with a `_test.go` shaped hole in it. One relaxation: test files may also import `internal/testutil`, which exists for no other purpose. Failure messages say which import list the edge came from.
 
-All SQL lives in `internal/store`. The same test scans every `.go` file outside `internal/store` for `database/sql` imports and for string literals starting with `SELECT `, `INSERT `, `UPDATE ` or `DELETE `. This invariant is what makes `store` the single port a later Postgres backend would need.
+Packages with no rule in the table are unconstrained for now, except for the `internal/cli` rule, which is universal. The plan does not fix the remaining directions yet, and enforcing a guess is worse than enforcing nothing. The test asserts that every package named in the table exists, so a rename cannot silently empty a rule.
+
+All SQL lives in `internal/store`. The same test scans every `.go` file outside `internal/store` for two things:
+
+1. Imports of `database/sql` or `database/sql/driver`. This is the guard that actually holds. No package can execute SQL without one of them, so the direction cannot be broken while this passes.
+2. String literals starting with `SELECT `, `INSERT `, `UPDATE `, `DELETE `, `REPLACE `, `PRAGMA `, `WITH `, `BEGIN ` or `CREATE TABLE`. `PRAGMA` and `BEGIN` are on the list because connection setup and transaction control are store-owned too, not only queries.
+
+The literal scan matches case sensitively. Uppercase keywords are the project's SQL convention, and matching case insensitively would flag ordinary prose: a literal such as `"with %d retries left"` starts with `WITH ` once upper-cased. The cost is that lowercase SQL slips past the literal scan. That is acceptable, because it cannot be executed without an import the first guard already blocks. The literal scan is a tripwire on top of the import guard, not the guard itself.
 
 The scan skips `internal/arch` itself, because the checker necessarily spells out the patterns it hunts for. That package will never hold SQL.
 
@@ -74,27 +81,36 @@ One exception, scoped to the test target: the race detector requires cgo, so `ma
 
 ## Decision 6: Quality gates run locally first, CI is the backstop
 
-`make hooks` points `core.hooksPath` at `.githooks`. `pre-commit` runs the fast checks, gofumpt on staged Go files plus `go vet ./...`. `pre-push` runs `make ci` in full.
+`make hooks` points `core.hooksPath` at `.githooks`. `pre-commit` runs the fast checks, gofumpt plus `go vet ./...`. `pre-push` runs `make ci` in full.
 
 The reason is cost. GitHub Actions minutes are a budget, and a red build discovered after a push has already spent them. A developer machine has the toolchain, the module cache and the test cache warm, so the same checks cost seconds there. CI still runs everything, because a hook can be bypassed and a contributor may not have run `make hooks`.
 
-## Decision 7: Dependency budget of 8 direct dependencies
+`pre-commit` checks a materialised copy of the index, produced with `git checkout-index`, not the working tree. Checking the working tree is the obvious implementation and it is wrong: with unformatted content staged and the working tree already fixed, the commit passes and the bad blob lands. That is exactly what a partial `git add` produces.
 
-The budget covers direct runtime and test dependencies together and is enforced by a test that parses `go.mod`. Indirect dependencies are not counted, since they are consequences of the direct ones rather than decisions.
+`core.hooksPath` is repository-level configuration, shared by every worktree, but it is resolved relative to each worktree's own root. A worktree checked out at a commit without `.githooks` therefore runs no hooks at all, silently, rather than failing. CI is the backstop for that case.
 
-The skeleton has **zero** direct dependencies. The standard library covers everything it does.
+## Decision 7: Budget of 8 direct runtime dependencies
 
-Every dependency added later needs a line in this section:
+The budget is **8 direct runtime dependencies**. Test-only dependencies are outside it, as the plan states. Indirect dependencies are not counted either, since they are consequences of the direct ones rather than decisions.
 
-| Module | Purpose | Status |
+A test enforces this. It gets the direct requirements from `go mod edit -json`, which reports the `Indirect` flag, and never parses `go.mod` by hand: comment placement in `go.mod` is subtle enough that a hand parser reads `require ( // runtime deps` as a single dependency named `(` and then reports a nine-dependency module as one.
+
+Runtime and test-only are separated by reachability, not by naming convention. A module reached by `go list -deps ./...` is runtime. A module reached only by `go list -deps -test ./...` is test-only. A direct requirement reached by neither is unused, and the test says so, because `go mod tidy` should have removed it.
+
+The skeleton has **zero** direct dependencies of either kind. The standard library covers everything it does.
+
+Every dependency added later needs a line in this table. The choices below are fixed by PLAN.md §A and SYNTESE §4.9, not open questions:
+
+| Module | Kind | Purpose |
 |---|---|---|
-| `modernc.org/sqlite` | SQLite driver in pure Go, which is what makes `CGO_ENABLED=0` possible | planned |
-| `github.com/spf13/cobra` | command tree, flag handling and shell completion for the CLI | planned |
-| `github.com/goccy/go-yaml` | job file parsing with line and column positions in errors; `gopkg.in/yaml.v3` is archived | planned |
-| `github.com/robfig/cron/v3` | standard cron expression parser, used for parsing only, not for its runner | planned |
-| `golang.org/x/sync` | `errgroup` and `semaphore` for structured startup and shutdown | planned |
-| `github.com/google/go-cmp` | readable diffs in tests | planned |
+| `modernc.org/sqlite` | runtime | SQLite driver in pure Go, which is what makes `CGO_ENABLED=0` possible |
+| `github.com/spf13/cobra` | runtime | command tree, flag handling and shell completion for the CLI |
+| `github.com/goccy/go-yaml` | runtime | job file parsing with line and column positions in errors; `gopkg.in/yaml.v3` is archived |
+| `github.com/adhocore/gronx` | runtime | cron expression parser. The iterator, `Between` and the DST policy are our code, in `internal/cronx` |
+| `github.com/oklog/ulid/v2` | runtime | time-sortable, prefix-searchable identifiers for `internal/id` |
+| `golang.org/x/sync` | runtime | `errgroup` and `semaphore` for structured startup and shutdown |
+| `github.com/google/go-cmp` | test | readable diffs in tests |
 
-That is six of eight, leaving two slots. Anything beyond needs an ADR that says what it replaced.
+That is six runtime dependencies of eight, leaving two slots. Anything beyond needs an ADR that says what it replaced.
 
-The CLI library is the one entry worth flagging: the master plan picks cobra, while the Go architecture draft argued for stdlib `flag` and a hand-written router. The skeleton does not settle it, because the stub only prints help text and stdlib does that for free. Issue #51 decides and spends the slot if it picks cobra.
+The CLI library is the one entry worth flagging: PLAN.md §A picks cobra, while the Go architecture draft argued for stdlib `flag` and a hand-written router. The skeleton does not settle it, because the stub only prints help text and stdlib does that for free. Issue #51 decides and spends the slot if it picks cobra.

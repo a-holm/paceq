@@ -28,7 +28,7 @@ make lint      # go vet + staticcheck
 make ci        # fmt-check, lint, test, build
 ```
 
-Run `make hooks` once after cloning. It points git at `.githooks`, so formatting and `go vet` run before each commit and `make ci` runs before each push.
+Run `make hooks` once after cloning. It points git at `.githooks`, so formatting and `go vet` run against the staged content before each commit and `make ci` runs before each push. `core.hooksPath` is shared by every worktree of the repository but resolved against each worktree's own root, so a worktree checked out before `.githooks` existed runs no hooks and says nothing about it.
 
 `make fmt` and `make lint` need [gofumpt](https://github.com/mvdan/gofumpt) and [staticcheck](https://staticcheck.dev) on your PATH.
 
