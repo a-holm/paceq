@@ -1,6 +1,6 @@
 # Guarantees and non-guarantees
 
-This document is the semantic contract for paceq. Honesty about guarantees is a feature, not a disclaimer (plans: 09 §10.2, 06). It is written before the engine exists, so read it as what the implementation must satisfy: each guarantee is a property a test can falsify, and each invariant is a SQL query that must return zero rows.
+This document is the semantic contract for paceq. Honesty about guarantees is a feature, not a disclaimer (plans: 00 §3.8). It is written before the engine exists, so read it as what the implementation must satisfy: each guarantee is a property a test can falsify, and each invariant is a SQL query that must return zero rows.
 
 The non-guarantees carry the same weight as the guarantees. A promise we deliberately withhold is part of the contract too.
 
