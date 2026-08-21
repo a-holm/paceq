@@ -1,4 +1,4 @@
-# Paceq: Lettvekt orchestrator med schedules, sensors og DAG-utføring
+# paceq: Lettvekt orchestrator med schedules, sensors og DAG-utføring
 
 ## Tekniske rammer
 

@@ -1,6 +1,6 @@
 # ADR-0002: Product name paceq
 
-Status: decided
+Status: accepted
 Date: 2026-08-21
 Decision maker: Johan Holm
 
@@ -14,7 +14,7 @@ All checks below were run on 2026-08-21.
 
 ## Decision
 
-The product is named **paceq**.
+The product is named **paceq**. It is spelled lowercase in every context, headings included, the way `systemd` and `kubectl` are. One spelling keeps the binary, the module path, the documentation and the search term the same string.
 
 | Criterion | paceq | pulseq (rejected) | planq (rejected) |
 |---|---|---|---|
@@ -37,6 +37,6 @@ Intermediate candidates `taktd` and `taktfast` passed every registry check. They
 ## Consequences
 
 1. The environment variable prefix is `PACEQ_*`. No `PULSEQ_*` variable exists in the code yet, so there is nothing to migrate. M8-01 freezes the prefix under the new name.
-2. The rename is effectuated now rather than in M8-07 (#79). The surface was two merged issues, so the cost was under an hour. M8-07 keeps only the residual work that is not code: SEO measures and the domain purchase.
+2. The rename is effectuated now rather than in M8-07 (#79). The surface was two merged issues, so the cost was under an hour. M8-07 keeps only the residual work that is not code: buying `paceq.dev`, reserving the GitHub organisation, reserving the package names in the registries listed above, and the SEO measures.
 3. The deadline pressure recorded in ADR-0001 decision 2 and in M8-01 is gone. The name is settled before any user-facing contract is frozen.
 4. The GitHub repository was renamed in place, so old URLs redirect and issues, pull requests and project links survive.

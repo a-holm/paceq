@@ -1,4 +1,4 @@
-# Paceq — masterplan (tom repo → v1.0)
+# paceq — masterplan (tom repo → v1.0)
 
 > Endelig plan per 2026-08-21. Referansene «SYNTESE §…» og «NN-… §…» i planen peker til
 > plandokumentene fra planleggingsfasen. De ligger på git-taggen `plans`, ikke i aktiv kode;
