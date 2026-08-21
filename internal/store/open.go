@@ -109,7 +109,13 @@ func Open(ctx context.Context, path string, opt Options) (*Store, error) {
 		_ = w.Close()
 		return nil, fmt.Errorf("open reader pool: %w", err)
 	}
+	// Idle has to match open, or database/sql keeps the default of two idle
+	// connections, closes the rest after every burst, and replays the reader
+	// pragmas on each reopen. The cap alone would be inert beyond two.
 	r.SetMaxOpenConns(readerPoolSize())
+	r.SetMaxIdleConns(readerPoolSize())
+	r.SetConnMaxLifetime(0)
+	r.SetConnMaxIdleTime(0)
 
 	s := &Store{w: w, r: r, path: path}
 	if err := s.verifyPragmas(ctx, sync); err != nil {

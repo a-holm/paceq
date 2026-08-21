@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -104,5 +105,55 @@ func TestPoolLimits(t *testing.T) {
 	}
 	if got := s.r.Stats().MaxOpenConnections; got != readerPoolSize() {
 		t.Errorf("reader MaxOpenConnections = %d, want %d", got, readerPoolSize())
+	}
+}
+
+// TestReaderPoolKeepsItsConnections pins the effective pool, not the configured
+// cap. A reader pool capped at NumCPU but idle-limited to the database/sql
+// default of 2 closes and reopens connections under concurrency, and every
+// reopen replays the reader DSN pragmas on the hot path.
+func TestReaderPoolKeepsItsConnections(t *testing.T) {
+	const (
+		readers = 8
+		queries = 200
+	)
+
+	s := openTestStore(t, Options{})
+
+	var wg sync.WaitGroup
+	errs := make(chan error, readers)
+	for range readers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range queries {
+				err := s.withRead(context.Background(), func(ctx context.Context, r reader) error {
+					var one int
+					return r.QueryRowContext(ctx, "SELECT 1").Scan(&one)
+				})
+				if err != nil {
+					errs <- err
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("read: %v", err)
+	}
+
+	stats := s.r.Stats()
+	if stats.MaxIdleClosed != 0 {
+		t.Errorf("reader MaxIdleClosed = %d after %d concurrent readers, want 0: the pool is "+
+			"churning connections and replaying the reader pragmas on every reopen",
+			stats.MaxIdleClosed, readers)
+	}
+	if stats.MaxIdleTimeClosed != 0 {
+		t.Errorf("reader MaxIdleTimeClosed = %d, want 0", stats.MaxIdleTimeClosed)
+	}
+	if stats.MaxLifetimeClosed != 0 {
+		t.Errorf("reader MaxLifetimeClosed = %d, want 0", stats.MaxLifetimeClosed)
 	}
 }
