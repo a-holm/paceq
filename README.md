@@ -1,6 +1,6 @@
-# Pulseq
+# paceq
 
-A lightweight orchestrator ("pulse queue") for Linux and server environments. It combines cron-like schedules with event-based sensors and small DAGs — written in Go, with SQLite as the state store.
+A lightweight orchestrator ("pace queue") for Linux and server environments. It combines cron-like schedules with event-based sensors and small DAGs — written in Go, with SQLite as the state store.
 
 Core idea: keep "deciding to start work" (scheduler/sensors) separate from "doing the work" (workers). Small core, readable decisions, CLI-first.
 
@@ -15,14 +15,14 @@ Note: the master plan and the issues are written in Norwegian; everything else i
 
 ## Status
 
-Milestone [M0 — Foundation and persistence](https://github.com/a-holm/pulseq/milestone/1) is under way. The binary builds and prints help; no orchestration yet.
+Milestone [M0 — Foundation and persistence](https://github.com/a-holm/paceq/milestone/1) is under way. The binary builds and prints help; no orchestration yet.
 
 ## Build
 
 Building requires Go 1.25 or newer. The full local gate needs Go 1.26 or newer, or `GOTOOLCHAIN=auto`, because staticcheck declares Go 1.26. No C toolchain: the binary is built with `CGO_ENABLED=0` and is statically linked. The race detector in `make test` is the single exception. It builds the test binaries with cgo and never touches the shipped artifact.
 
 ```
-make build     # bin/pulseq
+make build     # bin/paceq
 make test      # go test -race -count=1 ./...
 make lint      # go vet + staticcheck
 make cross     # linux/amd64, linux/arm64, darwin/arm64, each asserted cgo free

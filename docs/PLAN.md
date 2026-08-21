@@ -1,7 +1,8 @@
-# Pulseq — masterplan (tom repo → v1.0)
+# paceq — masterplan (tom repo → v1.0)
 
 > Endelig plan per 2026-08-21. Referansene «SYNTESE §…» og «NN-… §…» i planen peker til
-> plandokumentene fra planleggingsfasen; de ligger i git-historikken, ikke i aktiv kode.
+> plandokumentene fra planleggingsfasen. De ligger på git-taggen `plans`, ikke i aktiv kode;
+> hent dem med `git show plans:docs/plans/<fil>`.
 > Én utvikler med AI-assistanse, start 2026-08-25.
 
 ---
@@ -19,7 +20,7 @@
 | Sikkerhet | Én binær, same-user i MVP; 08s dag-én-liste bindende; priv-sep post-1.0 | §3.7 |
 | Durabilitet | `synchronous=NORMAL` default, `FULL` som konfig | §3.8 |
 | Logger | NDJSON-filer, datoshardet, 16 MiB-kvote m/ head/tail, `error_tail` i DB | §3.9 |
-| Navn | «pulseq» beholdes som arbeidsnavn; beslutnings-issue til eier | §3.10 |
+| Navn | «paceq», besluttet 2026-08-21 mot kriteriene i §3.4 | ADR-0002 |
 | SQLite | Én fil, to pooler, writer(1)+`_txlock=immediate`, WAL, modernc, STRICT | §3.11 |
 | Postgres | Nei; kun `internal/store` som eneste SQL-eier (null-kost port) | §3.12 |
 | Lease | Run-nivå + epoch-fencing; rolle-leases for scheduler/sensor/reaper | §3.13 |
@@ -34,9 +35,9 @@ Budsjetter: ≤8 runtime-deps, ≤12 000 linjer kjerne-Go, binær <30 MB, `statu
 
 | ID | Tittel | Start | Mål | Demo-/exit-kriterium |
 |---|---|---|---|---|
-| M0 | Fundament og persistens | 2026-08-25 | 2026-09-04 | Konkurransetest (32 skrivere, 0 `SQLITE_BUSY`) og ytelsesport (≥500 tx/s) grønn i CI; `pulseq init/doctor/version` virker; SCOPE/SECURITY committet |
+| M0 | Fundament og persistens | 2026-08-25 | 2026-09-04 | Konkurransetest (32 skrivere, 0 `SQLITE_BUSY`) og ytelsesport (≥500 tx/s) grønn i CI; `paceq init/doctor/version` virker; SCOPE/SECURITY committet |
 | M1 | Kjørbare jobber | 2026-09-07 | 2026-09-25 | Flerstegs (sekvensiell) jobb kjøres fra CLI uten daemon: logg, retry, historikk, exit-koder; SIGKILL midt i run → restart konvergerer uten invariantbrudd |
-| M2 | Daemon og schedules | 2026-09-28 | 2026-10-16 | `systemctl start pulseq` gir cron-erstatning: tidssone/DST-gullstandard grønn; daemon nede 6 t → catchup-policy gjør nøyaktig det den sier; dual-mode-CLI |
+| M2 | Daemon og schedules | 2026-09-28 | 2026-10-16 | `systemctl start paceq` gir cron-erstatning: tidssone/DST-gullstandard grønn; daemon nede 6 t → catchup-policy gjør nøyaktig det den sier; dual-mode-CLI |
 | M3 | Sensorer | 2026-10-19 | 2026-11-06 | 5-linjers shell-sensor gir én run per ny fil; gjentatt tick = 0 duplikater; `reset` gir replay; SIGKILL midt i sensor-commit gir aldri tap eller duplikat |
 | M4 | DAG | 2026-11-09 | 2026-11-27 | Diamant-DAG kjører to steg parallelt; feil ⇒ nedstrøms `skipped`; `retry --failed` gjenbruker vellykkede steg. Tidsboks 3 uker (fallback: kutt parallellitet) |
 | M5 | Explain, import og v0.1 | 2026-11-30 | 2026-12-18 | «Hvorfor kjørte ikke X i natt?» besvares med én kommando i alle scenarier; egen crontab importert og kjørende (kill-kriterium K1: ≥3 egne jobber i prod) |
@@ -68,7 +69,7 @@ Budsjetter: ≤8 runtime-deps, ≤12 000 linjer kjerne-Go, binær <30 MB, `statu
 - **Prioritet:** P0
 - **Estimat:** S
 - **Avhenger av:** ingen
-- **Spek:** Opprett `go.mod` (Go 1.25), `cmd/pulseq/main.go`, `internal/{store,model,spec,cronx,scheduler,sensor,engine,runner,cli,obs,explain,notify,id,clock,testutil}`, Makefile, `.editorconfig`, LICENSE (permissiv, jf. 09 §12.5).
+- **Spek:** Opprett `go.mod` (Go 1.25), `cmd/paceq/main.go`, `internal/{store,model,spec,cronx,scheduler,sensor,engine,runner,cli,obs,explain,notify,id,clock,testutil}`, Makefile, `.editorconfig`, LICENSE (permissiv, jf. 09 §12.5).
   Akseptanse:
   - `go build ./...` gir statisk binær med `CGO_ENABLED=0`.
   - Avhengighetsretning (cli→engine→store→model; model importerer intet internt) håndhevet av test over `go list -deps`.
@@ -105,10 +106,10 @@ Budsjetter: ≤8 runtime-deps, ≤12 000 linjer kjerne-Go, binær <30 MB, `statu
 - **Prioritet:** P1
 - **Estimat:** S
 - **Avhenger av:** ingen
-- **Spek:** «pulseq» kolliderer med etablert MR-rammeverk (pulseq.github.io, PyPulseq): usøkbart, tvetydige domener/pakkenavn. Navnet BEHOLDES som arbeidsnavn (eierbeslutning), men endelig valg må tas før første offentlige release.
+- **Spek:** Eier valgte «paceq» 2026-08-21. Arbeidsnavnet «pulseq» ble forkastet: GitHub-organisasjonen var tatt av tredjepart, og navnet gir permanent søkekollisjon med MR-rammeverket pulseq.github.io / PyPulseq. Målingene og de forkastede kandidatene står i docs/adr/0002-product-name.md.
   Akseptanse:
-  - Eier har dokumentert beslutning (behold eller nytt navn) med kriteriene fra 09-produktlederen.md §3.4: ledig .dev-domene, ledig GitHub-org, entydig førstesidetreff, uttalbart, ledig binærnavn i Debian/Homebrew.
-  - Frist: før M8 starter; alt brukervendt holdes rename-billig til da (SYNTESE §3.10; 10 F16).
+  - Beslutningen er dokumentert mot kriteriene fra 09-produktlederen.md §3.4: ledig .dev-domene, ledig GitHub-org, entydig førstesidetreff, uttalbart, ledig binærnavn i Debian/Homebrew. Oppfylt av ADR-0002.
+  - Navnet er effektuert i modulsti, binær og docs (#93), ikke utsatt til M8.
 
 ### [M0-05] internal/store: to pooler og PRAGMA-disiplin
 - **Epic:** Persistens
@@ -142,7 +143,7 @@ Budsjetter: ≤8 runtime-deps, ≤12 000 linjer kjerne-Go, binær <30 MB, `statu
 - **Prioritet:** P0
 - **Estimat:** M
 - **Avhenger av:** M0-06
-- **Spek:** Migrasjon 0001: `meta`, `schema_migrations`, `leases`, `daemon_sessions`, `outages`. STRICT, INTEGER UTC-ms. `pulseq db init` setter `auto_vacuum=INCREMENTAL` (kan ikke endres billig senere — 07 §6.3). Golden-schema-test: dump av `sqlite_schema` diffes mot innsjekket `schema.golden.sql`.
+- **Spek:** Migrasjon 0001: `meta`, `schema_migrations`, `leases`, `daemon_sessions`, `outages`. STRICT, INTEGER UTC-ms. `paceq db init` setter `auto_vacuum=INCREMENTAL` (kan ikke endres billig senere — 07 §6.3). Golden-schema-test: dump av `sqlite_schema` diffes mot innsjekket `schema.golden.sql`.
   Akseptanse:
   - `doctor` advarer hvis auto_vacuum=NONE på eksisterende DB.
   - Se 07-databasespesialisten.md §3.1 og §5 (gyldne skjematester).
@@ -178,7 +179,7 @@ Budsjetter: ≤8 runtime-deps, ≤12 000 linjer kjerne-Go, binær <30 MB, `statu
 - **Prioritet:** P0
 - **Estimat:** S
 - **Avhenger av:** M0-07
-- **Spek:** `flock` på `$STATE/pulseq.lock` (to daemoner umulig, tydelig feilmelding). `daemon_sessions`-rad ved oppstart med versjon + heartbeat; `boot_id` fra `/proc/sys/kernel/random/boot_id` lagres i meta — maskinrestart kan da bevises (ingen barneprosess overlevde ⇒ umiddelbar sikker rekonsiliering).
+- **Spek:** `flock` på `$STATE/paceq.lock` (to daemoner umulig, tydelig feilmelding). `daemon_sessions`-rad ved oppstart med versjon + heartbeat; `boot_id` fra `/proc/sys/kernel/random/boot_id` lagres i meta — maskinrestart kan da bevises (ingen barneprosess overlevde ⇒ umiddelbar sikker rekonsiliering).
   Akseptanse:
   - To prosesser mot samme statedir: nr. 2 feiler med forklaring.
   - Se 02-palitelighetsingenioren.md §5.9 R0–R1.
@@ -190,7 +191,7 @@ Budsjetter: ≤8 runtime-deps, ≤12 000 linjer kjerne-Go, binær <30 MB, `statu
 - **Prioritet:** P0
 - **Estimat:** M
 - **Avhenger av:** M0-07
-- **Spek:** cobra-rot med globale flagg (`-o json|text`, `--db`, `-q/-v`, `--no-color`, NO_COLOR-respekt), `pulseq version`, `pulseq init` (statedir + skjema + eksempeljobb som faktisk virker — 09 §6.3), `pulseq doctor` grunnversjon (DB-sti, WAL-modus, skjemaversjon, diskplass, auto_vacuum). Exit-kode-tabellen fra 03 §7.2 etableres som konstant.
+- **Spek:** cobra-rot med globale flagg (`-o json|text`, `--db`, `-q/-v`, `--no-color`, NO_COLOR-respekt), `paceq version`, `paceq init` (statedir + skjema + eksempeljobb som faktisk virker — 09 §6.3), `paceq doctor` grunnversjon (DB-sti, WAL-modus, skjemaversjon, diskplass, auto_vacuum). Exit-kode-tabellen fra 03 §7.2 etableres som konstant.
   Akseptanse:
   - TTY → tekst, pipe → JSON (03 §7.1); umask 0077 og rettighetssjekk fail-closed (08 §3.9).
 
@@ -207,7 +208,7 @@ Budsjetter: ≤8 runtime-deps, ≤12 000 linjer kjerne-Go, binær <30 MB, `statu
 - **Avhenger av:** M0-11
 - **Spek:** goccy/go-yaml med `DisallowUnknownField`, alias-/dybde-/størrelsesgrenser (08 T13). Felter: `name`, `description`, `env`, `env_file`, `inherit_env`, `workdir`, `timeout`, `max_concurrent` (default 1 — produktbeslutning, 09 §7), `steps[{name, run(argv), shell?, timeout, retry{max,backoff,initial,max_delay,jitter}, needs?}]`, `schedules[]`, `sensors[]`. Kanoniser til JSON-IR med `spec_hash` (sha256). Valideringsfeil med linje/kolonne + caret + «neste steg» (03 §8). `run` er argv-array; `shell: true` eksplisitt m/ advarsel (08 §3.2). Ingen templating.
   Akseptanse:
-  - `pulseq validate` gir posisjonerte feil; ukjente felt = feil; fuzz-test på parseren panikker aldri.
+  - `paceq validate` gir posisjonerte feil; ukjente felt = feil; fuzz-test på parseren panikker aldri.
   - Se 03-cli-designeren.md §3 og 08 §3.2.
 
 ### [M1-02] Skjema: definisjoner og utføring
@@ -222,7 +223,7 @@ Budsjetter: ≤8 runtime-deps, ≤12 000 linjer kjerne-Go, binær <30 MB, `statu
   - Golden-schema oppdatert; `UNIQUE(source_kind, source_name, scheduled_for)` på ticks (NULL-trikset, 07 §3.3).
   - Se 07-databasespesialisten.md §3 (skjema-forbilde, tilpasset SYNTESE §4.2).
 
-### [M1-03] pulseq apply/load: idempotent versjonering
+### [M1-03] paceq apply/load: idempotent versjonering
 - **Epic:** Jobbdefinisjon
 - **Milepæl:** M1
 - **Labels:** area:spec, type:feature
@@ -263,7 +264,7 @@ Budsjetter: ≤8 runtime-deps, ≤12 000 linjer kjerne-Go, binær <30 MB, `statu
 - **Prioritet:** P0
 - **Estimat:** L
 - **Avhenger av:** M0-09
-- **Spek:** `exec.CommandContext` med `Setpgid`, `cmd.Cancel`=SIGTERM til `-pgid`, `WaitDelay`=kill_grace (05 §6.5). Obligatorisk timeout (default 1 t, hardt systemtak — 08 §3.2). Miljøkontrakt fra SYNTESE §4.5 (deny-by-default baseline, `PULSEQ_*` inkl. `PULSEQ_IDEMPOTENCY_KEY`). Exit 0/75/>128-semantikk. `os.Root` for spec-styrte stier (08 T11).
+- **Spek:** `exec.CommandContext` med `Setpgid`, `cmd.Cancel`=SIGTERM til `-pgid`, `WaitDelay`=kill_grace (05 §6.5). Obligatorisk timeout (default 1 t, hardt systemtak — 08 §3.2). Miljøkontrakt fra SYNTESE §4.5 (deny-by-default baseline, `PACEQ_*` inkl. `PACEQ_IDEMPOTENCY_KEY`). Exit 0/75/>128-semantikk. `os.Root` for spec-styrte stier (08 T11).
   Akseptanse:
   - Zombie-test: steg spawner barnebarn som ignorerer SIGTERM → hele gruppen død etter cancel (05 §11).
   - fakecmd-testbinær i `testdata/` (sov, feil, ignorer SIGTERM, spawn barnebarn).
@@ -277,7 +278,7 @@ Budsjetter: ≤8 runtime-deps, ≤12 000 linjer kjerne-Go, binær <30 MB, `statu
 - **Avhenger av:** M1-06
 - **Spek:** `$STATE/logs/<yyyy-mm-dd>/<run_id>/<step>.<attempt>.ndjson`; linjer `{ts,stream,seq,line}`; kvote 16 MiB/forsøk med head(25 %)/tail(75 %)-trunkering + markørlinje; `error_tail` ~4 KiB til steps-raden ved terminering; `log_path/log_bytes/log_truncated` i DB. Daemonen skriver (jobben får pipe); 0600/0700.
   Akseptanse:
-  - `pulseq logs <run> [--step] [-f]` fungerer; trunkering detekterbar via `seq`.
+  - `paceq logs <run> [--step] [-f]` fungerer; trunkering detekterbar via `seq`.
   - Se 06-sre-observabilitet.md §3.2 og SYNTESE §3.9.
 
 ### [M1-08] Engine: sekvensiell steg-utføring
@@ -309,7 +310,7 @@ Budsjetter: ≤8 runtime-deps, ≤12 000 linjer kjerne-Go, binær <30 MB, `statu
 - **Prioritet:** P0
 - **Estimat:** M
 - **Avhenger av:** M1-08, M1-07
-- **Spek:** `pulseq run <job> [--param k=v] [--wait]` (in-process executor, ingen daemon nødvendig — femminutters-opplevelsen 03 §9.2); `runs list/show`, `logs`, grunn-`status`. Exit 5 = jobben feilet vs 1 = pulseq feilet (03 §7.2). Run-ID prefiks-oppslag som git. `--json` overalt.
+- **Spek:** `paceq run <job> [--param k=v] [--wait]` (in-process executor, ingen daemon nødvendig — femminutters-opplevelsen 03 §9.2); `runs list/show`, `logs`, grunn-`status`. Exit 5 = jobben feilet vs 1 = paceq feilet (03 §7.2). Run-ID prefiks-oppslag som git. `--json` overalt.
   Akseptanse:
   - `go install` → `init` → `run hei` under 3 min uten daemon (09 §6.1).
 
@@ -340,7 +341,7 @@ Budsjetter: ≤8 runtime-deps, ≤12 000 linjer kjerne-Go, binær <30 MB, `statu
 
 ### Milepæl M2 — Daemon og schedules
 
-### [M2-01] pulseq serve: daemon-livssyklus
+### [M2-01] paceq serve: daemon-livssyklus
 - **Epic:** Daemon & schedules
 - **Milepæl:** M2
 - **Labels:** area:engine, type:feature
@@ -416,7 +417,7 @@ Budsjetter: ≤8 runtime-deps, ≤12 000 linjer kjerne-Go, binær <30 MB, `statu
 - **Prioritet:** P0
 - **Estimat:** L
 - **Avhenger av:** M2-06, M0-10
-- **Spek:** Idempotent sekvens (forenklet R0–R11): boot_id-sjekk (endret ⇒ alle aktive attempts beviselig døde); `/proc`-sweep etter prosesser med `PULSEQ_RUN_ID` i environ som ikke matcher aktiv run — verifiser pid-starttid før drap av pgid (02 R3/R9); utløpte leases → reaper-logikk; hengende ticks → error; pending schedule-ticks re-materialiseres (idempotent via run_key); gap-deteksjon: `outages`-rad + syntetiske `missed`-ticks med `TICK_MISSED_DAEMON_DOWN` (06 §7.3).
+- **Spek:** Idempotent sekvens (forenklet R0–R11): boot_id-sjekk (endret ⇒ alle aktive attempts beviselig døde); `/proc`-sweep etter prosesser med `PACEQ_RUN_ID` i environ som ikke matcher aktiv run — verifiser pid-starttid før drap av pgid (02 R3/R9); utløpte leases → reaper-logikk; hengende ticks → error; pending schedule-ticks re-materialiseres (idempotent via run_key); gap-deteksjon: `outages`-rad + syntetiske `missed`-ticks med `TICK_MISSED_DAEMON_DOWN` (06 §7.3).
   Akseptanse:
   - Daemon stoppet 30 min → outage-rad + korrekte missed-ticks innen 10 s etter oppstart (06 SLO 5).
   - Se 02-palitelighetsingenioren.md §5.9.
@@ -428,7 +429,7 @@ Budsjetter: ≤8 runtime-deps, ≤12 000 linjer kjerne-Go, binær <30 MB, `statu
 - **Prioritet:** P0
 - **Estimat:** L
 - **Avhenger av:** M2-01, M1-10
-- **Spek:** JSON over unix-socket (`$RUNTIME_DIR/pulseq.sock`, 0660); ingen TCP. CLI-oppløsning: lesing alltid direkte RO-SQLite (virker med daemon nede — hardt krav for explain); skriving via socket når daemon svarer, ellers flock + direkte gjennom samme store-kode. `--socket none` tvinger direktemodus. Kontraktstest: hele testscript-suiten kjøres i BEGGE moduser (03 risiko 6).
+- **Spek:** JSON over unix-socket (`$RUNTIME_DIR/paceq.sock`, 0660); ingen TCP. CLI-oppløsning: lesing alltid direkte RO-SQLite (virker med daemon nede — hardt krav for explain); skriving via socket når daemon svarer, ellers flock + direkte gjennom samme store-kode. `--socket none` tvinger direktemodus. Kontraktstest: hele testscript-suiten kjøres i BEGGE moduser (03 risiko 6).
   Akseptanse:
   - Identisk output i begge moduser; daemon nede ⇒ lesekommandoer virker med «(daemon nede)»-markør.
   - Se 03-cli-designeren.md §10.4.
@@ -462,9 +463,9 @@ Budsjetter: ≤8 runtime-deps, ≤12 000 linjer kjerne-Go, binær <30 MB, `statu
 - **Prioritet:** P1
 - **Estimat:** M
 - **Avhenger av:** M2-01
-- **Spek:** `deploy/pulseq.service`: Type=notify, watchdog (ping kun når kontroll-loopen faktisk tikker — 06 §7.2), StateDirectory/RuntimeDirectory, hardening-direktiver + kommentert avslappet variant (sandkasse arves av jobber — 06 risiko 10). sd_notify-protokollen håndskrevet (~30 linjer, ingen dep). `pulseq install-service`-hjelper.
+- **Spek:** `deploy/paceq.service`: Type=notify, watchdog (ping kun når kontroll-loopen faktisk tikker — 06 §7.2), StateDirectory/RuntimeDirectory, hardening-direktiver + kommentert avslappet variant (sandkasse arves av jobber — 06 risiko 10). sd_notify-protokollen håndskrevet (~30 linjer, ingen dep). `paceq install-service`-hjelper.
   Akseptanse:
-  - `systemctl start pulseq` → READY etter migrasjoner; watchdog-timeout betyr «tar ikke beslutninger».
+  - `systemctl start paceq` → READY etter migrasjoner; watchdog-timeout betyr «tar ikke beslutninger».
   - Se 06-sre-observabilitet.md §7.2.
 
 ---
@@ -489,7 +490,7 @@ Budsjetter: ≤8 runtime-deps, ≤12 000 linjer kjerne-Go, binær <30 MB, `statu
 - **Prioritet:** P0
 - **Estimat:** L
 - **Avhenger av:** M1-06, M2-01
-- **Spek:** Per-sensor serialisering (aldri parallell med seg selv), semafor N=4 globalt; kontrakt fra SYNTESE §4.4: JSON på stdin + `PULSEQ_*`-env, ett JSON-objekt på stdout; timeout → drap av prosessgruppe → tick=error; stdout-tak 1 MiB; stderr-utdrag 4 KiB lagres på ticken. Treg sensor blokkerer aldri scheduler-loopen (04 §1.1-lærdommen om Dagsters 60 s-felle).
+- **Spek:** Per-sensor serialisering (aldri parallell med seg selv), semafor N=4 globalt; kontrakt fra SYNTESE §4.4: JSON på stdin + `PACEQ_*`-env, ett JSON-objekt på stdout; timeout → drap av prosessgruppe → tick=error; stdout-tak 1 MiB; stderr-utdrag 4 KiB lagres på ticken. Treg sensor blokkerer aldri scheduler-loopen (04 §1.1-lærdommen om Dagsters 60 s-felle).
   Akseptanse:
   - Hengende sensor drepes og påvirker ikke andre sensorer; kontrakten dokumentert i referansedokument.
 
@@ -617,7 +618,7 @@ Budsjetter: ≤8 runtime-deps, ≤12 000 linjer kjerne-Go, binær <30 MB, `statu
 - **Prioritet:** P1
 - **Estimat:** M
 - **Avhenger av:** M1-06, M4-02
-- **Spek:** Steget skriver NDJSON til `$PULSEQ_OUTPUT` (artefaktreferanser: name/uri/size/checksum + videreførte params); Pulseq leser etter exit → `artifacts`-rader; `$PULSEQ_INPUTS` = flettet JSON fra oppstrøms steg. Referanser, aldri innhold; ingen lineage-graf (04 §6: hold porten til asset-modellen lukket).
+- **Spek:** Steget skriver NDJSON til `$PACEQ_OUTPUT` (artefaktreferanser: name/uri/size/checksum + videreførte params); paceq leser etter exit → `artifacts`-rader; `$PACEQ_INPUTS` = flettet JSON fra oppstrøms steg. Referanser, aldri innhold; ingen lineage-graf (04 §6: hold porten til asset-modellen lukket).
   Akseptanse:
   - Filsti fra steg A tilgjengelig i steg B uten avtale ut av båndet (09 US-13).
 
@@ -647,7 +648,7 @@ Budsjetter: ≤8 runtime-deps, ≤12 000 linjer kjerne-Go, binær <30 MB, `statu
 
 ### Milepæl M5 — Explain, import og v0.1
 
-### [M5-01] pulseq explain
+### [M5-01] paceq explain
 - **Epic:** Forklarbarhet
 - **Milepæl:** M5
 - **Labels:** area:observability, type:feature
@@ -669,18 +670,18 @@ Budsjetter: ≤8 runtime-deps, ≤12 000 linjer kjerne-Go, binær <30 MB, `statu
   Akseptanse:
   - Scenariolisten er komplett mot reason-katalogen; ny kode uten scenario feiler review-sjekk.
 
-### [M5-03] pulseq status
+### [M5-03] paceq status
 - **Epic:** Forklarbarhet
 - **Milepæl:** M5
 - **Labels:** area:cli, type:feature
 - **Prioritet:** P0
 - **Estimat:** M
 - **Avhenger av:** M5-01
-- **Spek:** Én linje per jobb: siste utfall, tidspunkt, varighet, neste kjøring; exit ≠ 0 ved ubekreftet feil (MOTD-/overvåkingsbruk — 09 US-04); hint-linje ved avvik: «kjørte ikke i natt — kjør `pulseq explain …`» (09 R12). Krav: <100 ms med 100 jobber / 100 000 historikkrader (partial-indekser + EXPLAIN QUERY PLAN-assertions).
+- **Spek:** Én linje per jobb: siste utfall, tidspunkt, varighet, neste kjøring; exit ≠ 0 ved ubekreftet feil (MOTD-/overvåkingsbruk — 09 US-04); hint-linje ved avvik: «kjørte ikke i natt — kjør `paceq explain …`» (09 R12). Krav: <100 ms med 100 jobber / 100 000 historikkrader (partial-indekser + EXPLAIN QUERY PLAN-assertions).
   Akseptanse:
   - Ytelsestest med generert datasett i CI.
 
-### [M5-04] pulseq import crontab
+### [M5-04] paceq import crontab
 - **Epic:** Migrering fra cron
 - **Milepæl:** M5
 - **Labels:** area:cli, type:feature
@@ -699,7 +700,7 @@ Budsjetter: ≤8 runtime-deps, ≤12 000 linjer kjerne-Go, binær <30 MB, `statu
 - **Prioritet:** P0
 - **Estimat:** L
 - **Avhenger av:** M1-02
-- **Spek:** Janitor: batchet sletting (`DELETE … LIMIT 500`, pause mellom); policyer: logger 14 d, runs 90 d MEN minst 50 siste per job, skip-ticks 7 d, run_keys 365 d (06 §9.4, 07 §6.2); `incremental_vacuum(2000)` nattlig; `wal_checkpoint(TRUNCATE)` ved stille; `pulseq prune` manuell. Backup: `VACUUM INTO` nattlig med `quick_check`-verifisering av kopien + backup-alder i doctor (07 §6.5); full `VACUUM` kun bak eksplisitt flagg. `pulseq export run <id>` → tar.gz (bevar bevis før retention — 06 §9.4).
+- **Spek:** Janitor: batchet sletting (`DELETE … LIMIT 500`, pause mellom); policyer: logger 14 d, runs 90 d MEN minst 50 siste per job, skip-ticks 7 d, run_keys 365 d (06 §9.4, 07 §6.2); `incremental_vacuum(2000)` nattlig; `wal_checkpoint(TRUNCATE)` ved stille; `paceq prune` manuell. Backup: `VACUUM INTO` nattlig med `quick_check`-verifisering av kopien + backup-alder i doctor (07 §6.5); full `VACUUM` kun bak eksplisitt flagg. `paceq export run <id>` → tar.gz (bevar bevis før retention — 06 §9.4).
   Akseptanse:
   - Retention holder aldri skrivelåsen >50 ms (målt); backup uten verifisering = feilet backup.
 
@@ -710,7 +711,7 @@ Budsjetter: ≤8 runtime-deps, ≤12 000 linjer kjerne-Go, binær <30 MB, `statu
 - **Prioritet:** P1
 - **Estimat:** M
 - **Avhenger av:** M2-08
-- **Spek:** Håndskrevet Prometheus-tekstformat (ingen client_golang — SYNTESE §3.17) på socket + valgfri 127.0.0.1-bind. Kjernesett: `last_success_timestamp` + `freshness_sla` (fra spec `expected_within`), tick_lag, runs_by_state, lease_reclaims, wal/db-bytes, writer-ventetid. Forbud mot ID-labels (06 §6.4). `deploy/pulseq-alerts.yml` med generiske regler (JobStale, TickStalled, WALGrowth …).
+- **Spek:** Håndskrevet Prometheus-tekstformat (ingen client_golang — SYNTESE §3.17) på socket + valgfri 127.0.0.1-bind. Kjernesett: `last_success_timestamp` + `freshness_sla` (fra spec `expected_within`), tick_lag, runs_by_state, lease_reclaims, wal/db-bytes, writer-ventetid. Forbud mot ID-labels (06 §6.4). `deploy/paceq-alerts.yml` med generiske regler (JobStale, TickStalled, WALGrowth …).
   Akseptanse:
   - Kardinalitetstest: 1 000 jobber → serieantall under grense (06 §6.4).
   - Se 06-sre-observabilitet.md §6.2–6.3.
@@ -722,7 +723,7 @@ Budsjetter: ≤8 runtime-deps, ≤12 000 linjer kjerne-Go, binær <30 MB, `statu
 - **Prioritet:** P0
 - **Estimat:** M
 - **Avhenger av:** M0-02
-- **Spek:** GoReleaser: statiske binærer linux/amd64+arm64 (+darwin), `-trimpath`, checksums, reproduserbart bygg verifisert ved dobbeltbygg i CI (08 §5); versjon i `pulseq version --json`; CHANGELOG for mennesker (09 §9.3). cosign/SBOM utsettes til M8.
+- **Spek:** GoReleaser: statiske binærer linux/amd64+arm64 (+darwin), `-trimpath`, checksums, reproduserbart bygg verifisert ved dobbeltbygg i CI (08 §5); versjon i `paceq version --json`; CHANGELOG for mennesker (09 §9.3). cosign/SBOM utsettes til M8.
   Akseptanse:
   - Tagget commit → ferdige artefakter automatisk.
 
@@ -746,7 +747,7 @@ Budsjetter: ≤8 runtime-deps, ≤12 000 linjer kjerne-Go, binær <30 MB, `statu
 - **Avhenger av:** M5-01, M5-02, M5-03, M5-04, M5-05, M5-06, M5-07, M5-08, M4-07
 - **Spek:** Tag v0.1 «Cron som husker». Demosetning: «jeg spør hvorfor backupen ikke gikk i natt, og den svarer» (09 §8).
   Akseptanse (kill-kriterium K1 fra 10 §7):
-  - ≥3 av utviklerens egne, ekte jobber kjører i produksjon på Pulseq med crontab-linjene deaktivert.
+  - ≥3 av utviklerens egne, ekte jobber kjører i produksjon på paceq med crontab-linjene deaktivert.
   - Hvis nei: STOPP og re-evaluer scope før M6 (10: «du bygger noe du selv ikke vil bruke»).
 
 ---
@@ -772,9 +773,9 @@ Budsjetter: ≤8 runtime-deps, ≤12 000 linjer kjerne-Go, binær <30 MB, `statu
 - **Prioritet:** P1
 - **Estimat:** M
 - **Avhenger av:** M5-04, M2-05
-- **Spek:** `--shadow`: hele planleggeren kjører, hver tick registreres i historikken, INGENTING utføres. `pulseq shadow report`: diff mot faktisk cron-oppførsel, avdekk tidssonefeil og overlapp brukeren ikke visste om («wow»-øyeblikk 3 — 09 §5.2).
+- **Spek:** `--shadow`: hele planleggeren kjører, hver tick registreres i historikken, INGENTING utføres. `paceq shadow report`: diff mot faktisk cron-oppførsel, avdekk tidssonefeil og overlapp brukeren ikke visste om («wow»-øyeblikk 3 — 09 §5.2).
   Akseptanse:
-  - Rapporten viser per jobb: samsvar, avvik med årsak, overlapp Pulseq ville stoppet.
+  - Rapporten viser per jobb: samsvar, avvik med årsak, overlapp paceq ville stoppet.
 
 ### [M6-03] cutover og rollback
 - **Epic:** Migrering fra cron
@@ -783,7 +784,7 @@ Budsjetter: ≤8 runtime-deps, ≤12 000 linjer kjerne-Go, binær <30 MB, `statu
 - **Prioritet:** P1
 - **Estimat:** S
 - **Avhenger av:** M6-02
-- **Spek:** `pulseq cutover`: kommenterer ut importerte crontab-linjer med jobbnavn-referanse, backup til `~/.pulseq/crontab.backup.<dato>`; `--rollback` legger tilbake. Prinsipp: brukeren kan alltid gå tilbake på ett minutt (09 §5.3).
+- **Spek:** `paceq cutover`: kommenterer ut importerte crontab-linjer med jobbnavn-referanse, backup til `~/.paceq/crontab.backup.<dato>`; `--rollback` legger tilbake. Prinsipp: brukeren kan alltid gå tilbake på ett minutt (09 §5.3).
   Akseptanse:
   - cutover + rollback er idempotente og tapsfrie (testet mot korpus).
 
@@ -794,7 +795,7 @@ Budsjetter: ≤8 runtime-deps, ≤12 000 linjer kjerne-Go, binær <30 MB, `statu
 - **Prioritet:** P1
 - **Estimat:** L
 - **Avhenger av:** M2-07
-- **Spek:** `pulseq exec`-shim (intern, samme binær): egen pgid, watchdog-pipe fra daemon (EOF ⇒ shim dreper prosessgruppen — foreldreløse umulige ved daemon-død), skriver resultatfil til `spool/attempts/<id>.json` med fsync+rename FØR exit (lukker krasjvindu W8: barn ferdig, resultat ikke committet ⇒ unødig gjenkjøring). Reconciler konsumerer spool ved oppstart.
+- **Spek:** `paceq exec`-shim (intern, samme binær): egen pgid, watchdog-pipe fra daemon (EOF ⇒ shim dreper prosessgruppen — foreldreløse umulige ved daemon-død), skriver resultatfil til `spool/attempts/<id>.json` med fsync+rename FØR exit (lukker krasjvindu W8: barn ferdig, resultat ikke committet ⇒ unødig gjenkjøring). Reconciler konsumerer spool ved oppstart.
   Akseptanse:
   - Krasjtest W8: daemon SIGKILL etter steg-exit → restart committer utfall fra spool, ingen gjenkjøring.
   - Se 02-palitelighetsingenioren.md §5.6 (hele designet).
@@ -817,7 +818,7 @@ Budsjetter: ≤8 runtime-deps, ≤12 000 linjer kjerne-Go, binær <30 MB, `statu
 - **Prioritet:** P1
 - **Estimat:** M
 - **Avhenger av:** M2-07
-- **Spek:** `pulseq fsck [--repair]`: invariantene fra SYNTESE §4.6 som SQL (subset av 02 I1–I16), kjøres ved oppstart + timeplan; kritiske brudd ⇒ nekt start uten operatørbekreftelse. `doctor` komplett: PRAGMA-verdier, NTP-avvik, tzdata-versjon, backup-alder+verifisering, spool-restanse, foreldreløse prosesser, effektiv systemd-sandkasse, jobber uten freshness-SLA (06 SLO 6).
+- **Spek:** `paceq fsck [--repair]`: invariantene fra SYNTESE §4.6 som SQL (subset av 02 I1–I16), kjøres ved oppstart + timeplan; kritiske brudd ⇒ nekt start uten operatørbekreftelse. `doctor` komplett: PRAGMA-verdier, NTP-avvik, tzdata-versjon, backup-alder+verifisering, spool-restanse, foreldreløse prosesser, effektiv systemd-sandkasse, jobber uten freshness-SLA (06 SLO 6).
   Akseptanse:
   - Hvert doctor-funn har tiltaksforslag; fsck-brudd genererer events.
 
@@ -888,7 +889,7 @@ Budsjetter: ≤8 runtime-deps, ≤12 000 linjer kjerne-Go, binær <30 MB, `statu
 - **Prioritet:** P2
 - **Estimat:** M
 - **Avhenger av:** M2-05
-- **Spek:** `pulseq backfill <schedule> --from --to [--max-parallel N] [--dry-run]`: setter inn historiske ticks i `schedule_ticks`-journalen (idempotent via UNIQUE), materialiserer runs med `origin=backfill`, respekterer concurrency; dry-run viser hvilke ticks som kjøres vs allerede har run (03 §6.4). Bevisst avgrenset — aldri Airflows catchup-storm (04 §6).
+- **Spek:** `paceq backfill <schedule> --from --to [--max-parallel N] [--dry-run]`: setter inn historiske ticks i `schedule_ticks`-journalen (idempotent via UNIQUE), materialiserer runs med `origin=backfill`, respekterer concurrency; dry-run viser hvilke ticks som kjøres vs allerede har run (03 §6.4). Bevisst avgrenset — aldri Airflows catchup-storm (04 §6).
   Akseptanse:
   - Backfill av to uker med `--max-parallel 2` køer riktig og dobbeltkjører aldri eksisterende ticks.
 
@@ -899,7 +900,7 @@ Budsjetter: ≤8 runtime-deps, ≤12 000 linjer kjerne-Go, binær <30 MB, `statu
 - **Prioritet:** P3
 - **Estimat:** M
 - **Avhenger av:** M5-04
-- **Spek:** `pulseq import systemd`: les `*.timer`+`*.service`, oversett OnCalendar/Persistent/RandomizedDelaySec/ExecStart/WorkingDirectory/Environment (09 §5.4). Lav prioritet — kuttes først ved tidspress.
+- **Spek:** `paceq import systemd`: les `*.timer`+`*.service`, oversett OnCalendar/Persistent/RandomizedDelaySec/ExecStart/WorkingDirectory/Environment (09 §5.4). Lav prioritet — kuttes først ved tidspress.
   Akseptanse:
   - Standard timer-par oversettes korrekt; utolkbart beholdes med TODO.
 
@@ -971,7 +972,7 @@ Budsjetter: ≤8 runtime-deps, ≤12 000 linjer kjerne-Go, binær <30 MB, `statu
 - **Avhenger av:** M5-08
 - **Spek:** Fire adskilte kategorier per 09 §9.2: tutorials (crontab-5-min, første sensor, første DAG med bevisst feil), how-tos (varsling, overlappsvern, catch-up, feilsøking, backup, proxy), referanse (skjema felt-for-felt, CLI autogenerert, sensor-kontrakt, tilstandsmaskin tegnet, alle reason-koder), forklaring (garantier, cursor vs run_key, hvorfor SQLite, ÆRLIG sammenligning cron/systemd/Dagu/Airflow). Alle eksempler kjøres i CI.
   Akseptanse:
-  - Feilsøkingssiden treffer søk på «pulseq job did not run»; engelsk språk.
+  - Feilsøkingssiden treffer søk på «paceq job did not run»; engelsk språk.
 
 ### [M8-06] Sikkerhetsgjennomgang og fuzz-komplettering
 - **Epic:** Stabilisering
@@ -991,7 +992,7 @@ Budsjetter: ≤8 runtime-deps, ≤12 000 linjer kjerne-Go, binær <30 MB, `statu
 - **Prioritet:** P0
 - **Estimat:** M
 - **Avhenger av:** M0-04
-- **Spek:** Utfall av M0-04 gjennomføres FØR v1.0-publisering: enten (a) nytt navn — rename av modulsti, binær, docs, domene; eller (b) «pulseq» bekreftes — da dokumenteres kollisjonsrisikoen i README/FAQ og SEO-tiltak (entydig tagline, «pulseq orchestrator» som søkefrase) iverksettes.
+- **Spek:** Renamen av modulsti, binær og docs er gjort i M0 (#93). Igjen her står bare det som ikke er kode: kjøp av paceq.dev, reservasjon av GitHub-org og pakkenavn, og SEO-tiltak (entydig tagline, «paceq orchestrator» som søkefrase).
   Akseptanse:
   - Ingen brukervendt flate har uavklart navn ved v1.0 (09 R5, 10 F16).
 
@@ -1015,4 +1016,4 @@ Budsjetter: ≤8 runtime-deps, ≤12 000 linjer kjerne-Go, binær <30 MB, `statu
 
 ## F. Post-1.0 (utenfor denne planen, krever egne designrunder)
 
-Privilegieseparasjon (`pulseq-exec`/Landlock/per-jobb-uid) · HTTPS-API + tokens + webhook-HMAC · Postgres/multi-node (endrer tillitsmodellen — 08 fase 6) · dynamisk fan-out · Litestream-integrasjonsguide · `on_daemon_restart: detach`.
+Privilegieseparasjon (`paceq-exec`/Landlock/per-jobb-uid) · HTTPS-API + tokens + webhook-HMAC · Postgres/multi-node (endrer tillitsmodellen — 08 fase 6) · dynamisk fan-out · Litestream-integrasjonsguide · `on_daemon_restart: detach`.
