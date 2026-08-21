@@ -783,3 +783,72 @@ func TestApplyOneSkipsARebuildAnotherProcessApplied(t *testing.T) {
 	}
 	assertForeignKeysOn(t, stale)
 }
+
+// TestMigrateRepairsAUserVersionBehindTheLedger covers the fence drifting below
+// a complete ledger, which is what a restore from a copy taken mid upgrade
+// leaves behind. Nothing is pending, so nothing used to put the fence back, and
+// the next old binary would then happily write to a database it cannot read.
+func TestMigrateRepairsAUserVersionBehindTheLedger(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	if err := s.migrateFS(ctx, twoMigrations); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	before, err := s.appliedMigrations(ctx)
+	if err != nil {
+		t.Fatalf("read applied migrations: %v", err)
+	}
+	if _, err := s.w.ExecContext(ctx, "PRAGMA user_version = 0"); err != nil {
+		t.Fatalf("drift the fence: %v", err)
+	}
+
+	if err := s.migrateFS(ctx, twoMigrations); err != nil {
+		t.Fatalf("migrate over a drifted fence: %v", err)
+	}
+	if got := userVersion(t, s); got != 2 {
+		t.Errorf("user_version is %d, want the ledger's highest version 2", got)
+	}
+
+	after, err := s.appliedMigrations(ctx)
+	if err != nil {
+		t.Fatalf("read applied migrations: %v", err)
+	}
+	if !slices.Equal(before, after) {
+		t.Errorf("the repair changed the ledger: %v became %v", before, after)
+	}
+}
+
+// TestMigrateRefusesAnUnknownAppliedMigrationWithoutWriting is the same drift
+// seen by a binary that is too old. The refusal has to come before any write,
+// or an old binary touches a database it has just decided it must not touch.
+func TestMigrateRefusesAnUnknownAppliedMigrationWithoutWriting(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	// A ledger written by a newer binary, with the fence drifted back to 0 so
+	// the version check cannot be what answers.
+	_, err := s.w.ExecContext(ctx, `CREATE TABLE schema_migrations (
+	version    INTEGER PRIMARY KEY,
+	name       TEXT    NOT NULL,
+	checksum   TEXT    NOT NULL,
+	applied_at INTEGER NOT NULL
+) STRICT`)
+	if err != nil {
+		t.Fatalf("create the ledger: %v", err)
+	}
+	if _, err := s.w.ExecContext(ctx,
+		"INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (999, 'future', 'x', 1)"); err != nil {
+		t.Fatalf("insert ledger row: %v", err)
+	}
+
+	if err := s.migrateFS(ctx, twoMigrations); err == nil {
+		t.Fatal("migrate accepted a ledger from a newer binary")
+	} else if !strings.Contains(err.Error(), "0999") {
+		t.Errorf("error %q does not name the unknown migration", err)
+	}
+
+	if tableExists(t, s, "schema_migration_lock") {
+		t.Error("migrate created its lock table before refusing, so it wrote to a database it refused")
+	}
+}

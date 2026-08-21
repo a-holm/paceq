@@ -99,13 +99,16 @@ func (s *Store) migrateFS(ctx context.Context, fsys fs.FS) error {
 	if err != nil {
 		return err
 	}
-	// The version fence runs before anything is written, so an old binary that
-	// meets a newer database leaves that database exactly as it found it.
-	if err := s.checkUserVersion(ctx, maxVersion(all)); err != nil {
+	// Every check that can refuse runs before anything is written, so a binary
+	// that decides it must not touch this database leaves it exactly as it
+	// found it.
+	current, err := s.readUserVersion(ctx)
+	if err != nil {
 		return err
 	}
-	if err := s.ensureMigrationTables(ctx); err != nil {
-		return err
+	if maxKnown := maxVersion(all); current > maxKnown {
+		return fmt.Errorf("database schema version is %d, this paceq build knows at most %d: "+
+			"upgrade paceq, or restore the backup taken before the upgrade", current, maxKnown)
 	}
 	applied, err := s.appliedMigrations(ctx)
 	if err != nil {
@@ -115,11 +118,21 @@ func (s *Store) migrateFS(ctx context.Context, fsys fs.FS) error {
 		return err
 	}
 	if len(pending(all, applied)) == 0 {
+		if highest := highestApplied(applied); current < highest {
+			// The fence drifted below a complete ledger, which a copy taken
+			// mid upgrade leaves behind. Nothing is pending, so this is the
+			// only place that can put it back, and an old binary meeting this
+			// database has to be stopped by the fence rather than by luck.
+			return s.repairUserVersion(ctx, highest)
+		}
 		// The common start: nothing to do, so nothing is written and no lock is
 		// taken. This is what makes Migrate cheap enough to call every time.
 		return nil
 	}
 
+	if err := s.ensureMigrationTables(ctx); err != nil {
+		return err
+	}
 	if err := s.lockMigrations(ctx); err != nil {
 		return err
 	}
@@ -264,19 +277,33 @@ func maxVersion(all []migration) int {
 	return all[len(all)-1].Version
 }
 
-// checkUserVersion refuses a database whose schema is newer than this build.
-// Writing to it would mean writing rows a later schema defines differently, so
-// the process stops instead, naming both versions.
-func (s *Store) checkUserVersion(ctx context.Context, maxKnown int) error {
+// readUserVersion reads the schema version fence. A database newer than this
+// build is refused on it: writing to one would mean writing rows a later schema
+// defines differently.
+func (s *Store) readUserVersion(ctx context.Context) (int, error) {
 	var current int
 	if err := s.w.QueryRowContext(ctx, "PRAGMA user_version").Scan(&current); err != nil {
-		return fmt.Errorf("read user_version: %w", err)
+		return 0, fmt.Errorf("read user_version: %w", err)
 	}
-	if current > maxKnown {
-		return fmt.Errorf("database schema version is %d, this paceq build knows at most %d: "+
-			"upgrade paceq, or restore the backup taken before the upgrade", current, maxKnown)
+	return current, nil
+}
+
+// repairUserVersion writes the fence back up to the ledger's highest version.
+func (s *Store) repairUserVersion(ctx context.Context, version int) error {
+	return s.withTx(ctx, func(tx *sql.Tx) error {
+		return setUserVersion(ctx, tx, version)
+	})
+}
+
+// highestApplied is the newest version the ledger holds, 0 for an empty one.
+func highestApplied(applied []appliedMigration) int {
+	highest := 0
+	for _, a := range applied {
+		if a.Version > highest {
+			highest = a.Version
+		}
 	}
-	return nil
+	return highest
 }
 
 // checkApplied compares the ledger against the files this binary carries. Both
@@ -289,11 +316,8 @@ func checkApplied(all []migration, applied []appliedMigration) error {
 		byVersion[m.Version] = m
 	}
 
-	highestApplied := 0
+	highest := highestApplied(applied)
 	for _, a := range applied {
-		if a.Version > highestApplied {
-			highestApplied = a.Version
-		}
 		m, ok := byVersion[a.Version]
 		if !ok {
 			return fmt.Errorf("migration %04d_%s is applied in the database but is not in this "+
@@ -307,9 +331,9 @@ func checkApplied(all []migration, applied []appliedMigration) error {
 	}
 
 	for _, m := range pending(all, applied) {
-		if m.Version < highestApplied {
+		if m.Version < highest {
 			return fmt.Errorf("migration %s is not applied while %04d is: a migration may not be "+
-				"numbered below one the database has already run", m.File, highestApplied)
+				"numbered below one the database has already run", m.File, highest)
 		}
 	}
 	return nil
@@ -457,6 +481,13 @@ func (s *Store) ensureMigrationTables(ctx context.Context) error {
 
 // appliedMigrations reads the ledger, ordered by version.
 func (s *Store) appliedMigrations(ctx context.Context) ([]appliedMigration, error) {
+	// Reading the ledger may not create it. Every refusal is decided on what
+	// the ledger holds, and those refusals come before the first write.
+	exists, err := s.hasTable(ctx, "schema_migrations")
+	if err != nil || !exists {
+		return nil, err
+	}
+
 	rows, err := s.w.QueryContext(ctx,
 		"SELECT version, name, checksum, applied_at FROM schema_migrations ORDER BY version")
 	if err != nil {
@@ -623,4 +654,14 @@ func checkForeignKeys(ctx context.Context, tx *sql.Tx) error {
 		return fmt.Errorf("foreign key check: %w", err)
 	}
 	return nil
+}
+
+// hasTable reports whether the database holds a table of this name.
+func (s *Store) hasTable(ctx context.Context, name string) (bool, error) {
+	var count int
+	if err := s.w.QueryRowContext(ctx,
+		"SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = ?", name).Scan(&count); err != nil {
+		return false, fmt.Errorf("look up table %s: %w", name, err)
+	}
+	return count > 0, nil
 }
