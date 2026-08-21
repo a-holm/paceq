@@ -33,6 +33,21 @@ if [ -n "$leaks" ]; then
 	fail "cgo leak for $goos/$goarch: these packages need cgo: $(printf '%s' "$leaks" | tr '\n' ' ')"
 fi
 
+# The same probe over the whole module. The product binary reaches only what it
+# imports, so a driver or a platform specific package that needs cgo stays
+# invisible until something links it.
+module_leaks=$(CGO_ENABLED=1 GOOS="$goos" GOARCH="$goarch" go list -deps \
+	-f '{{if and .CgoFiles (not .Standard)}}{{.ImportPath}}{{end}}' ./...)
+if [ -n "$module_leaks" ]; then
+	fail "cgo leak for $goos/$goarch outside cmd/paceq: these packages need cgo: $(printf '%s' "$module_leaks" | tr '\n' ' ')"
+fi
+
+# Compile every package, not just the ones the binary imports. internal/store
+# and its build tagged filesystem check reach a cross build no other way, so
+# without this a package that does not build for darwin or windows lands
+# unnoticed.
+CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build ./...
+
 CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath -o "$out" ./cmd/paceq
 
 cgo_setting=$(go version -m "$out" | awk '$1 == "build" && $2 ~ /^CGO_ENABLED=/ { print $2 }')
