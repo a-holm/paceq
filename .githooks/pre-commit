@@ -1,0 +1,24 @@
+#!/bin/sh
+# Fast gate. Anything slower belongs in pre-push.
+set -e
+
+if ! command -v gofumpt >/dev/null 2>&1; then
+	echo "pre-commit: gofumpt not found. Install it with: go install mvdan.cc/gofumpt@latest" >&2
+	exit 1
+fi
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR -- '*.go')
+if [ -n "$staged" ]; then
+	unformatted=$(printf '%s\n' "$staged" | xargs gofumpt -l)
+	if [ -n "$unformatted" ]; then
+		echo "pre-commit: these files are not gofumpt clean:" >&2
+		printf '%s\n' "$unformatted" >&2
+		echo "pre-commit: run 'make fmt' and stage the result." >&2
+		exit 1
+	fi
+fi
+
+if ! go vet ./...; then
+	echo "pre-commit: go vet failed." >&2
+	exit 1
+fi
