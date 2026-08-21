@@ -39,7 +39,8 @@ This list is a contract (plans: 00 §4.11, 10 §3, 09 §3.3). None of it is "lat
 - Multi-tenancy, users, roles, RBAC.
 - Container executors (Docker or Kubernetes). A step can run `docker run`; that is enough.
 - Sub-second scheduling.
-- A built-in time series database, log search engine or alertmanager. paceq writes Prometheus text format and runs a program on failure.
+- Built-in secrets management. Use environment variables, a systemd `EnvironmentFile`, or `LoadCredential`. paceq stores references to secrets, never the secrets themselves.
+- A built-in time series database, log search engine, alertmanager or tracing stack. paceq writes Prometheus text format and runs a program on failure.
 - exactly-once. This is never promised. See [docs/guarantees.md](docs/guarantees.md).
 
 ## Hard limits inside the DAG
@@ -54,7 +55,7 @@ The DAG milestone ships static dependencies only (plans: 00 §3.1, 10 §6):
 
 ## Budgets
 
-A breach means something gets removed, not that the budget gets raised (plans: 00 §4.9, 10 §7).
+A breach means something gets removed, not that the budget gets raised. The rule is from 10 §7; the figures are from 00 §4.9, which raised 10 §7's stricter caps (5 dependencies, 8000 lines, 25 MB) when the synthesis accepted cobra as the one heavy dependency. The figures below govern. The rule is not raised again.
 
 | Budget | Cap |
 |---|---|
