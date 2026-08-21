@@ -63,12 +63,12 @@ func OpenState(ctx context.Context, dir string, opt Options) (*Store, error) {
 // left to the environment.
 func privateDatabase(dbPath string, fresh bool) error {
 	if fresh {
-		if err := os.Chmod(dbPath, lockMode); err != nil {
+		if err := os.Chmod(dbPath, DatabaseMode); err != nil {
 			return fmt.Errorf("restrict %s: %w", dbPath, err)
 		}
 		return nil
 	}
-	return checkPerm(dbPath, lockMode)
+	return CheckMode(dbPath, DatabaseMode)
 }
 
 // lockOwner reads the session row of whoever holds the state directory. It
