@@ -4,6 +4,7 @@ package cli
 
 import (
 	"context"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,36 +14,55 @@ import (
 	"github.com/a-holm/paceq/internal/store"
 )
 
-// TestMainSetsTheUmaskBeforeAnythingWrites measures the process umask through
-// its only observable effect: a file created with wide permissions comes out
-// narrow. Checking the mode of a file paceq creates would not do, because those
-// are created with an explicit mode and would pass with no umask set at all.
+// wideUmask is a mask that removes every permission bit, so no mode paceq asks
+// for survives it. It is the probe that makes the ordering visible: a file
+// created while it is still in force comes out 0000, whatever mode the caller
+// passed, and a file created after Main replaced it comes out at paceq's own
+// mode. Measuring with 0022 would prove nothing, because everything init
+// creates is created with an explicit mode narrower than that.
+const wideUmask = 0o777
+
+// TestMainSetsTheUmaskBeforeAnythingWrites is 08 section 3.9 as an ordering
+// rule: the umask is replaced before the first command runs, not somewhere on
+// the way out. The evidence is every artifact of a real run, because each one
+// carries the mask that was in force when the kernel created it.
 func TestMainSetsTheUmaskBeforeAnythingWrites(t *testing.T) {
 	dir := t.TempDir()
-	restore := setUmaskForTest(t, 0o022)
+	t.Chdir(dir)
+	// Redirected before the mask is widened: the capture file is the test's own
+	// and has nothing to do with what Main creates.
+	stdout := captureStdout(t)
+	restore := setUmaskForTest(t, wideUmask)
 	defer restore()
 
-	stdout := captureStdout(t)
-	code := Main(context.Background(), []string{"version", "-o", "json"})
+	code := Main(context.Background(), []string{"init"})
 	written := stdout()
 
 	if code != ExitOK {
-		t.Fatalf("paceq version = %d, want %d", code, ExitOK)
+		t.Fatalf("paceq init = %d, want %d: the run inherited a umask paceq should have replaced\n%s",
+			code, ExitOK, written)
 	}
-	if !strings.Contains(written, "\"version\"") {
-		t.Errorf("Main did not write the version to os.Stdout: %q", written)
+	if !strings.Contains(written, `"created"`) {
+		t.Errorf("Main did not write the report to os.Stdout: %q", written)
 	}
-
-	probe := dir + "/probe"
-	if err := os.WriteFile(probe, []byte("x"), 0o666); err != nil {
-		t.Fatalf("write %s: %v", probe, err)
-	}
-	info, err := os.Stat(probe)
-	if err != nil {
-		t.Fatalf("stat %s: %v", probe, err)
-	}
-	if got := info.Mode().Perm(); got != 0o600 {
-		t.Errorf("a file created with mode 0666 came out %#o, want 0600: Main did not set umask 0077", got)
+	for path, want := range map[string]fs.FileMode{
+		".paceq":                           store.DirMode,
+		".paceq/paceq.lock":                store.DatabaseMode,
+		".paceq/" + store.DatabaseFileName: store.DatabaseMode,
+		"jobs":                             store.DirMode,
+		"jobs/hello.yaml":                  store.DatabaseMode,
+		"paceq.yaml":                       store.DatabaseMode,
+		".gitignore":                       store.DatabaseMode,
+	} {
+		info, err := os.Stat(filepath.Join(dir, path))
+		if err != nil {
+			t.Errorf("stat %s: %v", path, err)
+			continue
+		}
+		if got := info.Mode().Perm(); got != want {
+			t.Errorf("%s has mode %#o, want %#o: it was created under the umask Main inherited (%#o)",
+				path, got, want, wideUmask)
+		}
 	}
 }
 
