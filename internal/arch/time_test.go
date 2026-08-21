@@ -100,6 +100,12 @@ func timeImportNames(file *ast.File) map[string]bool {
 // TestTimeStaysInClock is the guard that keeps time injectable. Production code
 // outside internal/clock may not touch the real clock at all, and the tests of
 // the two packages that own time may not sleep.
+//
+// Test files elsewhere are deliberately exempt: a test that wants the real
+// clock is usually testing something real, and testing/synctest already makes
+// the timer-driven ones deterministic. The one way to walk around the check,
+// dot importing time so its calls lose their qualifier, is banned by
+// TestNoDotImportOfTime.
 func TestTimeStaysInClock(t *testing.T) {
 	root := repoRoot(t)
 	clockDir := filepath.Join(root, "internal", "clock")
@@ -157,6 +163,60 @@ func TestTimeStaysInClock(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("walk %s: %v", root, err)
+	}
+}
+
+// TestNoDotImportOfTime closes the hole under the selector check. A dot import
+// turns time.Now into a bare Now, which no check that reads qualifiers can see,
+// and it buys nothing anywhere in this codebase. The ban covers every file,
+// tests included, because the point is that the qualifier is always there to
+// read. staticcheck ST1001 flags dot imports too; this test is what the rule
+// rests on, so the guard does not depend on an external tool's default set.
+func TestNoDotImportOfTime(t *testing.T) {
+	root := repoRoot(t)
+	fset := token.NewFileSet()
+
+	checked := 0
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case ".git", "bin", "dist":
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+		checked++
+
+		file, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
+		if err != nil {
+			t.Errorf("parse %s: %v", rel(root, path), err)
+			return nil
+		}
+		for _, imp := range file.Imports {
+			if imp.Name == nil || imp.Name.Name != "." {
+				continue
+			}
+			importPath, err := strconv.Unquote(imp.Path.Value)
+			if err != nil || importPath != "time" {
+				continue
+			}
+			pos := fset.Position(imp.Pos())
+			t.Errorf("%s:%d: dot imports %q: forbidden, it hides the qualifier the clock check reads",
+				rel(root, path), pos.Line, importPath)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", root, err)
+	}
+	if checked == 0 {
+		t.Fatal("no Go files walked, the check would pass vacuously")
 	}
 }
 
