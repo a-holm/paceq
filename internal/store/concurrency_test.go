@@ -34,7 +34,11 @@ const (
 	// proves wal_autocheckpoint is doing its work under sustained writes.
 	walLimit = 64 << 20
 
-	// readerPace is the gap a reader leaves between reads.
+	// readerPace is the gap a reader leaves between reads. gateFloor is
+	// calibrated against it: unpaced readers take an eight thread machine under
+	// load from around 1300 tx/s down to around 260 tx/s, which is below the
+	// floor. Editing this constant moves the gate's baseline, so it has to be
+	// changed together with a fresh derivation of the floor.
 	readerPace = time.Millisecond
 
 	// readCeiling is the largest read latency compatible with the WAL claim. It
