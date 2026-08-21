@@ -89,7 +89,7 @@ func TestNoDotImportOfSQLPackages(t *testing.T) {
 			return err
 		}
 		if d.IsDir() {
-			if d.Name() == ".git" || d.Name() == "bin" || d.Name() == "dist" {
+			if strings.HasPrefix(d.Name(), ".") || d.Name() == "bin" || d.Name() == "dist" {
 				return fs.SkipDir
 			}
 			return nil

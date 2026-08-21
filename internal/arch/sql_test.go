@@ -56,7 +56,9 @@ func TestSQLStaysInStore(t *testing.T) {
 		}
 		if d.IsDir() {
 			switch {
-			case d.Name() == ".git" || d.Name() == "bin" || d.Name() == "dist":
+			case strings.HasPrefix(d.Name(), "."):
+				return fs.SkipDir
+			case d.Name() == "bin" || d.Name() == "dist":
 				return fs.SkipDir
 			case path == storeDir || path == skipDir:
 				return fs.SkipDir

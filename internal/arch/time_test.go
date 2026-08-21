@@ -122,7 +122,10 @@ func TestTimeStaysInClock(t *testing.T) {
 		}
 		if d.IsDir() {
 			switch d.Name() {
-			case ".git", "bin", "dist", "testdata":
+			case "bin", "dist", "testdata":
+				return fs.SkipDir
+			}
+			if strings.HasPrefix(d.Name(), ".") {
 				return fs.SkipDir
 			}
 			return nil
@@ -187,7 +190,10 @@ func TestNoDotImportOfTime(t *testing.T) {
 		}
 		if d.IsDir() {
 			switch d.Name() {
-			case ".git", "bin", "dist":
+			case "bin", "dist":
+				return fs.SkipDir
+			}
+			if strings.HasPrefix(d.Name(), ".") {
 				return fs.SkipDir
 			}
 			return nil
