@@ -705,3 +705,49 @@ func TestApplyOneSkipsAMigrationAnotherProcessApplied(t *testing.T) {
 		t.Errorf("ledger holds %d rows, want 2", len(applied))
 	}
 }
+
+// rebuildPair is a set whose second migration rebuilds the table the first one
+// created, which is the shape most likely to outlive the lock's expiry.
+var rebuildPair = fstest.MapFS{
+	"0001_init.sql": migrationFile(rebuildBase),
+	"0002_rebuild.sql": migrationFile(`-- +paceq rebuild
+CREATE TABLE parent_new (id INTEGER PRIMARY KEY, label TEXT NOT NULL DEFAULT '') STRICT;
+INSERT INTO parent_new (id) SELECT id FROM parent;
+DROP TABLE parent;
+ALTER TABLE parent_new RENAME TO parent;`),
+}
+
+// TestApplyOneSkipsARebuildAnotherProcessApplied is the rebuild half of the
+// stale view guarantee. A rebuild is the migration most likely to run longer
+// than the lock's expiry, so it is the one that most needs to notice, inside
+// its own transaction, that another process got there first.
+func TestApplyOneSkipsARebuildAnotherProcessApplied(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	first := openStore(t, path)
+	stale := openStore(t, path)
+	ctx := context.Background()
+
+	all, err := loadMigrations(rebuildPair)
+	if err != nil {
+		t.Fatalf("loadMigrations: %v", err)
+	}
+	if !all[1].Rebuild {
+		t.Fatal("the fixture's second migration is not a rebuild")
+	}
+	if err := first.migrateFS(ctx, rebuildPair); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	if err := stale.applyOne(ctx, all[1]); err != nil {
+		t.Fatalf("apply %s from a stale view: %v", all[1].File, err)
+	}
+
+	applied, err := first.appliedMigrations(ctx)
+	if err != nil {
+		t.Fatalf("read applied migrations: %v", err)
+	}
+	if len(applied) != 2 {
+		t.Errorf("ledger holds %d rows, want 2", len(applied))
+	}
+	assertForeignKeysOn(t, stale)
+}

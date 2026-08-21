@@ -464,17 +464,9 @@ func (s *Store) applyOne(ctx context.Context, m migration) error {
 		return s.applyRebuild(ctx, m)
 	}
 	return s.withTx(ctx, func(tx *sql.Tx) error {
-		// Re-read under the write lock. Another process may have applied this
-		// migration between our read of the ledger and this transaction, and
-		// IMMEDIATE serialises the two, so this is what makes applying a
-		// migration twice impossible.
-		var already int
-		if err := tx.QueryRowContext(ctx,
-			"SELECT count(*) FROM schema_migrations WHERE version = ?", m.Version).Scan(&already); err != nil {
-			return fmt.Errorf("check whether the migration is applied: %w", err)
-		}
-		if already > 0 {
-			return nil
+		already, err := migrationApplied(ctx, tx, m.Version)
+		if err != nil || already {
+			return err
 		}
 		if _, err := tx.ExecContext(ctx, m.SQL); err != nil {
 			return err
@@ -487,6 +479,21 @@ func (s *Store) applyOne(ctx context.Context, m migration) error {
 		}
 		return nil
 	})
+}
+
+// migrationApplied re-reads the ledger under the write lock. Another process
+// may have applied this migration between our read of the ledger and this
+// transaction, and IMMEDIATE serialises the two, so this is what makes applying
+// a migration twice impossible. Both apply paths go through it, including the
+// rebuild path: a rebuild is the migration most likely to run longer than the
+// lock's expiry.
+func migrationApplied(ctx context.Context, tx *sql.Tx, version int) (bool, error) {
+	var count int
+	if err := tx.QueryRowContext(ctx,
+		"SELECT count(*) FROM schema_migrations WHERE version = ?", version).Scan(&count); err != nil {
+		return false, fmt.Errorf("check whether the migration is applied: %w", err)
+	}
+	return count > 0, nil
 }
 
 // setUserVersion writes the schema version fence. PRAGMA takes no bind
@@ -558,6 +565,10 @@ func (s *Store) applyRebuild(ctx context.Context, m migration) (err error) {
 }
 
 func (s *Store) rebuildInTx(ctx context.Context, tx *sql.Tx, m migration) error {
+	already, err := migrationApplied(ctx, tx, m.Version)
+	if err != nil || already {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, m.SQL); err != nil {
 		return err
 	}
