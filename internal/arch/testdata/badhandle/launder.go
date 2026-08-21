@@ -10,6 +10,11 @@ type chainHandle = aliasHandle
 
 // Carrier is an exported struct that carries a handle in an exported field,
 // spelled with a package-local name.
+//
+// The field really resolves to a live *sql.DB through aliasHandle: a guard that
+// read only this file would see no handle anywhere in it, which is exactly the
+// shape worth catching. The value stays unreachable outside these tests, so the
+// fixture hands nobody a working handle.
 type Carrier struct{ H aliasHandle }
 
 func (s *Store) Plain() aliasHandle { return s.w }

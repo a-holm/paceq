@@ -1,6 +1,6 @@
 // Package goodhandle is the other half of the exported handle guard fixture. It
-// is never part of the module build: it lives under testdata and the guard
-// parses it directly. Every declaration here either holds a database handle the
+// lives under testdata, so the module build never links it; the guard parses it
+// directly. Every declaration here either holds a database handle the
 // way internal/store does, out of reach of any caller outside the package, or
 // carries a name that only looks like a handle. The guard must stay quiet about
 // all of them.

@@ -1,7 +1,8 @@
-// Package badhandle is a fixture for the exported handle guard. It is never part
-// of the module build: it lives under testdata and the guard parses it directly.
-// Every laundering shape appears once, and the package compiles, because a shape
-// the compiler rejects is not a laundering shape.
+// Package badhandle is a fixture for the exported handle guard. It lives under
+// testdata, so the module build never links it and nothing outside these tests
+// can import its values; the guard parses the files directly. Every laundering
+// shape appears once, and the package compiles, because a shape the compiler
+// rejects is not a laundering shape.
 //
 // The handles live in this file, next to the database/sql import. The exported
 // declarations that hand them out live in launder.go, which imports nothing at

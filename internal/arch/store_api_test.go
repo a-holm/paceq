@@ -50,11 +50,13 @@ var handleTypes = map[string][]string{
 //     written out and is read.
 //   - A package-local name that reaches a handle through a type declared in
 //     another package. Naming a handle needs an import of database/sql, and
-//     TestSQLStaysInStore forbids that import everywhere outside the
-//     internal/store subtree, so what is left is a second package created inside
-//     that subtree. A generic type is read from its instantiation, box[*sql.DB],
-//     for the same reason: binding a type parameter to a handle means naming the
-//     handle somewhere.
+//     TestSQLStaysInStore forbids that import in every module package outside
+//     internal/store, this package included only as far as its own non-test
+//     files go. The fixture packages under testdata sit inside that exemption
+//     window, so this guard itself is what keeps them honest: they are read by
+//     these tests and never built into anything. A generic type is read from
+//     its instantiation, box[*sql.DB], for the same reason: binding a type
+//     parameter to a handle means naming the handle somewhere.
 //
 // Two rules from the write model cannot be checked mechanically and stay review
 // rules, stated in internal/store/doc.go: no process, file or network I/O
@@ -147,19 +149,19 @@ func TestGuardCatchesLaunderedHandles(t *testing.T) {
 		"alias.go: exported func Direct mentions database/sql.DB",
 		"alias.go: exported value Direct2 mentions database/sql.DB",
 		"alias.go: exported value Pair mentions database/sql.DB",
-		"launder.go: exported field Carrier.H mentions aliasHandle, declared at alias.go:28, which resolves to database/sql.DB",
-		"launder.go: exported func Callback mentions callbackHandle, declared at alias.go:37, which resolves to database/sql.Tx",
+		"launder.go: exported field Carrier.H mentions aliasHandle, declared at alias.go:29, which resolves to database/sql.DB",
+		"launder.go: exported func Callback mentions callbackHandle, declared at alias.go:38, which resolves to database/sql.Tx",
 		"launder.go: exported func Chain mentions chainHandle, declared at launder.go:9, which resolves to database/sql.DB",
-		"launder.go: exported func Deep mentions deepHandle, declared at alias.go:25, which resolves to database/sql.DB",
-		"launder.go: exported func Embed mentions embedHandle, declared at alias.go:31, which resolves to database/sql.DB",
-		"launder.go: exported func Field mentions fieldHandle, declared at alias.go:34, which resolves to database/sql.Conn",
-		"launder.go: exported func Generic mentions genericHandle, declared at alias.go:51, which resolves to database/sql.DB",
-		"launder.go: exported func Iface mentions ifaceHandle, declared at alias.go:43, which resolves to database/sql.Tx",
-		"launder.go: exported func List mentions listHandle, declared at alias.go:40, which resolves to database/sql.Stmt",
-		"launder.go: exported func Method mentions methodHandle, declared at alias.go:55, whose exported method Unwrap names database/sql.DB",
-		"launder.go: exported func Plain mentions aliasHandle, declared at alias.go:28, which resolves to database/sql.DB",
-		"launder.go: exported func Promoted mentions promotedHandle, declared at alias.go:63, which resolves to database/sql.DB",
-		"launder.go: exported value Laundered mentions aliasHandle, declared at alias.go:28, which resolves to database/sql.DB",
+		"launder.go: exported func Deep mentions deepHandle, declared at alias.go:26, which resolves to database/sql.DB",
+		"launder.go: exported func Embed mentions embedHandle, declared at alias.go:32, which resolves to database/sql.DB",
+		"launder.go: exported func Field mentions fieldHandle, declared at alias.go:35, which resolves to database/sql.Conn",
+		"launder.go: exported func Generic mentions genericHandle, declared at alias.go:52, which resolves to database/sql.DB",
+		"launder.go: exported func Iface mentions ifaceHandle, declared at alias.go:44, which resolves to database/sql.Tx",
+		"launder.go: exported func List mentions listHandle, declared at alias.go:41, which resolves to database/sql.Stmt",
+		"launder.go: exported func Method mentions methodHandle, declared at alias.go:56, whose exported method Unwrap names database/sql.DB",
+		"launder.go: exported func Plain mentions aliasHandle, declared at alias.go:29, which resolves to database/sql.DB",
+		"launder.go: exported func Promoted mentions promotedHandle, declared at alias.go:64, which resolves to database/sql.DB",
+		"launder.go: exported value Laundered mentions aliasHandle, declared at alias.go:29, which resolves to database/sql.DB",
 	}
 	assertFindings(t, want, found)
 }
