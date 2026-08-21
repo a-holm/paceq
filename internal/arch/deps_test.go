@@ -20,12 +20,13 @@ const (
 // runner even though cli imports engine and may not import runner itself.
 // A package absent from this table carries no direction rule yet.
 var allowedImports = map[string][]string{
-	"model":  {},
-	"id":     {},
-	"clock":  {},
-	"store":  {"model", "clock", "id"},
-	"engine": {"model", "store", "runner", "clock", "id", "notify"},
-	"cli":    {"engine", "store", "explain", "spec", "obs", "model", "clock", "id"},
+	"model":    {},
+	"id":       {},
+	"clock":    {},
+	"store":    {"model", "clock", "id"},
+	"engine":   {"model", "store", "runner", "clock", "id", "notify"},
+	"cli":      {"engine", "store", "explain", "spec", "obs", "model", "clock", "id"},
+	"testutil": {"model", "clock", "id", "store"},
 }
 
 // testOnlyExtra names internal packages that test files may import on top of the
@@ -161,15 +162,25 @@ func internalName(importPath string) (string, bool) {
 func runGo(t *testing.T, args ...string) string {
 	t.Helper()
 
+	return runGoOS(t, "", args...)
+}
+
+// runGoOS is runGo for a chosen GOOS. An empty goos keeps the host setting.
+func runGoOS(t *testing.T, goos string, args ...string) string {
+	t.Helper()
+
 	cmd := exec.Command("go", args...)
 	cmd.Dir = repoRoot(t)
+	if goos != "" {
+		cmd.Env = append(os.Environ(), "GOOS="+goos)
+	}
 	out, err := cmd.Output()
 	if err != nil {
 		var stderr []byte
 		if ee, ok := err.(*exec.ExitError); ok {
 			stderr = ee.Stderr
 		}
-		t.Fatalf("go %s: %v\n%s", strings.Join(args, " "), err, stderr)
+		t.Fatalf("GOOS=%q go %s: %v\n%s", goos, strings.Join(args, " "), err, stderr)
 	}
 	return string(out)
 }

@@ -21,7 +21,8 @@ var sqlPackages = map[string]bool{
 // sqlPrefixes mark a string literal as a query. Matching is case sensitive on
 // purpose: uppercase keywords are the project's SQL convention, and matching
 // case insensitively would flag ordinary prose such as "with %d retries".
-// Statement keywords carry a trailing space so "updated" cannot match.
+// Statement keywords carry a trailing space so "updated" cannot match. Runs of
+// whitespace in the literal are collapsed first, so "CREATE  TABLE" still matches.
 var sqlPrefixes = []string{
 	"SELECT ",
 	"INSERT ",
@@ -29,9 +30,13 @@ var sqlPrefixes = []string{
 	"DELETE ",
 	"REPLACE ",
 	"PRAGMA ",
+	"ATTACH ",
 	"WITH ",
 	"BEGIN ",
 	"CREATE TABLE",
+	"CREATE INDEX",
+	"ALTER TABLE",
+	"DROP TABLE",
 }
 
 func TestSQLStaysInStore(t *testing.T) {
@@ -84,9 +89,9 @@ func TestSQLStaysInStore(t *testing.T) {
 			if err != nil {
 				return true
 			}
-			trimmed := strings.TrimLeft(value, " \t\r\n")
+			normalised := strings.Join(strings.Fields(value), " ")
 			for _, prefix := range sqlPrefixes {
-				if strings.HasPrefix(trimmed, prefix) {
+				if strings.HasPrefix(normalised, prefix) {
 					t.Errorf("%s holds an SQL literal starting with %q: forbidden, all SQL lives in internal/store",
 						rel(root, fset.Position(lit.Pos()).Filename), strings.TrimSpace(prefix))
 					return false

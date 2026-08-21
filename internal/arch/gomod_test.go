@@ -15,6 +15,15 @@ import (
 // line in docs/adr/0001-foundation.md.
 const runtimeDepBudget = 8
 
+// classifyPlatforms are the operating systems the import graph is walked for.
+// A dependency behind //go:build windows is a runtime dependency, and a graph
+// walked only on the host would not see it.
+var classifyPlatforms = []string{"linux", "darwin", "windows"}
+
+// testutilPackage is left out of the runtime roots. It is imported by test files
+// only, so what it pulls in ships in test binaries, not in the product.
+const testutilPackage = modulePath + "/internal/testutil"
+
 type goModFile struct {
 	Require []struct {
 		Path     string
@@ -27,18 +36,27 @@ func TestRuntimeDependencyBudget(t *testing.T) {
 	root := repoRoot(t)
 	direct := directRequires(t, filepath.Join(root, "go.mod"))
 
-	runtimeModules := modulesInGraph(t, "list", "-deps", "-f", moduleTemplate, "./...")
-	anyModules := modulesInGraph(t, "list", "-deps", "-test", "-f", moduleTemplate, "./...")
+	runtimeModules := map[string]bool{}
+	testModules := map[string]bool{}
+	for _, goos := range classifyPlatforms {
+		roots := append([]string{"list", "-deps", "-f", moduleTemplate}, runtimeRoots(t, goos)...)
+		mergeInto(runtimeModules, modulesFrom(t, goos, roots...))
+		mergeInto(testModules, modulesFrom(t, goos, "list", "-deps", "-test", "-f", moduleTemplate, "./..."))
+	}
 
-	var runtimeDeps, testOnlyDeps, unusedDeps []string
+	var runtimeDeps, testOnlyDeps, unreachable []string
 	for _, path := range direct {
 		switch {
 		case runtimeModules[path]:
 			runtimeDeps = append(runtimeDeps, path)
-		case anyModules[path]:
+		case testModules[path]:
 			testOnlyDeps = append(testOnlyDeps, path)
 		default:
-			unusedDeps = append(unusedDeps, path)
+			// Reachable only behind a build tag this walk does not set, or stale.
+			// Counted as runtime, because guessing the other way opens a hole in
+			// the budget. go mod tidy is the authority on staleness, not this test.
+			unreachable = append(unreachable, path)
+			runtimeDeps = append(runtimeDeps, path)
 		}
 	}
 
@@ -46,12 +64,12 @@ func TestRuntimeDependencyBudget(t *testing.T) {
 		t.Errorf("go.mod has %d direct runtime dependencies, budget is %d: %s",
 			len(runtimeDeps), runtimeDepBudget, strings.Join(runtimeDeps, ", "))
 	}
-	if len(unusedDeps) > 0 {
-		t.Errorf("go.mod has direct requirements that nothing imports (%s): run go mod tidy",
-			strings.Join(unusedDeps, ", "))
-	}
 	t.Logf("direct runtime dependencies: %d of %d used%s", len(runtimeDeps), runtimeDepBudget, listing(runtimeDeps))
 	t.Logf("direct test-only dependencies: %d, outside the budget%s", len(testOnlyDeps), listing(testOnlyDeps))
+	if len(unreachable) > 0 {
+		t.Logf("direct dependencies not reachable on %s, counted as runtime%s",
+			strings.Join(classifyPlatforms, "/"), listing(unreachable))
+	}
 }
 
 func listing(deps []string) string {
@@ -65,16 +83,38 @@ func listing(deps []string) string {
 // library, which has no module.
 const moduleTemplate = "{{if .Module}}{{.Module.Path}}{{end}}"
 
-func modulesInGraph(t *testing.T, args ...string) map[string]bool {
+// runtimeRoots lists the module's own packages that ship in the product.
+func runtimeRoots(t *testing.T, goos string) []string {
+	t.Helper()
+
+	var roots []string
+	for _, line := range strings.Split(runGoOS(t, goos, "list", "-f", "{{.ImportPath}}", "./..."), "\n") {
+		if line = strings.TrimSpace(line); line != "" && line != testutilPackage {
+			roots = append(roots, line)
+		}
+	}
+	if len(roots) == 0 {
+		t.Fatalf("go list ./... found no packages for GOOS=%s", goos)
+	}
+	return roots
+}
+
+func modulesFrom(t *testing.T, goos string, args ...string) map[string]bool {
 	t.Helper()
 
 	modules := map[string]bool{}
-	for _, line := range strings.Split(runGo(t, args...), "\n") {
+	for _, line := range strings.Split(runGoOS(t, goos, args...), "\n") {
 		if line = strings.TrimSpace(line); line != "" {
 			modules[line] = true
 		}
 	}
 	return modules
+}
+
+func mergeInto(dst, src map[string]bool) {
+	for k := range src {
+		dst[k] = true
+	}
 }
 
 // directRequires returns the module paths required directly. The go tool does the
