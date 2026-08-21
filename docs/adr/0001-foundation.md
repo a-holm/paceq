@@ -11,7 +11,7 @@ Two of these choices are load-bearing rather than cosmetic. The dependency direc
 
 ## Decision 1: Go 1.25
 
-The `go` directive in `go.mod` is `go 1.25`. `testing/synctest` became stable in that release, and a fake clock is the only way to test a scheduler and its backoff without `time.Sleep`. Nothing in the project may raise the directive without a follow-up ADR, because the directive is the floor for anyone building from source.
+The `go` directive in `go.mod` is `go 1.25.0`. `modernc.org/sqlite` states its own floor at that patch release, and `go mod tidy` raises the directive to match, so the patch level is written out. `testing/synctest` became stable in that release, and a fake clock is the only way to test a scheduler and its backoff without `time.Sleep`. Nothing in the project may raise the directive without a follow-up ADR, because the directive is the floor for anyone building from source.
 
 Newer toolchains are fine for development. The directive states the minimum, not the toolchain in use.
 
@@ -109,13 +109,13 @@ Three details make that classification survive contact with real code:
 
 The test deliberately does **not** assert that every direct requirement is reachable. `go mod tidy` resolves across every platform and build tag, so it correctly keeps a requirement that only a `//go:build windows` file imports, and a test that calls that unused fails on a green tree while telling the developer to run the command they already ran. Staleness is `go mod tidy -diff` in CI (#22), which is the tool that can actually be right about it.
 
-The skeleton has **zero** direct dependencies of either kind. The standard library covers everything it does.
+`modernc.org/sqlite` is the first direct dependency, added with `internal/store` in #28. Everything else in the table is still unspent.
 
 Every dependency added later needs a line in this table. The choices below are fixed by PLAN.md §A and SYNTESE §4.9, not open questions:
 
 | Module | Kind | Purpose |
 |---|---|---|
-| `modernc.org/sqlite` | runtime | SQLite driver in pure Go, which is what makes `CGO_ENABLED=0` possible |
+| `modernc.org/sqlite` v1.57.0 | runtime | SQLite driver in pure Go, which is what makes `CGO_ENABLED=0` possible. Pinned: the plan keeps `mattn/go-sqlite3` behind a build tag as the escape hatch, so a driver regression must be a deliberate version bump rather than a silent upgrade |
 | `github.com/spf13/cobra` | runtime | command tree, flag handling and shell completion for the CLI |
 | `github.com/goccy/go-yaml` | runtime | job file parsing with line and column positions in errors; `gopkg.in/yaml.v3` is archived |
 | `github.com/adhocore/gronx` | runtime | cron expression parser. The iterator, `Between` and the DST policy are our code, in `internal/cronx` |
@@ -125,6 +125,6 @@ Every dependency added later needs a line in this table. The choices below are f
 | `github.com/rogpeppe/go-internal` | test | `testscript` for CLI golden tests, where `--json` output is a public interface |
 | `pgregory.net/rapid` | test | property tests for the state machine against real SQLite |
 
-That is six runtime dependencies of eight, leaving two slots. Anything beyond needs an ADR that says what it replaced.
+That is six runtime dependencies of eight, one of them spent, leaving two slots. Anything beyond needs an ADR that says what it replaced.
 
 The CLI library is the one entry worth flagging: PLAN.md §A picks cobra, while the Go architecture draft argued for stdlib `flag` and a hand-written router. The skeleton does not settle it, because the stub only prints help text and stdlib does that for free. Issue #51 decides and spends the slot if it picks cobra.
