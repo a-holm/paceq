@@ -90,6 +90,10 @@ func newRoot(env Env) *cobra.Command {
 				"paceq --help  lists every command")
 		},
 	}
+	// --version is what people type before they find the command. It renders
+	// the same report, from the same values.
+	root.Version = version
+	root.SetVersionTemplate(versionTemplate())
 	root.SetOut(env.Stdout)
 	root.SetErr(env.Stderr)
 	root.CompletionOptions.DisableDefaultCmd = true

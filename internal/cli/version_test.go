@@ -80,3 +80,17 @@ func TestVersionJSONFlagMatchesTheOutputFlag(t *testing.T) {
 		t.Errorf("--json and -o json disagree:\n%s\n%s", short.stdout, long.stdout)
 	}
 }
+
+// TestVersionFlagMatchesTheCommand keeps the flag people reach for first and
+// the command that documents it from drifting apart.
+func TestVersionFlagMatchesTheCommand(t *testing.T) {
+	flag := runCLI(t, t.TempDir(), nil, "--version")
+	command := runCLI(t, t.TempDir(), nil, "version", "-o", "text")
+
+	if flag.code != ExitOK {
+		t.Fatalf("paceq --version = %d, want %d\n%s", flag.code, ExitOK, flag.stderr)
+	}
+	if flag.stdout != command.stdout {
+		t.Errorf("--version and version -o text disagree:\n%s\n%s", flag.stdout, command.stdout)
+	}
+}

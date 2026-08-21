@@ -2,8 +2,10 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"runtime"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -70,15 +72,43 @@ func writeVersion(out *ui) error {
 		return out.json(report)
 	}
 
-	out.print("paceq %s", report.Version)
-	for _, row := range [][2]string{
-		{"commit", report.Commit},
-		{"built", report.Built},
-		{"go", report.Go},
-		{"platform", report.Platform},
-		{"schema version", strconv.Itoa(report.SchemaVersion)},
-	} {
-		out.print("  %s %s", pad(row[0], len("schema version")), row[1])
-	}
+	out.print("%s", report.text())
 	return nil
+}
+
+// text is the human form, built as one string so --version and the version
+// command cannot drift apart: cobra renders the flag from a template, and the
+// template is this.
+func (r versionReport) text() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "paceq %s", r.Version)
+	for _, row := range [][2]string{
+		{"commit", r.Commit},
+		{"built", r.Built},
+		{"go", r.Go},
+		{"platform", r.Platform},
+		{"schema version", strconv.Itoa(r.SchemaVersion)},
+	} {
+		fmt.Fprintf(&b, "\n  %s %s", pad(row[0], len("schema version")), row[1])
+	}
+	return b.String()
+}
+
+// versionTemplate is what paceq --version prints. A build whose schema cannot
+// be read still answers, because the version of a broken build is exactly what
+// a bug report needs.
+func versionTemplate() string {
+	known, err := store.KnownSchemaVersion()
+	if err != nil {
+		known = 0
+	}
+	report := versionReport{
+		Version:       version,
+		Commit:        commit,
+		Built:         buildTime,
+		Go:            runtime.Version(),
+		Platform:      runtime.GOOS + "/" + runtime.GOARCH,
+		SchemaVersion: known,
+	}
+	return report.text() + "\n"
 }
