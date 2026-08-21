@@ -33,6 +33,11 @@ var beforeCommit func()
 const migrationDir = "migrations"
 
 const (
+	// rebuildDirective marks a migration as a table rebuild, and
+	// rebuildDirectiveLines is how far into the file it is read.
+	rebuildDirective      = "-- +paceq rebuild"
+	rebuildDirectiveLines = 5
+
 	// migrationLockTTL is how long a lock row stays valid. A process killed
 	// while migrating blocks the next start for at most this long, and a
 	// migration that runs longer than this loses the lock without losing
@@ -60,6 +65,9 @@ type migration struct {
 	File     string
 	SQL      string
 	Checksum string
+	// Rebuild marks a migration that rebuilds a table and therefore has to run
+	// with foreign keys off, which PRAGMA cannot do inside a transaction.
+	Rebuild bool
 }
 
 // appliedMigration is one row of schema_migrations.
@@ -354,6 +362,7 @@ func loadMigrations(fsys fs.FS) ([]migration, error) {
 		sum := sha256.Sum256(body)
 		all = append(all, migration{
 			Version:  version,
+			Rebuild:  hasRebuildDirective(string(body)),
 			Name:     match[2],
 			File:     name,
 			SQL:      string(body),
@@ -377,6 +386,22 @@ func loadMigrations(fsys fs.FS) ([]migration, error) {
 		}
 	}
 	return all, nil
+}
+
+// hasRebuildDirective reports whether the file opts into the table rebuild
+// path. The marker has to sit in the first few lines so it is visible in a
+// review without scrolling.
+func hasRebuildDirective(body string) bool {
+	lines := strings.SplitN(body, "\n", rebuildDirectiveLines+1)
+	for i, line := range lines {
+		if i == rebuildDirectiveLines {
+			break
+		}
+		if strings.TrimSpace(line) == rebuildDirective {
+			return true
+		}
+	}
+	return false
 }
 
 // ensureMigrationTables creates the two tables the engine keeps its own state
@@ -435,6 +460,9 @@ func (s *Store) appliedMigrations(ctx context.Context) ([]appliedMigration, erro
 // or not applied at all. SQLite has transactional DDL; this is the whole reason
 // a half applied migration cannot exist.
 func (s *Store) applyOne(ctx context.Context, m migration) error {
+	if m.Rebuild {
+		return s.applyRebuild(ctx, m)
+	}
 	return s.withTx(ctx, func(tx *sql.Tx) error {
 		// Re-read under the write lock. Another process may have applied this
 		// migration between our read of the ledger and this transaction, and
@@ -451,13 +479,7 @@ func (s *Store) applyOne(ctx context.Context, m migration) error {
 		if _, err := tx.ExecContext(ctx, m.SQL); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx,
-			"INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
-			m.Version, m.Name, m.Checksum, s.clk.Now().UnixMilli())
-		if err != nil {
-			return fmt.Errorf("record migration: %w", err)
-		}
-		if err := setUserVersion(ctx, tx, m.Version); err != nil {
+		if err := s.recordMigration(ctx, tx, m); err != nil {
 			return err
 		}
 		if beforeCommit != nil {
@@ -473,6 +495,98 @@ func (s *Store) applyOne(ctx context.Context, m migration) error {
 func setUserVersion(ctx context.Context, tx *sql.Tx, version int) error {
 	if _, err := tx.ExecContext(ctx, "PRAGMA user_version = "+strconv.Itoa(version)); err != nil {
 		return fmt.Errorf("set user_version: %w", err)
+	}
+	return nil
+}
+
+// recordMigration writes the ledger row and the version fence. Both belong to
+// the same transaction as the DDL: that is what makes a partly applied
+// migration impossible.
+func (s *Store) recordMigration(ctx context.Context, tx *sql.Tx, m migration) error {
+	_, err := tx.ExecContext(ctx,
+		"INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
+		m.Version, m.Name, m.Checksum, s.clk.Now().UnixMilli())
+	if err != nil {
+		return fmt.Errorf("record migration: %w", err)
+	}
+	return setUserVersion(ctx, tx, m.Version)
+}
+
+// applyRebuild runs a table rebuild. SQLite's ALTER TABLE only adds, renames
+// and drops columns; every other change means creating a new table, copying,
+// dropping the old one and renaming, and that sequence needs foreign keys off.
+// PRAGMA foreign_keys is a no-op inside a transaction, so the pragma has to sit
+// outside it, and foreign_key_check inside it is what replaces the enforcement
+// that was turned off.
+//
+// Everything runs on one connection taken from the writer pool rather than
+// through withTx. The pool holds a single connection, so a transaction opened
+// while this one is checked out would wait for itself.
+func (s *Store) applyRebuild(ctx context.Context, m migration) (err error) {
+	conn, err := s.w.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("take the write connection: %w", err)
+	}
+	defer func() {
+		// Restoring the pragma matters more than the error that got us here:
+		// the writer pool never recycles its connection, so foreign keys would
+		// stay off for the life of the process.
+		if _, offErr := conn.ExecContext(ctx, "PRAGMA foreign_keys = ON"); offErr != nil && err == nil {
+			err = fmt.Errorf("restore foreign_keys: %w", offErr)
+		}
+		if closeErr := conn.Close(); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}()
+
+	if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
+		return fmt.Errorf("disable foreign_keys: %w", err)
+	}
+
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin write transaction: %w", err)
+	}
+	if err := s.rebuildInTx(ctx, tx, m); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit write transaction: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) rebuildInTx(ctx context.Context, tx *sql.Tx, m migration) error {
+	if _, err := tx.ExecContext(ctx, m.SQL); err != nil {
+		return err
+	}
+	if err := s.recordMigration(ctx, tx, m); err != nil {
+		return err
+	}
+	return checkForeignKeys(ctx, tx)
+}
+
+// checkForeignKeys reports the first violation the rebuild left behind. Any row
+// at all means the copy lost a parent, and the caller rolls the migration back.
+func checkForeignKeys(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, "PRAGMA foreign_key_check")
+	if err != nil {
+		return fmt.Errorf("foreign key check: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	if rows.Next() {
+		var table, parent sql.NullString
+		var rowid, constraint sql.NullInt64
+		if err := rows.Scan(&table, &rowid, &parent, &constraint); err != nil {
+			return fmt.Errorf("foreign key check: %w", err)
+		}
+		return fmt.Errorf("the rebuild leaves a foreign key violation in table %q referencing %q, "+
+			"rolling back", table.String, parent.String)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("foreign key check: %w", err)
 	}
 	return nil
 }

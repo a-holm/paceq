@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -460,5 +461,214 @@ func TestMigrateTakesOverAnExpiredLock(t *testing.T) {
 	}
 	if got := userVersion(t, s); got != 2 {
 		t.Errorf("user_version is %d, want 2", got)
+	}
+}
+
+const rebuildBase = `CREATE TABLE parent (id INTEGER PRIMARY KEY) STRICT;
+CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER NOT NULL REFERENCES parent(id)) STRICT;
+INSERT INTO parent (id) VALUES (1);
+INSERT INTO child (id, parent_id) VALUES (10, 1);`
+
+// TestLoadMigrationsReadsTheRebuildDirective pins where the directive counts. A
+// migration that rebuilds a table cannot run inside a plain transaction,
+// because PRAGMA foreign_keys is ignored there, so the marker decides which
+// path a file takes.
+func TestLoadMigrationsReadsTheRebuildDirective(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{name: "first line", body: "-- +paceq rebuild\nCREATE TABLE a (id INTEGER PRIMARY KEY) STRICT;", want: true},
+		{name: "fifth line", body: "--\n--\n--\n--\n-- +paceq rebuild\nCREATE TABLE a (id INTEGER PRIMARY KEY) STRICT;", want: true},
+		{name: "sixth line", body: "--\n--\n--\n--\n--\n-- +paceq rebuild\nCREATE TABLE a (id INTEGER PRIMARY KEY) STRICT;", want: false},
+		{name: "absent", body: "CREATE TABLE a (id INTEGER PRIMARY KEY) STRICT;", want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			all, err := loadMigrations(fstest.MapFS{"0001_init.sql": migrationFile(tc.body)})
+			if err != nil {
+				t.Fatalf("loadMigrations: %v", err)
+			}
+			if all[0].Rebuild != tc.want {
+				t.Errorf("Rebuild is %v, want %v", all[0].Rebuild, tc.want)
+			}
+		})
+	}
+}
+
+// TestMigrateRunsARebuildWithForeignKeysOff walks the twelve step table rebuild:
+// foreign keys off, the whole rebuild in one transaction, a foreign key check
+// before the commit, foreign keys on again afterwards.
+func TestMigrateRunsARebuildWithForeignKeysOff(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	files := fstest.MapFS{
+		"0001_init.sql": migrationFile(rebuildBase),
+		"0002_rebuild.sql": migrationFile(`-- +paceq rebuild
+CREATE TABLE parent_new (id INTEGER PRIMARY KEY, label TEXT NOT NULL DEFAULT '') STRICT;
+INSERT INTO parent_new (id) SELECT id FROM parent;
+DROP TABLE parent;
+ALTER TABLE parent_new RENAME TO parent;`),
+	}
+	if err := s.migrateFS(ctx, files); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	var label string
+	if err := s.w.QueryRowContext(ctx, "SELECT label FROM parent WHERE id = 1").Scan(&label); err != nil {
+		t.Fatalf("read the rebuilt table: %v", err)
+	}
+	if got := userVersion(t, s); got != 2 {
+		t.Errorf("user_version is %d, want 2", got)
+	}
+	assertForeignKeysOn(t, s)
+}
+
+// TestMigrateRollsBackARebuildThatBreaksForeignKeys is why the rebuild path
+// runs foreign_key_check at all: with foreign keys off, the engine accepts the
+// broken rows and only the check notices.
+func TestMigrateRollsBackARebuildThatBreaksForeignKeys(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	files := fstest.MapFS{
+		"0001_init.sql": migrationFile(rebuildBase),
+		"0002_rebuild.sql": migrationFile(`-- +paceq rebuild
+CREATE TABLE parent_new (id INTEGER PRIMARY KEY) STRICT;
+INSERT INTO parent_new (id) SELECT id FROM parent WHERE id <> 1;
+DROP TABLE parent;
+ALTER TABLE parent_new RENAME TO parent;`),
+	}
+	err := s.migrateFS(ctx, files)
+	if err == nil {
+		t.Fatal("migrate accepted a rebuild that orphans a row")
+	}
+	if !strings.Contains(err.Error(), "foreign key") {
+		t.Errorf("error %q does not name the foreign key check", err)
+	}
+
+	var parents int
+	if err := s.w.QueryRowContext(ctx, "SELECT count(*) FROM parent").Scan(&parents); err != nil {
+		t.Fatalf("count parents: %v", err)
+	}
+	if parents != 1 {
+		t.Errorf("the parent table holds %d rows, want the rebuild rolled back to 1", parents)
+	}
+	if got := userVersion(t, s); got != 1 {
+		t.Errorf("user_version is %d, want it left at 1", got)
+	}
+	assertForeignKeysOn(t, s)
+}
+
+// assertForeignKeysOn checks the setting the rebuild path turns off. Leaving it
+// off would silently disable every foreign key for the life of the process,
+// because the writer pool never recycles its one connection.
+func assertForeignKeysOn(t *testing.T, s *Store) {
+	t.Helper()
+
+	var on int
+	if err := s.w.QueryRowContext(context.Background(), "PRAGMA foreign_keys").Scan(&on); err != nil {
+		t.Fatalf("read foreign_keys: %v", err)
+	}
+	if on != 1 {
+		t.Error("foreign_keys is off after the rebuild")
+	}
+}
+
+// threeMigrations is a set whose intermediate states differ from each other, so
+// an upgrade that starts halfway is not the same work as one that starts empty.
+var threeMigrations = fstest.MapFS{
+	"0001_init.sql":   migrationFile("CREATE TABLE widgets (id INTEGER PRIMARY KEY) STRICT;"),
+	"0002_label.sql":  migrationFile("ALTER TABLE widgets ADD COLUMN label TEXT NOT NULL DEFAULT '';"),
+	"0003_lookup.sql": migrationFile("CREATE INDEX idx_widgets_label ON widgets(label);"),
+}
+
+// upTo is the migration set as it looked when version n was the newest.
+func upTo(files fstest.MapFS, n int) fstest.MapFS {
+	subset := fstest.MapFS{}
+	for name, file := range files {
+		if version, err := strconv.Atoi(name[:4]); err == nil && version <= n {
+			subset[name] = file
+		}
+	}
+	return subset
+}
+
+// schemaDump is every object SQLite holds for the database, which is what two
+// upgrade paths have to agree on.
+func schemaDump(t *testing.T, s *Store) string {
+	t.Helper()
+
+	rows, err := s.w.QueryContext(context.Background(),
+		"SELECT type, name, coalesce(sql, '') FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name")
+	if err != nil {
+		t.Fatalf("read sqlite_schema: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out strings.Builder
+	for rows.Next() {
+		var kind, name, sql string
+		if err := rows.Scan(&kind, &name, &sql); err != nil {
+			t.Fatalf("scan sqlite_schema row: %v", err)
+		}
+		fmt.Fprintf(&out, "%s %s: %s\n", kind, name, sql)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read sqlite_schema: %v", err)
+	}
+	return out.String()
+}
+
+// TestMigrateFromEveryHistoricalVersion is the upgrade matrix. A database left
+// at any earlier version has to reach the same schema as one migrated from
+// empty, or an upgrade means something different depending on when the database
+// was created. The matrix grows with every migration added.
+func TestMigrateFromEveryHistoricalVersion(t *testing.T) {
+	ctx := context.Background()
+
+	fresh := testStore(t)
+	if err := fresh.migrateFS(ctx, threeMigrations); err != nil {
+		t.Fatalf("migrate from empty: %v", err)
+	}
+	want := schemaDump(t, fresh)
+
+	for version := 1; version <= 3; version++ {
+		t.Run(fmt.Sprintf("from %04d", version), func(t *testing.T) {
+			s := testStore(t)
+			if err := s.migrateFS(ctx, upTo(threeMigrations, version)); err != nil {
+				t.Fatalf("migrate to %04d: %v", version, err)
+			}
+			if got := userVersion(t, s); got != version {
+				t.Fatalf("user_version is %d, want %d", got, version)
+			}
+
+			if err := s.migrateFS(ctx, threeMigrations); err != nil {
+				t.Fatalf("upgrade from %04d: %v", version, err)
+			}
+			if got := userVersion(t, s); got != 3 {
+				t.Errorf("user_version is %d after the upgrade, want 3", got)
+			}
+			if got := schemaDump(t, s); got != want {
+				t.Errorf("the schema after upgrading from %04d differs from a fresh migrate:\ngot\n%s\nwant\n%s",
+					version, got, want)
+			}
+		})
+	}
+}
+
+// TestEmbeddedMigrationsLoad reads the set the binary ships with. It is what
+// catches a real migration file that is misnamed or numbered out of line,
+// before it reaches a database.
+func TestEmbeddedMigrationsLoad(t *testing.T) {
+	sub, err := fs.Sub(migrationFS, migrationDir)
+	if err != nil {
+		t.Fatalf("open embedded migrations: %v", err)
+	}
+	if _, err := loadMigrations(sub); err != nil {
+		t.Fatalf("load embedded migrations: %v", err)
 	}
 }
