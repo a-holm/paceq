@@ -11,7 +11,9 @@ if ! command -v gofumpt >/dev/null 2>&1; then
 	exit 1
 fi
 
-if [ -z "$(git diff --cached --name-only --diff-filter=ACMR -- '*.go')" ]; then
+# D is in the filter on purpose. A staged deletion changes what the tree compiles
+# to, so it has to reach go vet even though there is no file left to format.
+if [ -z "$(git diff --cached --name-only --diff-filter=ACMRD -- '*.go' go.mod go.sum)" ]; then
 	exit 0
 fi
 
