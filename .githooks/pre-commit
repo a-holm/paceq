@@ -6,8 +6,8 @@
 # is exactly the case a partial "git add" produces.
 set -e
 
-if ! command -v gofumpt >/dev/null 2>&1; then
-	echo "pre-commit: gofumpt not found. Install it with: go install mvdan.cc/gofumpt@latest" >&2
+if ! command -v make >/dev/null 2>&1; then
+	echo "pre-commit: make not found." >&2
 	exit 1
 fi
 
@@ -22,15 +22,14 @@ trap 'rm -rf "$staged_tree"' EXIT INT TERM
 
 git checkout-index -a -f --prefix="$staged_tree/"
 
-unformatted=$(cd "$staged_tree" && gofumpt -l .)
-if [ -n "$unformatted" ]; then
-	echo "pre-commit: these staged files are not gofumpt clean:" >&2
-	printf '%s\n' "$unformatted" >&2
-	echo "pre-commit: run 'make fmt' and stage the result." >&2
+# Through make, so the hook, `make ci` and the pipeline all run the gofumpt
+# version pinned in the Makefile.
+if ! (cd "$staged_tree" && make fmt-check); then
+	echo "pre-commit: the staged content is not gofumpt clean." >&2
 	exit 1
 fi
 
-if ! (cd "$staged_tree" && go vet ./...); then
+if ! (cd "$staged_tree" && make vet); then
 	echo "pre-commit: go vet failed on the staged content." >&2
 	exit 1
 fi

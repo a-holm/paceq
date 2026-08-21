@@ -30,7 +30,7 @@ fail() {
 leaks=$(CGO_ENABLED=1 GOOS="$goos" GOARCH="$goarch" go list -deps \
 	-f '{{if and .CgoFiles (not .Standard)}}{{.ImportPath}}{{end}}' ./cmd/pulseq)
 if [ -n "$leaks" ]; then
-	fail "cgo leak for $goos/$goarch: these packages need cgo: $(echo "$leaks" | tr '\n' ' ')"
+	fail "cgo leak for $goos/$goarch: these packages need cgo: $(printf '%s' "$leaks" | tr '\n' ' ')"
 fi
 
 CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath -o "$out" ./cmd/pulseq
