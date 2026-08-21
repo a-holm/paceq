@@ -31,6 +31,36 @@
 //  5. The database never runs on a network or FUSE filesystem. SQLite file
 //     locking is undefined there and the corruption shows up weeks later.
 //
+// # Schema conventions
+//
+// These hold for every table in the schema, and a new table that breaks one is
+// a review stopper. Retrofitting any of them means rebuilding every table.
+//
+//  1. Every table is STRICT. A column declared INTEGER holds integers, and a
+//     string that looks like a number is an error rather than a silent
+//     conversion. This needs SQLite 3.37, which the driver ships.
+//  2. Every time column is INTEGER unix milliseconds UTC. Sortable, indexable,
+//     no parsing, no timezone ambiguity. A timezone is stored separately as an
+//     IANA name, and only where a time has to be interpreted rather than
+//     ordered.
+//  3. Every status is TEXT with a CHECK listing the values it may take. The
+//     premise of this product is that reading the tables with the sqlite3 shell
+//     explains what happened, which integer codes do not, and the CHECK mirrors
+//     the state machine in internal/model so both ends enforce it.
+//  4. Structured values are canonical JSON in a TEXT column: object keys
+//     sorted, no insignificant whitespace. Canonical form is what makes a hash
+//     of the text stable and two rows comparable.
+//
+// The schema a migrated database ends up with is checked in as
+// schema.golden.sql, and TestGoldenSchema fails on any change to it. Reviewing
+// a schema change means reading that diff.
+//
+// auto_vacuum is INCREMENTAL, set by Open while the database still has no
+// schema. It is the one setting here that cannot be changed afterwards without
+// a full VACUUM holding an exclusive lock, so it is decided at creation.
+// Databases created before paceq set it keep NONE, and the doctor check reports
+// them.
+//
 // # Migrations
 //
 // Migrate applies the SQL files embedded from the migrations directory, in
