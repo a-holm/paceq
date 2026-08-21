@@ -450,3 +450,20 @@ func TestMissingDatabaseIsNotCreated(t *testing.T) {
 	}
 	absent(t, report, "schema version")
 }
+
+// TestLocalZoneIsNamed. A report that says "Local" answers nothing, and the
+// zone a schedule without an explicit one runs in is the fact an operator is
+// checking for.
+func TestLocalZoneIsNamed(t *testing.T) {
+	t.Setenv("TZ", "Europe/Oslo")
+	dir := stateDir(t)
+	opt := options(opening(healthy(dir), nil))
+	opt.Local = ""
+
+	report := doctor.Run(context.Background(), dir, opt)
+
+	found := find(t, report, "time zone")
+	if !strings.Contains(found.Detail, "Europe/Oslo") {
+		t.Errorf("detail %q does not name the local zone", found.Detail)
+	}
+}

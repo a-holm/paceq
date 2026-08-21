@@ -116,15 +116,15 @@ Every dependency added later needs a line in this table. The choices below are f
 | Module | Kind | Purpose |
 |---|---|---|
 | `modernc.org/sqlite` v1.57.0 | runtime | SQLite driver in pure Go, which is what makes `CGO_ENABLED=0` possible. Pinned: the plan keeps `mattn/go-sqlite3` behind a build tag as the escape hatch, so a driver regression must be a deliberate version bump rather than a silent upgrade |
-| `github.com/spf13/cobra` | runtime | command tree, flag handling and shell completion for the CLI |
+| `github.com/spf13/cobra` v1.10.2 | runtime | command tree, flag handling and shell completion for the CLI. Pinned: the command tree and the completion scripts it generates are a user interface, so a change to either is a deliberate bump |
 | `github.com/goccy/go-yaml` | runtime | job file parsing with line and column positions in errors; `gopkg.in/yaml.v3` is archived |
 | `github.com/adhocore/gronx` | runtime | cron expression parser. The iterator, `Between` and the DST policy are our code, in `internal/cronx` |
 | `github.com/oklog/ulid/v2` v2.1.2 | runtime | time-sortable, prefix-searchable identifiers for `internal/id`. Pinned: the id format is a storage format, and a ULID that changed its encoding or its monotonic entropy behaviour would reorder existing rows |
 | `golang.org/x/sync` | runtime | `errgroup` and `semaphore` for structured startup and shutdown |
 | `github.com/google/go-cmp` | test | readable diffs in tests |
-| `github.com/rogpeppe/go-internal` | test | `testscript` for CLI golden tests, where `--json` output is a public interface |
+| `github.com/rogpeppe/go-internal` v1.14.1 | test | `testscript` for CLI golden tests, where `--json` output is a public interface |
 | `pgregory.net/rapid` | test | property tests for the state machine against real SQLite |
 
-That is six runtime dependencies of eight, two of them spent, leaving two slots. Anything beyond needs an ADR that says what it replaced.
+That is six runtime dependencies of eight, three of them spent, leaving two slots. Anything beyond needs an ADR that says what it replaced.
 
-The CLI library is the one entry worth flagging: PLAN.md §A picks cobra, while the Go architecture draft argued for stdlib `flag` and a hand-written router. The skeleton does not settle it, because the stub only prints help text and stdlib does that for free. Issue #51 decides and spends the slot if it picks cobra.
+The CLI library is the one entry worth flagging: PLAN.md §A picks cobra, while the Go architecture draft argued for stdlib `flag` and a hand-written router. #51 spends the slot on cobra. What buys it is the flag model the command line rests on: persistent flags that every subcommand inherits, a `--db` and `-o` that mean the same thing everywhere, per-command argument validation that can return a paceq error rather than a printed usage block, and the completion and man page generation the management surface needs from M1 on. `flag` gives none of that without a router, a flag inheritance mechanism and a help renderer written here and maintained here.

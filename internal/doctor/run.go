@@ -68,6 +68,13 @@ func (r *Report) add(f Finding) { r.Findings = append(r.Findings, f) }
 // at all, so it would pass on a container that has none.
 const probeZone = "Europe/Oslo"
 
+// localTimeFile and zoneinfoDir are where a unix system records which zone is
+// local: a symlink into the zone database, whose target names the zone.
+const (
+	localTimeFile = "/etc/localtime"
+	zoneinfoDir   = "zoneinfo/"
+)
+
 // lowDisk is where free space becomes a warning. The database, its WAL and the
 // job logs share the filesystem, and a write that runs out of room fails a run
 // rather than degrading.
@@ -119,7 +126,7 @@ func (o Options) withDefaults() Options {
 		o.Free = freeSpace
 	}
 	if o.Local == "" {
-		o.Local = time.Local.String()
+		o.Local = localZone()
 	}
 	return o
 }
@@ -422,6 +429,25 @@ func checkTimeZone(local string, zones ZoneLoader) Finding {
 		}
 	}
 	return Finding{Level: OK, Title: title, Detail: fmt.Sprintf("%s (zone database found)", local)}
+}
+
+// localZone is the zone name schedules without an explicit zone will run in.
+// The runtime calls it "Local" when it loaded the zone from a file rather than
+// from a name, which is the usual case on Linux, so the name is recovered from
+// the two places that hold it. A report that says "Local" answers nothing.
+func localZone() string {
+	if name := time.Local.String(); name != "Local" {
+		return name
+	}
+	if tz := os.Getenv("TZ"); tz != "" {
+		return strings.TrimPrefix(tz, ":")
+	}
+	if target, err := os.Readlink(localTimeFile); err == nil {
+		if _, name, found := strings.Cut(target, zoneinfoDir); found {
+			return name
+		}
+	}
+	return "Local"
 }
 
 // nearestExisting walks up until it finds a directory that exists, so free

@@ -1,0 +1,18 @@
+# doctor reports on a machine that has never run init, without failing.
+
+exec paceq doctor
+stdout '"status":"warn"'
+stdout 'paceq init'
+
+# Text mode marks every check, and the state directory is the first question.
+exec paceq doctor -o text
+stdout 'state directory'
+stdout 'time zone'
+
+# An error code explains itself.
+exec paceq error PQ1001 -o text
+stdout 'PQ1001'
+
+# An unknown one is not found, not a crash.
+! exec paceq error PQ9999
+stderr 'PQ9999'
