@@ -67,65 +67,78 @@ func (s *Store) UpsertJobVersion(ctx context.Context, in JobVersionInput) (JobVe
 	if err != nil {
 		return JobVersion{}, false, fmt.Errorf("mint a job version id: %w", err)
 	}
-	at := now.UnixMilli()
 
+	var out JobVersion
+	created := false
+	err = s.withTx(ctx, func(tx *sql.Tx) error {
+		var err error
+		out, created, err = writeJobVersion(tx, versionID, now.UnixMilli(), in)
+		return err
+	})
+	if err != nil {
+		return JobVersion{}, false, err
+	}
+	return out, created, nil
+}
+
+// writeJobVersion records one job and the spec it currently holds, inside a
+// transaction the caller owns. ApplyJobs calls it once per job in its single
+// batch transaction; UpsertJobVersion wraps it with one of its own.
+//
+// The insert comes first and RowsAffected decides, rather than a read deciding
+// whether to insert. Reading first would be a check with a write after it, and
+// the answer can be stale by the time the write lands.
+func writeJobVersion(tx *sql.Tx, versionID string, at int64, in JobVersionInput) (JobVersion, bool, error) {
 	maxConcurrent := in.MaxConcurrent
 	if maxConcurrent == 0 {
 		maxConcurrent = 1
 	}
 
 	out := JobVersion{JobName: in.JobName, SpecHash: in.SpecHash}
-	created := false
-	err = s.withTx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.Exec(`INSERT INTO jobs
-	(name, description, max_concurrent, source_path, created_at, updated_at)
+	if _, err := tx.Exec(`INSERT INTO jobs
+(name, description, max_concurrent, source_path, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?)
 ON CONFLICT (name) DO UPDATE SET
 	description    = excluded.description,
 	max_concurrent = excluded.max_concurrent,
 	source_path    = excluded.source_path,
 	updated_at     = excluded.updated_at`,
-			in.JobName, in.Description, maxConcurrent, nullIfEmpty(in.SourcePath), at, at); err != nil {
-			return fmt.Errorf("record job %s: %w", in.JobName, err)
-		}
+		in.JobName, in.Description, maxConcurrent, nullIfEmpty(in.SourcePath), at, at); err != nil {
+		return JobVersion{}, false, fmt.Errorf("record job %s: %w", in.JobName, err)
+	}
 
-		// The version number is computed inside the statement, so two loads of
-		// two different specs cannot read the same maximum and claim it twice.
-		result, err := tx.Exec(`INSERT INTO job_versions
-	(id, job_name, version, spec_hash, spec_json, source_path, created_at)
+	// The version number is computed inside the statement, so two loads of
+	// two different specs cannot read the same maximum and claim it twice.
+	result, err := tx.Exec(`INSERT INTO job_versions
+(id, job_name, version, spec_hash, spec_json, source_path, created_at)
 VALUES (?, ?, (SELECT coalesce(max(version), 0) + 1 FROM job_versions WHERE job_name = ?), ?, ?, ?, ?)
 ON CONFLICT (job_name, spec_hash) DO NOTHING`,
-			versionID, in.JobName, in.JobName, in.SpecHash, in.SpecJSON,
-			nullIfEmpty(in.SourcePath), at)
-		if err != nil {
-			return fmt.Errorf("record a version of job %s: %w", in.JobName, err)
-		}
-		written, err := result.RowsAffected()
-		if err != nil {
-			return fmt.Errorf("record a version of job %s: %w", in.JobName, err)
-		}
-		created = written > 0
-
-		// Read back whichever row carries this hash now: the one just written,
-		// or the one that was already there.
-		var source sql.NullString
-		var createdAt int64
-		if err := tx.QueryRow(`SELECT id, version, spec_json, source_path, created_at
-FROM job_versions WHERE job_name = ? AND spec_hash = ?`, in.JobName, in.SpecHash).
-			Scan(&out.ID, &out.Version, &out.SpecJSON, &source, &createdAt); err != nil {
-			return fmt.Errorf("read back the version of job %s: %w", in.JobName, err)
-		}
-		out.SourcePath = source.String
-		out.CreatedAt = time.UnixMilli(createdAt).UTC()
-
-		if _, err := tx.Exec("UPDATE jobs SET current_version_id = ?, updated_at = ? WHERE name = ?",
-			out.ID, at, in.JobName); err != nil {
-			return fmt.Errorf("point job %s at version %d: %w", in.JobName, out.Version, err)
-		}
-		return nil
-	})
+		versionID, in.JobName, in.JobName, in.SpecHash, in.SpecJSON,
+		nullIfEmpty(in.SourcePath), at)
 	if err != nil {
-		return JobVersion{}, false, err
+		return JobVersion{}, false, fmt.Errorf("record a version of job %s: %w", in.JobName, err)
+	}
+	written, err := result.RowsAffected()
+	if err != nil {
+		return JobVersion{}, false, fmt.Errorf("record a version of job %s: %w", in.JobName, err)
+	}
+	created := written > 0
+
+	// Read back whichever row carries this hash now: the one just written,
+	// or the one that was already there.
+	var source sql.NullString
+	var createdAt int64
+	if err := tx.QueryRow(`SELECT id, version, spec_json, source_path, created_at
+FROM job_versions WHERE job_name = ? AND spec_hash = ?`, in.JobName, in.SpecHash).
+		Scan(&out.ID, &out.Version, &out.SpecJSON, &source, &createdAt); err != nil {
+		return JobVersion{}, false, fmt.Errorf("read back the version of job %s: %w", in.JobName, err)
+	}
+	out.SourcePath = source.String
+	out.CreatedAt = time.UnixMilli(createdAt).UTC()
+
+	if _, err := tx.Exec("UPDATE jobs SET current_version_id = ?, updated_at = ? WHERE name = ?",
+		out.ID, at, in.JobName); err != nil {
+		return JobVersion{}, false, fmt.Errorf("point job %s at version %d: %w", in.JobName, out.Version, err)
 	}
 	return out, created, nil
 }
