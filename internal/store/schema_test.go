@@ -6,30 +6,42 @@ import (
 	"testing"
 )
 
-// baseTables are the infrastructure tables migration 0001 creates. They belong
-// to no single feature: identity, role ownership and gap detection.
-var baseTables = []string{"daemon_sessions", "leases", "meta", "outages"}
-
-// TestBaseSchemaTablesAreStrict is the tracer. Every table this project creates
-// is STRICT, so a column declared INTEGER cannot quietly hold a string.
-func TestBaseSchemaTablesAreStrict(t *testing.T) {
+// TestEverySchemaTableIsStrict is the tracer. Every table this project creates
+// is STRICT, so a column declared INTEGER cannot quietly hold a string, and the
+// check reads the database rather than a list somebody has to remember to
+// extend: a new table that forgets STRICT fails here on the day it lands.
+//
+// SQLite's own tables are the exception it makes for itself. sqlite_sequence
+// backs AUTOINCREMENT and is created by the engine, not by a migration.
+func TestEverySchemaTableIsStrict(t *testing.T) {
 	ctx := context.Background()
-	s := testStore(t)
-	if err := s.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	s := migratedStore(t)
 
-	for _, name := range baseTables {
+	rows, err := s.w.QueryContext(ctx,
+		`SELECT name, strict FROM pragma_table_list
+			WHERE schema = 'main' AND type = 'table' AND name NOT LIKE 'sqlite_%'`)
+	if err != nil {
+		t.Fatalf("read the table list: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	seen := 0
+	for rows.Next() {
+		var name string
 		var strict int
-		err := s.w.QueryRowContext(ctx,
-			"SELECT strict FROM pragma_table_list WHERE name = ?", name).Scan(&strict)
-		if err != nil {
-			t.Errorf("look up table %q: %v", name, err)
-			continue
+		if err := rows.Scan(&name, &strict); err != nil {
+			t.Fatalf("scan the table list: %v", err)
 		}
+		seen++
 		if strict != 1 {
 			t.Errorf("table %q is not STRICT", name)
 		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the table list: %v", err)
+	}
+	if seen == 0 {
+		t.Fatal("the table list is empty: the check would pass on a database with no schema at all")
 	}
 }
 
@@ -117,30 +129,11 @@ func TestSchemaRejectsInvalidRows(t *testing.T) {
 // That the index is partial is pinned by TestGoldenSchema, which holds the
 // WHERE clause verbatim. This test passes with either kind of index.
 func TestOpenSessionLookupUsesAnIndex(t *testing.T) {
-	ctx := context.Background()
 	s := migratedStore(t)
 
-	rows, err := s.w.QueryContext(ctx,
-		`EXPLAIN QUERY PLAN SELECT id FROM daemon_sessions
-			WHERE stopped_at IS NULL ORDER BY started_at DESC LIMIT 1`)
-	if err != nil {
-		t.Fatalf("explain: %v", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var plan strings.Builder
-	for rows.Next() {
-		var id, parent, notUsed int
-		var detail string
-		if err := rows.Scan(&id, &parent, &notUsed, &detail); err != nil {
-			t.Fatalf("scan plan row: %v", err)
-		}
-		plan.WriteString(detail + "\n")
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("read plan: %v", err)
-	}
-	if !strings.Contains(plan.String(), "daemon_sessions_open") {
-		t.Fatalf("the open-session lookup does not use daemon_sessions_open:\n%s", plan.String())
+	plan := queryPlan(t, s, `SELECT id FROM daemon_sessions
+		WHERE stopped_at IS NULL ORDER BY started_at DESC LIMIT 1`)
+	if !strings.Contains(plan, "daemon_sessions_open") {
+		t.Fatalf("the open-session lookup does not use daemon_sessions_open:\n%s", plan)
 	}
 }

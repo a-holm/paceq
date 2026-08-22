@@ -2,4 +2,4 @@
 
 A full schema dump per released version goes here, named `NNNN.sql` after the `user_version` it represents.
 
-`TestMigrateFromEveryHistoricalVersion` in `internal/store` is the upgrade matrix these feed: load a snapshot into an empty database, migrate to the newest version, compare the result against a database migrated from empty. Today the matrix runs on migration fixtures, because no release has shipped a schema yet.
+`TestUpgradeFromEveryShippedVersion` in `internal/store` is the upgrade matrix. It slices the embedded migrations to every version below the newest, migrates the result to HEAD and compares it against a database migrated from empty, so it runs against the files that ship rather than against a snapshot. A snapshot here is what pins a schema a release wrote but the migrations no longer describe, once a release has shipped one.
