@@ -51,6 +51,10 @@ Run `make hooks` once after cloning. It points git at `.githooks`, so formatting
 
 The cross build is the gate behind the promise of one static binary per platform. For each target it proves that no package outside the standard library needs cgo, that the built binary records `CGO_ENABLED=0`, that Linux binaries are statically linked and built for the expected architecture, and that the binary stays under the 30 MB budget.
 
+## A red gate is red
+
+A failing test is a fact about the code, and nothing in the gate is allowed to disagree with it. No step retries, no `|| true`, no `continue-on-error`, no rerun-until-green loop, and no `go test` without `-count=<n>` where a cached result could stand in for a run. Inside the tests, a `t.Skip` must state a capability the machine lacks or a mode the run is driven in; a reason that blames timing, load, the runner or CI is refused by [internal/arch](internal/arch/flaky_test.go), along with an empty one. The rule is enforced, not remembered: `internal/arch/flaky_test.go` scans `.github/workflows`, `.githooks`, `scripts` and the Makefile on every `make test` and fails the build on any way past a red run. When a gate goes red intermittently, the fix is the root cause — never a wider tolerance.
+
 [.github/workflows/vuln.yml](.github/workflows/vuln.yml) runs govulncheck against main every Monday and on demand, because a vulnerability in a dependency is published when it is published, not when we push. Findings open an issue, or comment on the open one, and fail the run. [.github/dependabot.yml](.github/dependabot.yml) proposes weekly updates for Go modules and for actions; nothing merges by itself. Actions are pinned by commit SHA, and tool versions are bumped by hand in the Makefile.
 
 ## Architecture
