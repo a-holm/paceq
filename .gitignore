@@ -25,5 +25,9 @@ coverage.html
 .env
 .env.*
 
+# Python, for the offline fixture generator
+__pycache__/
+*.pyc
+
 # Agent worktrees
 .claude/worktrees/

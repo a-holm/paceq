@@ -1,0 +1,39 @@
+{
+  "expected": [
+    {
+      "at": "2026-01-15T04:15:00Z",
+      "local": "2026-01-15 09:45:00 +05:30",
+      "skipped": false
+    },
+    {
+      "at": "2026-01-16T04:15:00Z",
+      "local": "2026-01-16 09:45:00 +05:30",
+      "skipped": false
+    },
+    {
+      "at": "2026-01-17T04:15:00Z",
+      "local": "2026-01-17 09:45:00 +05:30",
+      "skipped": false
+    },
+    {
+      "at": "2026-01-18T04:15:00Z",
+      "local": "2026-01-18 09:45:00 +05:30",
+      "skipped": false
+    },
+    {
+      "at": "2026-01-19T04:15:00Z",
+      "local": "2026-01-19 09:45:00 +05:30",
+      "skipped": false
+    }
+  ],
+  "expr": "45 9 * * *",
+  "from_utc": "2026-01-15T00:00:00Z",
+  "generated_by": "croniter 6.2.4 / python 3.12.3 / tzdata 2026c",
+  "id": "kolkata-202601-daily-0945-default",
+  "policy": {
+    "fall_back": "first",
+    "spring_forward": "skip"
+  },
+  "to_utc": "2026-01-20T00:00:00Z",
+  "tz": "Asia/Kolkata"
+}

@@ -1,0 +1,50 @@
+{
+  "expected": [
+    {
+      "at": "1994-12-28T16:00:00Z",
+      "local": "1994-12-28 06:00:00 -10:00",
+      "skipped": false
+    },
+    {
+      "at": "1994-12-29T16:00:00Z",
+      "local": "1994-12-29 06:00:00 -10:00",
+      "skipped": false
+    },
+    {
+      "at": "1994-12-30T16:00:00Z",
+      "local": "1994-12-30 06:00:00 -10:00",
+      "skipped": false
+    },
+    {
+      "at": "1994-12-31T16:00:00Z",
+      "local": "-",
+      "skip_reason": "dst_nonexistent",
+      "skipped": true
+    },
+    {
+      "at": "1994-12-31T16:00:00Z",
+      "local": "1995-01-01 06:00:00 +14:00",
+      "skipped": false
+    },
+    {
+      "at": "1995-01-01T16:00:00Z",
+      "local": "1995-01-02 06:00:00 +14:00",
+      "skipped": false
+    },
+    {
+      "at": "1995-01-02T16:00:00Z",
+      "local": "1995-01-03 06:00:00 +14:00",
+      "skipped": false
+    }
+  ],
+  "expr": "0 6 * * *",
+  "from_utc": "1994-12-28T00:00:00Z",
+  "generated_by": "croniter 6.2.4 / python 3.12.3 / tzdata 2026c",
+  "id": "kiritimati-1994-daily-0600-default",
+  "policy": {
+    "fall_back": "first",
+    "spring_forward": "skip"
+  },
+  "to_utc": "1995-01-03T00:00:00Z",
+  "tz": "Pacific/Kiritimati"
+}
