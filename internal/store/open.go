@@ -213,8 +213,13 @@ func (s *Store) Path() string {
 // store took one. The lock goes last: it may not be handed on while a
 // connection to the database it protects is still open.
 func (s *Store) Close() error {
-	rErr := s.r.Close()
-	wErr := s.w.Close()
+	var rErr, wErr error
+	if s.r != nil {
+		rErr = s.r.Close()
+	}
+	if s.w != nil {
+		wErr = s.w.Close()
+	}
 	if s.lock != nil {
 		lock := s.lock
 		// Forgotten before the result is checked: a released lock must not be

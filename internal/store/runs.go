@@ -143,10 +143,19 @@ type Step struct {
 	Signal     string
 	StartedAt  time.Time
 	FinishedAt time.Time
+	DurationMS int64
 	ReasonCode string
 	ReasonText string
 	Error      string
 	LogPath    string
+
+	// LogBytes, LogTruncated and ErrorTail are the log facts that live in
+	// the database: how big the log grew, whether the quota cut it, and the
+	// last few KiB of output. The tail is what explain shows after the log
+	// file itself is gone.
+	LogBytes     int64
+	LogTruncated bool
+	ErrorTail    string
 }
 
 // RunDetail is a run with its steps, which is what showing one run needs.
@@ -533,7 +542,8 @@ func scanRuns(rows *sql.Rows) ([]Run, error) {
 // readSteps is the steps of one run in spec order.
 func readSteps(ctx context.Context, r reader, runID string) ([]Step, error) {
 	rows, err := r.QueryContext(ctx, `SELECT name, idx, state, attempt, max_attempts, exit_code,
-	signal, started_at, finished_at, reason_code, reason_text, error, log_path
+signal, started_at, finished_at, duration_ms, reason_code, reason_text, error, log_path,
+log_bytes, log_truncated, error_tail
 FROM steps WHERE run_id = ? ORDER BY idx`, runID)
 	if err != nil {
 		return nil, fmt.Errorf("read the steps of run %s: %w", runID, err)
@@ -546,11 +556,12 @@ FROM steps WHERE run_id = ? ORDER BY idx`, runID)
 			step                                          Step
 			exitCode                                      sql.NullInt64
 			signal, reasonCode, reasonText, failure, logs sql.NullString
-			startedAt, finishedAt                         sql.NullInt64
+			startedAt, finishedAt, durationMS             sql.NullInt64
 		)
+		errorTail := sql.NullString{}
 		if err := rows.Scan(&step.Name, &step.Index, &step.State, &step.Attempt, &step.MaxAttempts,
-			&exitCode, &signal, &startedAt, &finishedAt, &reasonCode, &reasonText,
-			&failure, &logs); err != nil {
+			&exitCode, &signal, &startedAt, &finishedAt, &durationMS, &reasonCode, &reasonText,
+			&failure, &logs, &step.LogBytes, &step.LogTruncated, &errorTail); err != nil {
 			return nil, fmt.Errorf("scan a step of run %s: %w", runID, err)
 		}
 		step.ExitCode = int(exitCode.Int64)
@@ -558,10 +569,12 @@ FROM steps WHERE run_id = ? ORDER BY idx`, runID)
 		step.Signal = signal.String
 		step.StartedAt = timeOrZero(startedAt)
 		step.FinishedAt = timeOrZero(finishedAt)
+		step.DurationMS = durationMS.Int64
 		step.ReasonCode = reasonCode.String
 		step.ReasonText = reasonText.String
 		step.Error = failure.String
 		step.LogPath = logs.String
+		step.ErrorTail = errorTail.String
 		out = append(out, step)
 	}
 	if err := rows.Err(); err != nil {
