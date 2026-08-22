@@ -12,6 +12,7 @@ const (
 	LevelTrigger Level = "trigger"
 	LevelRun     Level = "run"
 	LevelStep    Level = "step"
+	LevelLease   Level = "lease"
 )
 
 // String returns the stored name of the level, the same one reason-codes.md
