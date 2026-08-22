@@ -79,13 +79,21 @@ func moduleRoot(t *testing.T) string {
 type engineFixture struct {
 	Dir      string
 	Store    *store.Store
-	Clock    *clock.Fake
+	Clock    clock.Clock
 	LogRoot  logsink.Root
 	Engine   *engine.Engine
 	fakeCmdA string
 }
 
 func newFixture(t *testing.T) *engineFixture {
+	return newFixtureWithClock(t, clock.NewFake(time.Date(2026, 9, 17, 3, 0, 0, 0, time.UTC)))
+}
+
+// newFixtureWithClock wires one state directory, log root and engine to the
+// given clock. The fake serves tests that steer time by hand; the system
+// clock serves the retry tests, which run inside a testing/synctest bubble
+// where timers and Now are virtual together.
+func newFixtureWithClock(t *testing.T, clk clock.Clock) *engineFixture {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -93,7 +101,6 @@ func newFixture(t *testing.T) *engineFixture {
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		t.Fatalf("create the state directory: %v", err)
 	}
-	clk := clock.NewFake(time.Date(2026, 9, 17, 3, 0, 0, 0, time.UTC))
 	s, err := store.Open(context.Background(), filepath.Join(stateDir, "state.db"),
 		store.Options{Clock: clk})
 	if err != nil {

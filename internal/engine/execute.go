@@ -9,6 +9,7 @@ import (
 	"github.com/a-holm/paceq/internal/logsink"
 	"github.com/a-holm/paceq/internal/model"
 	"github.com/a-holm/paceq/internal/reason"
+	"github.com/a-holm/paceq/internal/retry"
 	"github.com/a-holm/paceq/internal/runner"
 	"github.com/a-holm/paceq/internal/spec"
 	"github.com/a-holm/paceq/internal/store"
@@ -48,7 +49,7 @@ func (e *Engine) ExecuteRun(ctx context.Context, runID string) (string, error) {
 		deadline = e.Clock.Now().Add(job.Timeout)
 	}
 
-	state, err := e.Store.ClaimRun(ctx, runID, store.LeaseInput{Owner: e.Owner})
+	state, err := e.Store.ClaimRun(ctx, runID, store.LeaseInput{Owner: e.Owner, TTL: e.LeaseTTL})
 	if err != nil {
 		return "", fmt.Errorf("execute run %s: %w", runID, err)
 	}
@@ -75,7 +76,26 @@ func (e *Engine) ExecuteRun(ctx context.Context, runID string) (string, error) {
 			return "", fmt.Errorf("execute run %s: %w", runID, err)
 		}
 		if !ok {
-			break
+			// Nothing is runnable right now. That is either the end or
+			// a parked retry; the store can tell them apart. Sleeping
+			// on its answer is the whole waiting strategy in process:
+			// the claim gate stays the scheduler, and no retry state
+			// lives here.
+			wait, waiting, err := e.Store.NextRetryWait(ctx, runID)
+			if err != nil {
+				return "", fmt.Errorf("execute run %s: %w", runID, err)
+			}
+			if !waiting {
+				break
+			}
+			timer := e.Clock.NewTimer(wait)
+			select {
+			case <-timer.C:
+				continue
+			case <-ctx.Done():
+				timer.Stop()
+				return "", fmt.Errorf("execute run %s: %w", runID, ctx.Err())
+			}
 		}
 
 		stepHitRunDeadline, err := e.runStep(ctx, detail.Run, name, stepsByName[name], job, deadline)
@@ -253,12 +273,59 @@ func (e *Engine) runStep(ctx context.Context, run store.Run, name string, st spe
 	case outcome.Event == string(model.EvCancelObserved):
 		// The kill happened outside any transaction, as it must. What
 		// remains is bookkeeping, and the bookkeeping names who asked.
-		outcome.DetailJSON = detailJSON(map[string]any{"requested_by": by})
-	case result.Outcome == runner.TimedOut && runDeadlineHit:
-		outcome.DetailJSON = detailJSON(map[string]any{
-			"scope":      "run",
-			"timeout_ms": timeout.Milliseconds(),
-		})
+		outcome.DetailJSON = mergeDetail(outcome.DetailJSON,
+			map[string]any{"requested_by": by})
+	case outcome.Event == string(model.EvStepFailed):
+		// The order matters below: a kill by the run's own budget is
+		// attributed to that budget before anything else names the
+		// attempt, because no further attempt can fit anyway.
+		if result.Outcome == runner.TimedOut && runDeadlineHit {
+			outcome.DetailJSON = mergeDetail(outcome.DetailJSON, map[string]any{
+				"scope":      "run",
+				"timeout_ms": timeout.Milliseconds(),
+			})
+			break
+		}
+		// A failed attempt under a retry budget either buys another
+		// one or spends the last one. Which of the two is arithmetic
+		// on the row, not a decision of its own: attempts left
+		// schedules the next try at now plus the policy's delay through
+		// a RetryPlan, none spent closes the step with the exhausted
+		// code. The machine still owns the transition; this only names
+		// it. Without a budget there is nothing to schedule or spend,
+		// so the runner's own verdict stands untouched.
+		if before.MaxAttempts <= 1 {
+			break
+		}
+		if attempt < before.MaxAttempts {
+			d := retry.Delay(retryPolicyOf(st.Retry), attempt, e.rnd())
+			finished := outcome.FinishedAt
+			if finished.IsZero() {
+				finished = e.Clock.Now()
+			}
+			next := finished.Add(d)
+			facts := map[string]any{
+				"attempt":         attempt,
+				"backoff_ms":      d.Milliseconds(),
+				"next_attempt_at": next.UnixMilli(),
+			}
+			if result.Outcome == runner.Failed {
+				// Exit 75 is EX_TEMPFAIL: the program itself claims
+				// the failure was transient (00-SYNTESE 4.5).
+				facts["transient"] = result.ExitCode == 75
+			}
+			outcome.Retry = &store.RetryPlan{
+				NextAttemptAt: next,
+				ReasonCode:    reason.STEPRetryScheduled,
+				DetailJSON:    detailJSON(facts),
+			}
+		} else {
+			outcome.ReasonCode = reason.STEPRetriesExhausted
+			outcome.DetailJSON = mergeDetail(outcome.DetailJSON, map[string]any{
+				"attempt":      attempt,
+				"max_attempts": before.MaxAttempts,
+			})
+		}
 	}
 
 	if err := e.Store.RecordStepOutcome(ctx, run.ID, name, outcome); err != nil {
@@ -375,6 +442,21 @@ func detailJSON(m map[string]any) string {
 		return "{}"
 	}
 	return string(b)
+}
+
+// mergeDetail decodes a canonical detail object, adds facts to it and
+// renders it back. An empty or malformed base counts as no base: nothing in
+// this file writes malformed JSON, but a verdict with no detail at all is
+// ordinary.
+func mergeDetail(baseJSON string, extra map[string]any) string {
+	m := map[string]any{}
+	if err := json.Unmarshal([]byte(baseJSON), &m); err != nil {
+		m = map[string]any{}
+	}
+	for k, v := range extra {
+		m[k] = v
+	}
+	return detailJSON(m)
 }
 
 func msToTime(ms int64) time.Time {

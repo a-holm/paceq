@@ -266,6 +266,26 @@ type LogMeta struct {
 	ErrorTail string
 }
 
+// RetryPlan is the schedule a caller computed for a further attempt of a
+// step whose machine transition went back to pending. The machine still
+// decides whether the step goes back to pending; the plan only fills in the
+// when and the words. Backoff arithmetic lives with the caller, which holds
+// both the policy and the clock.
+type RetryPlan struct {
+	// NextAttemptAt is when the step becomes runnable again. Zero falls
+	// back to now, the M1 behaviour before backoff existed.
+	NextAttemptAt time.Time
+
+	// ReasonCode names the scheduled retry on the row and its event.
+	// Empty keeps the outcome's own code.
+	ReasonCode reason.Code
+
+	// DetailJSON replaces the event's detail object on the pending path,
+	// where the facts that matter are the attempt number and the
+	// backoff, not the exit verdict.
+	DetailJSON string
+}
+
 // StepOutcome is one event the engine hands to a step: the runner came back,
 // or an upstream ended in a way that closes this step, or a cancellation was
 // observed. Event names the model event, and the machine decides whether the
@@ -294,14 +314,20 @@ type StepOutcome struct {
 	// DetailJSON is the canonical detail object on the event and on the
 	// row's reason_data, empty for none.
 	DetailJSON string
+
+	// Retry schedules a further attempt when this event sends the step
+	// back to pending. Nil means runnable again at once. It never changes
+	// the transition itself; the machine decides from the row.
+	Retry *RetryPlan
 }
 
 // RecordStepOutcome applies one event to one step. The machine decides
 // whether the step may take it and what the transition demands; this writes
 // the verdict, its log facts and its event in one transaction. A step that
-// fails with attempts left goes back to pending for its next attempt, which
-// is the machine's own retry transition; M1 computes no backoff, so the next
-// attempt is immediately runnable.
+// fails with attempts left goes back to pending for its next attempt: parked
+// at next_attempt_at when the caller attached a RetryPlan, runnable again at
+// once when it did not. The claim gate, not this method, decides when the
+// next attempt may start.
 func (s *Store) RecordStepOutcome(ctx context.Context, runID, name string, out StepOutcome) error {
 	finishedAt := out.FinishedAt
 	if finishedAt.IsZero() {
@@ -340,11 +366,24 @@ func (s *Store) RecordStepOutcome(ctx context.Context, runID, name string, out S
 			signal = out.Signal
 		}
 		var nextAttempt any
+		rowReason := out.ReasonCode
+		rowDetail := detail
 		if state == model.StepPending {
-			// The retry transition: back to pending, runnable at once.
-			// Backoff arithmetic is M1-09; it will fill this value and
-			// no reader changes.
-			nextAttempt = finishedAt.UnixMilli()
+			// The retry transition: back to pending, runnable when the
+			// plan says, or at once without one.
+			if out.Retry != nil && !out.Retry.NextAttemptAt.IsZero() {
+				nextAttempt = out.Retry.NextAttemptAt.UTC().UnixMilli()
+			} else {
+				nextAttempt = finishedAt.UnixMilli()
+			}
+			if out.Retry != nil {
+				if out.Retry.ReasonCode != "" {
+					rowReason = out.Retry.ReasonCode
+				}
+				if out.Retry.DetailJSON != "" {
+					rowDetail = out.Retry.DetailJSON
+				}
+			}
 		}
 		truncated := 0
 		if out.LogMeta.Truncated {
@@ -360,7 +399,7 @@ func (s *Store) RecordStepOutcome(ctx context.Context, runID, name string, out S
 				log_path = ?, log_bytes = ?, log_truncated = ?, error_tail = ?,
 				next_attempt_at = ?
 			WHERE run_id = ? AND name = ? AND state = ?`,
-				string(state), nullIfEmpty(string(out.ReasonCode)), detail,
+				string(state), nullIfEmpty(string(rowReason)), rowDetail,
 				exitCode, signal,
 				state != model.StepPending, finishedAt.UnixMilli(),
 				state != model.StepPending,
@@ -373,8 +412,8 @@ func (s *Store) RecordStepOutcome(ctx context.Context, runID, name string, out S
 		}, tx, RunEvent{
 			RunID: runID, StepName: name, At: finishedAt, Kind: emitKind(effects),
 			FromState: string(cur), ToState: string(state),
-			ReasonCode: string(out.ReasonCode),
-			DetailJSON: detail,
+			ReasonCode: string(rowReason),
+			DetailJSON: rowDetail,
 		})
 	})
 }
@@ -549,6 +588,35 @@ func (s *Store) NextRunnableStep(ctx context.Context, runID string) (string, boo
 		return "", false, fmt.Errorf("find the next runnable step of run %s: %w", runID, err)
 	}
 	return name, true, nil
+}
+
+// nextRetryWaitSQL names the soonest parked retry of a run: the earliest
+// next_attempt_at among its pending steps. It is a constant like its claim
+// gate sibling above, so a query plan test can pin the statement that runs.
+const nextRetryWaitSQL = `SELECT MIN(next_attempt_at) FROM steps
+WHERE run_id = ? AND state = 'pending' AND next_attempt_at IS NOT NULL`
+
+// NextRetryWait reports how long the executor must wait before some pending
+// step of the run passes its retry gate: the gap to the soonest
+// next_attempt_at, clamped to zero once it is due. Waiting is false when no
+// pending step carries a time at all, which is the executor's signal that
+// nothing here will ever become runnable again. This read is what keeps
+// retry free of state of its own: the engine sleeps on the answer instead of
+// owning a scheduler.
+func (s *Store) NextRetryWait(ctx context.Context, runID string) (time.Duration, bool, error) {
+	var due sql.NullInt64
+	err := s.r.QueryRowContext(ctx, nextRetryWaitSQL, runID).Scan(&due)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return 0, false, fmt.Errorf("read the next retry wait of run %s: %w", runID, err)
+	}
+	if !due.Valid {
+		return 0, false, nil
+	}
+	wait := time.Duration(due.Int64-s.clk.Now().UTC().UnixMilli()) * time.Millisecond
+	if wait < 0 {
+		wait = 0
+	}
+	return wait, true, nil
 }
 
 // PendingSteps lists a run's steps that have not started, in index order.
