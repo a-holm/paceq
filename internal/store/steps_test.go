@@ -177,6 +177,67 @@ func TestFinishStepRefusesAStepThatIsNotRunning(t *testing.T) {
 	}
 }
 
+// A retry puts a failed step back to pending while attempts remain, and is
+// refused once they are used up. This is the path a second attempt walks,
+// which is what makes one file per attempt visible through the API.
+func TestRetryStepSchedulesTheNextAttempt(t *testing.T) {
+	s, _ := coreStore(t)
+	ctx := context.Background()
+	version := aJob(t, s, "nightly")
+	run, err := s.CreateRunWithSteps(ctx, store.NewRun{
+		JobName:      "nightly",
+		JobVersionID: version.ID,
+		Origin:       "manual",
+		Steps:        []store.NewStep{{Name: "extract", MaxAttempts: 2}},
+	})
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	if err := s.StartStep(ctx, run.ID, "extract", time.Now()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := s.FinishStep(ctx, store.StepFinish{
+		RunID: run.ID, Step: "extract", ToState: "failed",
+		ReasonCode: "STEP_FAILED_NONZERO_EXIT", FinishedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+
+	next := time.Date(2026, 9, 17, 3, 5, 0, 0, time.UTC)
+	if err := s.RetryStep(ctx, run.ID, "extract", next); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	detail, err := s.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if detail.Steps[0].State != "pending" || detail.Steps[0].Attempt != 1 {
+		t.Fatalf("after retry: state %s attempt %d, want pending/1",
+			detail.Steps[0].State, detail.Steps[0].Attempt)
+	}
+}
+
+func TestRetryStepRefusesWhenAttemptsAreUsedUp(t *testing.T) {
+	s, _ := coreStore(t)
+	ctx := context.Background()
+	version := aJob(t, s, "nightly")
+	run, _ := s.CreateRunWithSteps(ctx, store.NewRun{
+		JobName:      "nightly",
+		JobVersionID: version.ID,
+		Origin:       "manual",
+		Steps:        []store.NewStep{{Name: "extract"}},
+	})
+	_ = s.StartStep(ctx, run.ID, "extract", time.Now())
+	_ = s.FinishStep(ctx, store.StepFinish{
+		RunID: run.ID, Step: "extract", ToState: "failed",
+		ReasonCode: "STEP_FAILED_NONZERO_EXIT", FinishedAt: time.Now(),
+	})
+	err := s.RetryStep(ctx, run.ID, "extract", time.Now())
+	if !errors.Is(err, store.ErrNoRetryLeft) {
+		t.Fatalf("retry returned %v, want ErrNoRetryLeft", err)
+	}
+}
+
 func TestFinishStepRefusesAnUnknownTerminalState(t *testing.T) {
 	s, _ := coreStore(t)
 	run := stepFixture(t, s, "extract")

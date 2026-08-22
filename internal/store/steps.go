@@ -26,6 +26,10 @@ var (
 	// ErrReadOnly is returned when a store opened through OpenReadOnly is
 	// asked to write.
 	ErrReadOnly = errors.New("the store is open read only")
+
+	// ErrNoRetryLeft is returned when a retry is asked for a step whose
+	// attempts are used up, or that is not in a state a retry can follow.
+	ErrNoRetryLeft = errors.New("no attempt is left to retry")
 )
 
 // StepLog is what the log sink reported at Finish. It lands in the steps row
@@ -58,6 +62,41 @@ type StepFinish struct {
 	Actor string
 
 	Log StepLog
+}
+
+// RetryStep puts a failed step back into pending for its next attempt, when
+// one remains. It is its own decision so the engine owns retry policy; the
+// store only refuses what cannot happen: a retry of a step whose attempts
+// are used up.
+func (s *Store) RetryStep(ctx context.Context, runID, step string, nextAttemptAt time.Time) error {
+	if nextAttemptAt.IsZero() {
+		nextAttemptAt = s.clk.Now().UTC()
+	}
+	return s.withTx(ctx, func(tx *sql.Tx) error {
+		result, err := tx.Exec(`UPDATE steps SET state = 'pending', next_attempt_at = ?
+WHERE run_id = ? AND name = ? AND state IN ('failed', 'cancelled')
+	AND attempt < max_attempts`, nextAttemptAt.UnixMilli(), runID, step)
+		if err != nil {
+			return fmt.Errorf("schedule the retry of step %s of run %s: %w", step, runID, err)
+		}
+		written, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("schedule the retry of step %s of run %s: %w", step, runID, err)
+		}
+		if written == 0 {
+			return ErrNoRetryLeft
+		}
+		return appendRunEvent(tx, RunEvent{
+			RunID:      runID,
+			StepName:   step,
+			At:         nextAttemptAt,
+			Kind:       "step.retry_scheduled",
+			FromState:  "failed",
+			ToState:    "pending",
+			ReasonCode: "STEP_RETRY_SCHEDULED",
+			Actor:      "engine",
+		})
+	})
 }
 
 // terminalStates are the states a step may finish into. The database CHECK
