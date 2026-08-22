@@ -282,8 +282,15 @@ func TestOneFileReportsABoundedNumberOfProblems(t *testing.T) {
 		t.Errorf("got %d diagnostics for one file, want the cap plus the message that says so", len(diags))
 	}
 	requireCode(t, diags, spec.CodeTooManyProblems)
+	// It comes last whatever position the others carry: it is about where the
+	// report ends, and a reader works down the list.
 	if last := diags[len(diags)-1]; last.Code != spec.CodeTooManyProblems {
 		t.Errorf("the last diagnostic is %s, want the one that says paceq stopped reading", last.Code)
+	}
+	for _, d := range diags[:len(diags)-1] {
+		if d.Line == 0 {
+			t.Errorf("%s reports no position: %s", d.Code, d.Message)
+		}
 	}
 	if elapsed > 100*time.Millisecond {
 		t.Errorf("reporting on it took %v, want under 100ms", elapsed)

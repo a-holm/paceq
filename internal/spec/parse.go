@@ -80,19 +80,20 @@ func Parse(path string, src []byte) (*Job, diag.List) {
 		budget:  MaxExpandedNodes,
 	}
 	if d.survey(body); d.diags.HasErrors() {
-		return nil, d.diags
+		return nil, d.report()
 	}
 
+	// The checks that need the whole job run only on a file that decoded
+	// cleanly. Reporting that a step needs a step that does not exist, when
+	// half the steps failed to decode, is noise on top of the real problem.
 	job := d.job(body)
-	if d.diags.HasErrors() {
-		return nil, d.diags
+	if !d.diags.HasErrors() {
+		d.crossCheck(job)
 	}
-	d.crossCheck(job)
-	if d.diags.HasErrors() {
-		return nil, d.diags
+	if diags := d.report(); diags.HasErrors() {
+		return nil, diags
 	}
-	d.diags.Sort()
-	return job, d.diags
+	return job, d.report()
 }
 
 // countFlowMarkers counts the characters that open a flow collection.
@@ -202,13 +203,31 @@ func (d *decoder) warn(code string, pos diag.Position, message, hint string) {
 	d.add(diag.New(code, diag.SeverityWarning, d.file, pos, message, hint))
 }
 
+// report is the diagnostics in reading order. The message that says paceq
+// stopped reading stays at the end whatever the rest carry: it is about where
+// the report ends, not about a line in the file.
+func (d *decoder) report() diag.List {
+	if !d.stopped || len(d.diags) == 0 {
+		d.diags.Sort()
+		return d.diags
+	}
+	body := d.diags[:len(d.diags)-1]
+	last := d.diags[len(d.diags)-1]
+	body.Sort()
+	d.diags = append(body, last)
+	return d.diags
+}
+
 func (d *decoder) add(diagnostic diag.Diagnostic) {
 	if d.stopped {
 		return
 	}
 	if len(d.diags) >= maxDiagnostics {
 		d.stopped = true
-		d.diags = append(d.diags, diag.New(CodeTooManyProblems, diag.SeverityError, d.file, diagnostic.Pos(),
+		// No position: this is about where the report ends, not about a line
+		// in the file, and pointing at the line the hundred and first problem
+		// happened to be on would send the reader to a line that is fine.
+		d.diags = append(d.diags, diag.New(CodeTooManyProblems, diag.SeverityError, d.file, diag.Position{},
 			fmt.Sprintf("this file has more than %d problems, and paceq stopped reading it here", maxDiagnostics),
 			"Work through the ones above first. A file this far off is usually one mistake\n"+
 				"near the top, such as a list written where a block belongs, and the rest are\n"+

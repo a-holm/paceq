@@ -20,38 +20,42 @@ import (
 // It returns the keys it saw, so a caller can tell a field that is missing from
 // one that is present and empty.
 func (d *decoder) fields(mapping *ast.MappingNode, what string, known []string, set func(key string, value ast.Node)) map[string]bool {
-	seen := map[string]bool{}
+	// Two sets, because they answer different questions. written is every key
+	// that appears, and is what makes a second one a duplicate whatever the
+	// first one held. given is the fields that carried a value, and is what
+	// tells the caller a required field is missing.
+	written, given := map[string]bool{}, map[string]bool{}
 	for _, entry := range mapping.Values {
 		if !d.spend(entry, what) {
-			return seen
+			return given
 		}
 		key, ok := d.key(entry, what)
 		if !ok {
 			continue
 		}
-		if seen[key] {
+		if written[key] {
 			d.duplicateKey(key, what, position(entry.Key))
 			continue
 		}
-		seen[key] = true
+		written[key] = true
 
 		if !contains(known, key) {
 			d.unknownField(key, what, known, position(entry.Key))
 			continue
 		}
-		// A key written with nothing after it is the field left out. Reading
-		// it as an empty value would overwrite the default with a blank.
 		value, ok := d.resolve(entry.Value, key)
 		if !ok {
 			continue
 		}
+		// A key written with nothing after it is the field left out. Reading
+		// it as an empty value would overwrite the default with a blank.
 		if _, isNull := value.(*ast.NullNode); isNull {
-			delete(seen, key)
 			continue
 		}
+		given[key] = true
 		set(key, value)
 	}
-	return seen
+	return given
 }
 
 // key is the name of one mapping entry.

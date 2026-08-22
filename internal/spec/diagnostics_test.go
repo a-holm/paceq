@@ -86,9 +86,10 @@ func TestEveryDiagnosticIsComplete(t *testing.T) {
 // about the file as a whole are allowed to point at nothing.
 func TestDiagnosticsCarryAPosition(t *testing.T) {
 	wholeFile := map[string]bool{
-		spec.CodeFileTooLarge: true,
-		spec.CodeSyntax:       true,
-		spec.CodeMissingField: true,
+		spec.CodeFileTooLarge:    true,
+		spec.CodeSyntax:          true,
+		spec.CodeMissingField:    true,
+		spec.CodeTooManyProblems: true,
 	}
 
 	for _, path := range jobFiles(t, "testdata/bad") {
