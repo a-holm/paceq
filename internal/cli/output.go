@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/a-holm/paceq/internal/diag"
 	"github.com/a-holm/paceq/internal/doctor"
 )
 
@@ -92,6 +93,17 @@ func (u *ui) note(level int, format string, args ...any) {
 		return
 	}
 	fmt.Fprintf(u.err, "paceq: "+format+"\n", args...)
+}
+
+// diagStyle is how this run draws a diagnostic: the same marks and the same
+// colour decision the rest of the output already made.
+func (u *ui) diagStyle() diag.Style {
+	style := diag.ASCII
+	if u.symbols == unicodeSymbols {
+		style = diag.Unicode
+	}
+	style.Color = u.color
+	return style
 }
 
 // mark is the symbol for a finding, padded to width and then coloured. The

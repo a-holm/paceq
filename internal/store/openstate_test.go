@@ -67,7 +67,7 @@ func TestOpenStateNamesTheProcessHoldingTheLock(t *testing.T) {
 
 	message := err.Error()
 	for _, want := range []string{
-		"PQ1001",
+		"PQ5002",
 		strconv.Itoa(owner.PID),
 		owner.Version,
 		sessionOrigin.Format("2006-01-02"),
@@ -97,7 +97,7 @@ func TestOpenStateWithoutASessionRowStillExplains(t *testing.T) {
 	if err == nil {
 		t.Fatal("OpenState opened a locked state directory")
 	}
-	if !strings.Contains(err.Error(), "PQ1001") || !strings.Contains(err.Error(), "no session row") {
+	if !strings.Contains(err.Error(), "PQ5002") || !strings.Contains(err.Error(), "no session row") {
 		t.Errorf("the refusal does not say that the owner is unknown:\n%s", err)
 	}
 }

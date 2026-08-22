@@ -1,0 +1,1 @@
+{"env":{"ANSWER":"yes","COUNTRY":"no","PORT":"5432","SWITCH":"on","VERSION":"1.20"},"inherit_env":["NO","OFF","ON","YES"],"max_concurrent":1,"name":"scalars","schema":"paceq.job.v1","steps":[{"name":"print","run":["/bin/echo","no","yes","1.20"],"shell":false}],"timeout_ms":3600000}

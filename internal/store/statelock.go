@@ -109,7 +109,7 @@ type PermissionError struct {
 }
 
 func (e *PermissionError) Error() string {
-	return fmt.Sprintf("PQ1002: %s has mode %#o, paceq requires %#o and refuses to start "+
+	return fmt.Sprintf("PQ5001: %s has mode %#o, paceq requires %#o and refuses to start "+
 		"with state another user can read\n  Fix it and start again: chmod %#o %s",
 		e.Path, e.Got, e.Want, e.Want, e.Path)
 }

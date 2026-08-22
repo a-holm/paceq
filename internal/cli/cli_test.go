@@ -161,12 +161,12 @@ func TestUnknownErrorCodeIsNotFound(t *testing.T) {
 // TestKnownErrorCodeExplainsItself. The catalogue grows in M1-05; what is
 // established here is that the command answers from it.
 func TestKnownErrorCodeExplainsItself(t *testing.T) {
-	got := runCLI(t, t.TempDir(), nil, "error", "PQ1002", "-o", "text")
+	got := runCLI(t, t.TempDir(), nil, "error", "PQ5001", "-o", "text")
 
 	if got.code != ExitOK {
 		t.Fatalf("paceq error PQ1002 = %d, want %d\n%s", got.code, ExitOK, got.stderr)
 	}
-	for _, want := range []string{"PQ1002", "chmod"} {
+	for _, want := range []string{"PQ5001", "chmod"} {
 		if !strings.Contains(got.stdout, want) {
 			t.Errorf("the explanation does not mention %q:\n%s", want, got.stdout)
 		}

@@ -30,7 +30,7 @@ export GOFLAGS = -mod=readonly
 # Platforms cross built and asserted cgo free on every pull request.
 CROSS_TARGETS := linux/amd64 linux/arm64 darwin/arm64
 
-.PHONY: all build test gate bench fmt fmt-check vet staticcheck lint gosec govulncheck \
+.PHONY: all build test gate bench fuzz fmt fmt-check vet staticcheck lint gosec govulncheck \
 	tidy-check cross ci hooks clean
 
 all: build
@@ -48,8 +48,22 @@ test:
 # a throughput number measured under it says nothing about the driver. The test
 # target above still runs the same concurrency assertions with -race, over a
 # shorter window.
+#
+# The parsing budget is here for the same reason. `paceq apply` and shell
+# completion both walk a whole jobs directory, and the budget is measured on the
+# parser rather than on the detector.
 gate:
 	$(GO) test ./internal/store -run 'TestConcurrentWriters|TestWALRecoveryUnderKill|TestLoadHarness' -count=1 -v
+	$(GO) test ./internal/spec -run 'TestParsingAHundredFilesStaysUnderTheBudget' -count=1 -v
+
+# The parser gate. A job file is untrusted input, so the fuzz target runs on
+# every pull request rather than nightly only. -count=1 is required with -fuzz
+# and is written out anyway, because the repository rule is that no go test in
+# the gate may take a cached pass for a real one.
+FUZZTIME ?= 60s
+
+fuzz:
+	$(GO) test ./internal/spec -run '^$$' -fuzz 'FuzzParseJobSpec' -fuzztime $(FUZZTIME) -count=1
 
 # Detailed numbers behind the gate, including what synchronous=FULL costs.
 # Not part of ci: a benchmark on a shared runner measures the runner.
@@ -93,7 +107,7 @@ cross:
 		scripts/cross-build.sh "$${target%/*}" "$${target#*/}" || exit 1; \
 	done
 
-ci: fmt-check vet staticcheck gosec govulncheck tidy-check test gate build cross
+ci: fmt-check vet staticcheck gosec govulncheck tidy-check test gate fuzz build cross
 
 hooks:
 	git config core.hooksPath .githooks

@@ -1,0 +1,5 @@
+# Nothing but the required fields. Every default is materialised into the IR.
+name: defaults
+steps:
+  - name: only
+    run: ["/bin/true"]

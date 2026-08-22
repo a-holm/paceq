@@ -179,7 +179,7 @@ func TestInitIsBusyWhileAnotherProcessHoldsTheState(t *testing.T) {
 	if got.code != ExitBusy {
 		t.Fatalf("init against a held state directory = %d, want %d\n%s", got.code, ExitBusy, got.stderr)
 	}
-	if !strings.Contains(got.stderr, "PQ1001") {
+	if !strings.Contains(got.stderr, "PQ5002") {
 		t.Errorf("the refusal does not carry the error code:\n%s", got.stderr)
 	}
 }

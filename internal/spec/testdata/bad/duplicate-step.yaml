@@ -1,0 +1,6 @@
+name: report
+steps:
+  - name: extract
+    run: ["/bin/true"]
+  - name: extract
+    run: ["/bin/false"]

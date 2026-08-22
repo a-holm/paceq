@@ -1,0 +1,1 @@
+{"max_concurrent":1,"name":"defaults","schema":"paceq.job.v1","steps":[{"name":"only","run":["/bin/true"],"shell":false}],"timeout_ms":3600000}

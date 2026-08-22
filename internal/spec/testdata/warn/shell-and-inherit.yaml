@@ -1,0 +1,6 @@
+name: legacy-import
+inherit_env: [SSH_AUTH_SOCK, HTTPS_PROXY]
+steps:
+  - name: sync
+    run: ["rsync -a /srv/a/ /srv/b/"]
+    shell: true

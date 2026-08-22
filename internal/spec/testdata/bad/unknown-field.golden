@@ -1,0 +1,13 @@
+FAIL testdata/bad/unknown-field.yaml:5:5  PQ1040: "retries" is not a field a step has, did you mean "retry"
+
+   3 |   - name: transform
+   4 |     needs: [extract]
+>  5 |     retries: 3
+           ^
+   6 |     run: ["/opt/etl/transform"]
+
+   Rename it to "retry". It is a block, not a number.
+
+   The fields here are: name, run, shell, workdir, timeout, retry, needs.
+
+   paceq error PQ1040  for the full explanation

@@ -1,0 +1,4 @@
+name: Nightly Report
+steps:
+  - name: only
+    run: ["/bin/true"]

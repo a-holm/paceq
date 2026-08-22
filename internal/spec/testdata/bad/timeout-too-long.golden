@@ -1,0 +1,14 @@
+FAIL testdata/bad/timeout-too-long.yaml:2:10  PQ1021: 48h is over the ceiling of 24h
+
+   1 | name: report
+>  2 | timeout: 48h
+                ^
+   3 | steps:
+
+   A timeout is mandatory and it has a ceiling (08 section 3.2). A job that runs
+   longer than a day is a service, and paceq supervises jobs.
+
+   Split it into steps with their own timeouts, or run it as a service and let
+   paceq check on it instead.
+
+   paceq error PQ1021  for the full explanation

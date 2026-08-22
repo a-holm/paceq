@@ -1,0 +1,15 @@
+FAIL testdata/bad/bad-timezone.yaml:8:15  PQ2010: "CET+1" is not a time zone this machine knows: unknown time zone CET+1
+
+   6 |   - name: nightly
+   7 |     cron: "0 3 * * *"
+>  8 |     timezone: CET+1
+                     ^
+
+   Zones are IANA names, region and city, such as Europe/Oslo or America/New_York.
+   Three letter abbreviations are ambiguous and are not accepted.
+
+       timezone: Europe/Oslo
+
+       paceq doctor    reports whether the zone database is readable at all
+
+   paceq error PQ2010  for the full explanation

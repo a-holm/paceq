@@ -1,0 +1,28 @@
+FAIL testdata/bad/bad-duration.yaml:2:10  PQ1020: "45" is not a duration paceq reads: the number has no unit, and paceq will not guess between seconds and minutes
+
+   1 | name: report
+>  2 | timeout: 45
+                ^
+   3 | steps:
+
+   The number needs a unit. paceq will not guess between seconds and minutes.
+
+       timeout: 45s    45 seconds
+       timeout: 45m    45 minutes
+
+   paceq error PQ1020  for the full explanation
+
+FAIL testdata/bad/bad-duration.yaml:8:16  PQ1020: "3 days" is not a duration paceq reads: a duration has no spaces in it, the unit follows the number directly
+
+   6 |     retry:
+   7 |       max: 2
+>  8 |       initial: 3 days
+                      ^
+
+   A duration is a number and a unit: ms, s, m or h. They can be written together.
+
+       timeout: 45m
+       initial: 10s
+       max_delay: 1h30m
+
+   paceq error PQ1020  for the full explanation

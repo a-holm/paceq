@@ -1,0 +1,1 @@
+{"max_concurrent":1,"name":"hello","schema":"paceq.job.v1","steps":[{"name":"say-hello","run":["/bin/echo","hello from paceq"],"shell":false}],"timeout_ms":3600000}

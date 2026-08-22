@@ -1,0 +1,21 @@
+FAIL testdata/bad/run-string.yaml:4:10  PQ1010: run in step 1 is text, and run is a list
+
+   2 | steps:
+   3 |   - name: only
+>  4 |     run: /usr/local/bin/extract --out /srv/data
+                ^
+
+   There is no string form. paceq starts the process itself, so it never splits a
+   command on spaces, and a file name with a space or a semicolon in it stays one
+   argument:
+
+       run: ["/bin/sh", "-c", "echo done"]
+
+   or, one element per line:
+
+       run:
+         - /usr/local/bin/extract
+         - --out
+         - /srv/data/raw.parquet
+
+   paceq error PQ1010  for the full explanation

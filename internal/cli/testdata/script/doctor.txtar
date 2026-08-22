@@ -10,8 +10,8 @@ stdout 'state directory'
 stdout 'time zone'
 
 # An error code explains itself.
-exec paceq error PQ1001 -o text
-stdout 'PQ1001'
+exec paceq error PQ5002 -o text
+stdout 'PQ5002'
 
 # An unknown one is not found, not a crash.
 ! exec paceq error PQ9999

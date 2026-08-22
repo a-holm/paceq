@@ -1,0 +1,13 @@
+# Anchors are allowed. They are names in the syntax tree, and the limits are
+# checked on that tree before anything is resolved.
+name: shared-env
+env: &shared
+  PGHOST: db.internal
+  PGPORT: "5432"
+steps:
+  - name: first
+    run: ["/usr/bin/env"]
+    timeout: &short 30s
+  - name: second
+    run: ["/usr/bin/env"]
+    timeout: *short

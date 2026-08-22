@@ -1,0 +1,12 @@
+FAIL testdata/bad/syntax.yaml:4:10  PQ1000: the file is not valid YAML: sequence end token ']' not found
+
+   2 | steps:
+   3 |   - name: only
+>  4 |     run: ["/bin/true"
+                ^
+
+   Check the line above for the usual three: a tab used for indentation, a missing space
+   after a colon, or a list item that is indented less than the key it belongs to.
+   YAML forbids tabs in indentation entirely.
+
+   paceq error PQ1000  for the full explanation

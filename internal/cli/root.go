@@ -119,6 +119,7 @@ func newRoot(env Env) *cobra.Command {
 		newVersionCmd(env, &g),
 		newInitCmd(env, &g),
 		newDoctorCmd(env, &g),
+		newValidateCmd(env, &g),
 		newErrorCmd(env, &g),
 	)
 	return root

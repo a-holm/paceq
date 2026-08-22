@@ -1,0 +1,5 @@
+name: report
+timeout: 48h
+steps:
+  - name: only
+    run: ["/bin/true"]

@@ -139,7 +139,7 @@ func TestCheckModeRefusesWiderPaths(t *testing.T) {
 				t.Errorf("PermissionError = %+v, want path %s, got %#o, want %#o",
 					perm, path, c.mode, c.want)
 			}
-			for _, want := range []string{path, "PQ1002", "chmod"} {
+			for _, want := range []string{path, "PQ5001", "chmod"} {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("refusal %q does not mention %q", err, want)
 				}

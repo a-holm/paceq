@@ -1,0 +1,15 @@
+FAIL testdata/bad/alias-missing.yaml:5:14  PQ1006: timeout uses *short, and no anchor &short is defined
+
+   3 |   - name: only
+   4 |     run: ["/bin/true"]
+>  5 |     timeout: *short
+                    ^
+
+   Define it before you use it:
+
+       shared: &short
+         KEY: value
+
+   An anchor has to appear earlier in the file than the *short that reads it.
+
+   paceq error PQ1006  for the full explanation

@@ -109,7 +109,7 @@ Three details make that classification survive contact with real code:
 
 The test deliberately does **not** assert that every direct requirement is reachable. `go mod tidy` resolves across every platform and build tag, so it correctly keeps a requirement that only a `//go:build windows` file imports, and a test that calls that unused fails on a green tree while telling the developer to run the command they already ran. Staleness is `go mod tidy -diff` in CI (#22), which is the tool that can actually be right about it.
 
-`modernc.org/sqlite` is the first direct dependency, added with `internal/store` in #28. `github.com/oklog/ulid/v2` is the second, added with `internal/id` in #41. Everything else in the table is still unspent.
+`modernc.org/sqlite` is the first direct dependency, added with `internal/store` in #28. `github.com/oklog/ulid/v2` is the second, added with `internal/id` in #41. `github.com/spf13/cobra` is the third, added with the command line in #51, and `github.com/goccy/go-yaml` the fourth, added with `internal/spec` in #46. Everything else in the table is still unspent.
 
 Every dependency added later needs a line in this table. The choices below are fixed by PLAN.md §A and SYNTESE §4.9, not open questions:
 
@@ -117,7 +117,7 @@ Every dependency added later needs a line in this table. The choices below are f
 |---|---|---|
 | `modernc.org/sqlite` v1.57.0 | runtime | SQLite driver in pure Go, which is what makes `CGO_ENABLED=0` possible. Pinned: the plan keeps `mattn/go-sqlite3` behind a build tag as the escape hatch, so a driver regression must be a deliberate version bump rather than a silent upgrade |
 | `github.com/spf13/cobra` v1.10.2 | runtime | command tree, flag handling and shell completion for the CLI. Pinned: the command tree and the completion scripts it generates are a user interface, so a change to either is a deliberate bump |
-| `github.com/goccy/go-yaml` | runtime | job file parsing with line and column positions in errors; `gopkg.in/yaml.v3` is archived |
+| `github.com/goccy/go-yaml` v1.19.2 | runtime | job file parsing with line and column positions in errors; `gopkg.in/yaml.v3` is archived. Only the `parser`, `ast` and `token` packages are used: `internal/spec` walks the syntax tree itself rather than unmarshalling, which is what gives every diagnostic a position and keeps the alias limits enforceable before anything is expanded. Pinned: the job file format is a user interface, and a parser that changed what it accepts would change it |
 | `github.com/adhocore/gronx` | runtime | cron expression parser. The iterator, `Between` and the DST policy are our code, in `internal/cronx` |
 | `github.com/oklog/ulid/v2` v2.1.2 | runtime | time-sortable, prefix-searchable identifiers for `internal/id`. Pinned: the id format is a storage format, and a ULID that changed its encoding or its monotonic entropy behaviour would reorder existing rows |
 | `golang.org/x/sync` | runtime | `errgroup` and `semaphore` for structured startup and shutdown |
@@ -125,6 +125,6 @@ Every dependency added later needs a line in this table. The choices below are f
 | `github.com/rogpeppe/go-internal` v1.14.1 | test | `testscript` for CLI golden tests, where `--json` output is a public interface |
 | `pgregory.net/rapid` | test | property tests for the state machine against real SQLite |
 
-That is six runtime dependencies of eight, three of them spent, leaving two slots. Anything beyond needs an ADR that says what it replaced.
+That is six runtime dependencies of eight, four of them spent, leaving two slots. Anything beyond needs an ADR that says what it replaced.
 
 The CLI library is the one entry worth flagging: PLAN.md §A picks cobra, while the Go architecture draft argued for stdlib `flag` and a hand-written router. #51 spends the slot on cobra. What buys it is the flag model the command line rests on: persistent flags that every subcommand inherits, a `--db` and `-o` that mean the same thing everywhere, per-command argument validation that can return a paceq error rather than a printed usage block, and the completion and man page generation the management surface needs from M1 on. `flag` gives none of that without a router, a flag inheritance mechanism and a help renderer written here and maintained here.

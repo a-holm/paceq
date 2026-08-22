@@ -1,0 +1,4 @@
+name: hello
+steps:
+  - name: say-hello
+    run: ["/bin/echo", "hello from paceq"]

@@ -30,12 +30,13 @@ const (
 const exampleJobBody = `# The smallest job that works.
 #
 # run is a list, not a string: paceq starts the process itself, so nothing here
-# is expanded, quoted or split by a shell.
-job: hello
+# is expanded, quoted or split by a shell. The first element is an absolute
+# path, because there is no shell to search PATH either.
+name: hello
 description: The smallest job that works.
 steps:
   - name: say-hello
-    run: ["echo", "hello from paceq"]
+    run: ["/bin/echo", "hello from paceq"]
 `
 
 func newInitCmd(env Env, g *globals) *cobra.Command {
@@ -139,6 +140,7 @@ func runInit(ctx context.Context, env Env, g *globals, out *ui) error {
 		},
 		NextSteps: []nextStep{
 			{Command: "paceq doctor", Note: "check the installation"},
+			{Command: "paceq validate", Note: "check the job files"},
 			{Command: "paceq run hello", Note: "run the example job (arrives in M1)"},
 		},
 	}

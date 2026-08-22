@@ -1,0 +1,46 @@
+# validate reads job files and nothing else: no database, no lock, no daemon.
+
+exec paceq init -o text
+exec paceq validate -o text
+stdout 'no problems'
+
+# A broken file is refused with the position, the line quoted and a caret.
+exec cp broken.yaml jobs/broken.yaml
+! exec paceq validate -o text --no-color
+stdout 'jobs/broken.yaml:4:5'
+stdout 'PQ1040'
+stdout 'did you mean "retry"'
+stdout '\^'
+stdout 'paceq error PQ1040'
+
+# The exit code is the one a script branches on.
+! exec paceq validate
+stdout '"code":"PQ1040"'
+stdout '"severity":"error"'
+
+# A shell step validates and warns, and a warning alone does not fail.
+exec rm jobs/broken.yaml
+exec cp shell.yaml jobs/shell.yaml
+exec paceq validate -o text
+stdout 'W1001'
+
+# --strict is what a pipeline sets.
+! exec paceq validate --strict -o text
+stdout 'W1001'
+
+# The code explains itself in full.
+exec paceq error PQ1040 -o text
+stdout 'unknown'
+
+-- broken.yaml --
+name: broken
+steps:
+  - name: only
+    retries: 3
+    run: ["/bin/true"]
+-- shell.yaml --
+name: shell-step
+steps:
+  - name: only
+    run: ["rsync -a /a/ /b/"]
+    shell: true
