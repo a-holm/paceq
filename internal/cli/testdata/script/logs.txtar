@@ -1,0 +1,38 @@
+# The logs of a run are on disk while it works and after it ends. A step's
+# own words come back with the stream they were written to, and a wrong
+# step name or a wrong run id is refused with a way forward.
+
+exec paceq init
+cp flaky.yaml jobs/flaky.yaml
+exec paceq apply
+wantexit 5 - run_err.txt run flaky
+
+# The failed step's output, one JSON line per log line.
+writeid latest.id
+wantexit 0 logs.json logs_err.txt logs @latest.id --step boom
+grep 'about-to-die' logs.json
+grep '"stream":"stderr"' logs.json
+grep '"stream":"stdout"' logs.json
+
+# A run id nothing matches is a not-found, not a crash.
+wantexit 3 nf.json nf_err.txt logs 01AAAAAAAAAAAAAAAAAAAAAAAAAAAA
+grep 'no run matches' nf_err.txt
+
+# A step the job does not have is named as the mistake.
+wantexit 3 step.json step_err.txt logs @latest.id --step nosuch
+grep 'has no step "nosuch"' step_err.txt
+
+# A name that cannot be an id at all says the shape it expected.
+wantexit 3 bad.json bad_err.txt logs not-an-id-at-all
+grep 'no run matches' bad_err.txt
+
+-- flaky.yaml --
+name: flaky
+description: The second step dies, on purpose.
+steps:
+  - name: fine
+    run: ["/bin/echo", "so far so good"]
+  - name: boom
+    run: ["/bin/sh", "-c", "echo about-to-die; echo to-stderr 1>&2; exit 9"]
+  - name: never
+    run: ["/bin/echo", "this must be skipped"]

@@ -1,0 +1,125 @@
+# Applying the same file twice writes one version, not two: the second
+# apply reports the job unchanged with the same version and the same spec
+# hash. Idempotency is what makes "apply on every push" safe.
+
+exec paceq init
+cp nightly.yaml jobs/nightly.yaml
+
+# The first apply creates version 1.
+wantexit 0 first.json first_err.txt apply
+maskfile first.json
+cmpjson first.json apply_first_golden.json
+
+# The second apply finds nothing to do.
+wantexit 0 again.json again_err.txt apply
+maskfile again.json
+cmpjson again.json apply_again_golden.json
+
+# A changed file is a new version of the same job, still idempotent after.
+cp nightly_v2.yaml jobs/nightly.yaml
+wantexit 0 v2.json v2_err.txt apply
+maskfile v2.json
+cmpjson v2.json apply_v2_golden.json
+wantexit 0 v2again.json v2again_err.txt apply
+maskfile v2again.json
+cmpjson v2again.json apply_v2again_golden.json
+
+-- nightly.yaml --
+name: nightly
+description: The long job that runs at night.
+steps:
+  - name: collect
+    run: ["/bin/echo", "nightly done"]
+
+-- nightly_v2.yaml --
+name: nightly
+description: The long job that runs at night.
+steps:
+  - name: collect
+    run: ["/bin/echo", "nightly done, better"]
+
+-- apply_first_golden.json --
+{
+  "applied": [
+    {
+      "file": "jobs/hello.yaml",
+      "file_sha256": "ebb1e8f2b075c38cc6f74c9f00577bed57d4b86f0722f01a38a54a9498dd03de",
+      "job": "hello",
+      "spec_hash": "sha256:fa0ed2ff71a4e0f22389233128c1bb16f4581c8c21a047614eb21b06f53fa5dd",
+      "version": 1
+    },
+    {
+      "file": "jobs/nightly.yaml",
+      "file_sha256": "e2a5a929efa1ef728eb22a0c84191b75a97c4fa1b05a35d9f03f28e707dcf1fa",
+      "job": "nightly",
+      "spec_hash": "sha256:698513802e670f028d884a2559f96c192786c8129f530487eff5631d58fa4e43",
+      "version": 1
+    }
+  ],
+  "failed": [],
+  "unchanged": []
+}
+-- apply_again_golden.json --
+{
+  "applied": [],
+  "failed": [],
+  "unchanged": [
+    {
+      "file": "jobs/hello.yaml",
+      "file_sha256": "ebb1e8f2b075c38cc6f74c9f00577bed57d4b86f0722f01a38a54a9498dd03de",
+      "job": "hello",
+      "spec_hash": "sha256:fa0ed2ff71a4e0f22389233128c1bb16f4581c8c21a047614eb21b06f53fa5dd",
+      "version": 1
+    },
+    {
+      "file": "jobs/nightly.yaml",
+      "file_sha256": "e2a5a929efa1ef728eb22a0c84191b75a97c4fa1b05a35d9f03f28e707dcf1fa",
+      "job": "nightly",
+      "spec_hash": "sha256:698513802e670f028d884a2559f96c192786c8129f530487eff5631d58fa4e43",
+      "version": 1
+    }
+  ]
+}
+-- apply_v2again_golden.json --
+{
+  "applied": [],
+  "failed": [],
+  "unchanged": [
+    {
+      "file": "jobs/hello.yaml",
+      "file_sha256": "ebb1e8f2b075c38cc6f74c9f00577bed57d4b86f0722f01a38a54a9498dd03de",
+      "job": "hello",
+      "spec_hash": "sha256:fa0ed2ff71a4e0f22389233128c1bb16f4581c8c21a047614eb21b06f53fa5dd",
+      "version": 1
+    },
+    {
+      "file": "jobs/nightly.yaml",
+      "file_sha256": "2431160774368ce16a1dc10ba2a64749382075954b7fadd566616b74c582eccd",
+      "job": "nightly",
+      "spec_hash": "sha256:474688b32bc129a818ec44af2c46ac09e7b120a7344f85ab4656ecaeb4465521",
+      "version": 2
+    }
+  ]
+}
+-- apply_v2_golden.json --
+{
+  "applied": [
+    {
+      "file": "jobs/nightly.yaml",
+      "file_sha256": "2431160774368ce16a1dc10ba2a64749382075954b7fadd566616b74c582eccd",
+      "job": "nightly",
+      "spec_hash": "sha256:474688b32bc129a818ec44af2c46ac09e7b120a7344f85ab4656ecaeb4465521",
+      "version": 2
+    }
+  ],
+  "failed": [],
+  "unchanged": [
+    {
+      "file": "jobs/hello.yaml",
+      "file_sha256": "ebb1e8f2b075c38cc6f74c9f00577bed57d4b86f0722f01a38a54a9498dd03de",
+      "job": "hello",
+      "spec_hash": "sha256:fa0ed2ff71a4e0f22389233128c1bb16f4581c8c21a047614eb21b06f53fa5dd",
+      "version": 1
+    }
+  ]
+}

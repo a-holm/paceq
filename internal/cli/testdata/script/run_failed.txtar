@@ -1,0 +1,73 @@
+# When a step fails, the JOB failed and paceq worked: exit 5, never 1. The
+# message names the step that failed, and the next steps point at the logs
+# and the reason code.
+
+exec paceq init
+cp flaky.yaml jobs/flaky.yaml
+exec paceq apply
+
+wantexit 5 run.json run_err.txt run flaky
+maskfile run.json
+cmpjson run.json run_record_golden.json
+
+# The anatomy of the refusal: what, then what to do now.
+grep 'step "boom" failed' run_err.txt
+grep 'RUN_FAILED_STEP' run_err.txt
+grep 'paceq logs' run_err.txt
+grep 'paceq error RUN_FAILED_STEP' run_err.txt
+
+# The record carries the failure too: state, reason and the step's exit.
+grep '"state":"failed"' run.json
+grep '"reason_code":"RUN_FAILED_STEP"' run.json
+grep '"exit_code":9' run.json
+
+# The step that depended on the failed one was skipped, not run.
+grep '"state":"skipped"' run.json
+grep 'STEP_SKIPPED_UPSTREAM_FAILED' run.json
+
+-- flaky.yaml --
+name: flaky
+description: The second step dies, on purpose.
+steps:
+  - name: fine
+    run: ["/bin/echo", "so far so good"]
+  - name: boom
+    run: ["/bin/sh", "-c", "echo about-to-die; exit 9"]
+  - name: never
+    needs: [boom]
+    run: ["/bin/echo", "this must be skipped"]
+
+-- run_record_golden.json --
+{
+  "run": {
+    "created_at": "2026-09-24T09:00:00Z",
+    "finished_at": "2026-09-24T09:00:00Z",
+    "id": "<RUN1>",
+    "job": "flaky",
+    "origin": "manual",
+    "reason_code": "RUN_FAILED_STEP",
+    "started_at": "2026-09-24T09:00:00Z",
+    "state": "failed",
+    "steps": [
+      {
+        "exit_code": 0,
+        "log_path": "2026-09-24/<RUN1>/fine.1.ndjson",
+        "name": "fine",
+        "reason_code": "STEP_SUCCEEDED",
+        "state": "succeeded"
+      },
+      {
+        "exit_code": 9,
+        "log_path": "2026-09-24/<RUN1>/boom.1.ndjson",
+        "name": "boom",
+        "reason_code": "STEP_FAILED_NONZERO_EXIT",
+        "state": "failed"
+      },
+      {
+        "name": "never",
+        "reason_code": "STEP_SKIPPED_UPSTREAM_FAILED",
+        "state": "skipped"
+      }
+    ]
+  }
+}
