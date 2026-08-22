@@ -1,0 +1,97 @@
+# The help texts are part of the contract: a flag renamed here is a flag
+# broken in someone's fingers. The full root help, and one command's, live
+# in goldens so neither can drift by accident.
+
+exec paceq --help
+cp stdout root_help.txt
+cmp root_help.txt root_help.golden
+
+# Every command's help carries at least one example of real use.
+exec paceq run --help
+cp stdout run_help.txt
+cmp run_help.txt run_help.golden
+
+grep 'Examples:' run_help.txt
+
+-- root_help.golden --
+paceq runs scheduled jobs, sensors and small DAGs from one static binary.
+
+Output follows the stream: a terminal gets human text, a pipe gets JSON.
+PACEQ_OUTPUT picks a side for a caller that cannot pass flags, and -o
+overrides everything. Data goes to stdout, progress and warnings to stderr.
+
+Exit codes:
+  0  success
+  1  paceq itself failed
+  2  wrong arguments or flags
+  3  the resource asked for does not exist
+  4  validation failed
+  5  the job failed, and paceq was waiting for it
+  6  busy: another process holds the state, or a limit was reached
+  7  timed out
+  8  interrupted
+
+Usage:
+  paceq [flags]
+  paceq [command]
+
+Available Commands:
+  apply       Load job files into the database as immutable versions
+  doctor      Check the installation and say what to do about what is wrong
+  error       Explain an error or reason code
+  fsck        Check the state database against its invariants
+  help        Help about any command
+  init        Create a project: a config, an example job and a state database
+  logs        Show the log files of one run
+  run         Run a job now, in this process, and wait for it
+  runs        Inspect run history
+  status      Show the latest outcome of every job
+  validate    Check job files and say exactly what is wrong with them
+  version     Show the version, the build and the schema this binary carries
+
+Flags:
+      --db string       state database to use (default: ./.paceq/state.db)
+  -h, --help            help for paceq
+      --no-color        no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE)
+  -o, --output string   text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe)
+  -q, --quiet           only report what needs attention
+  -v, --verbose count   progress on stderr, repeatable: -v, -vv
+      --version         same as paceq version
+
+Use "paceq [command] --help" for more information about a command.
+-- run_help.golden --
+Queue a manual run of the job and execute it right here, waiting for
+every step. Nothing else has to be running: the executor lives inside this
+command, the state goes to the database, and the logs land under the state
+directory like any other run's.
+
+The exit code tells a cron migration what happened: 5 means the job failed
+and paceq worked, 1 means paceq itself failed, 8 means you stopped it. A job
+that times out failed, so it is 5.
+
+An interrupt asks for a cancellation the way everything else does, durably,
+and the run ends cancelled. Pressing it again stops waiting the hard way.
+
+Usage:
+  paceq run <job> [flags]
+
+Examples:
+  paceq run nightly
+    Queue a run of nightly and wait for it here.
+
+  paceq run import --param since=2026-09-01 -o json > run.json
+    Run with parameters and keep the machine readable record; the exit
+    code still tells cron whether the job itself failed (5) or paceq
+    did (1).
+
+Flags:
+  -h, --help            help for run
+      --param strings   a run parameter, as name=value (repeatable, values are strings)
+      --wait            wait for the run to end (a foreground run always waits; the flag says so out loud) (default true)
+
+Global Flags:
+      --db string       state database to use (default: ./.paceq/state.db)
+      --no-color        no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE)
+  -o, --output string   text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe)
+  -q, --quiet           only report what needs attention
+  -v, --verbose count   progress on stderr, repeatable: -v, -vv

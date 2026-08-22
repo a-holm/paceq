@@ -1,0 +1,30 @@
+# PACEQ_OUTPUT picks the output mode for the caller that cannot pass flags:
+# a daemon on a pipe pins JSON without anyone sniffing descriptors, and a
+# wrapper that wants words for people pins text. The order is fixed and
+# every step of it is asserted here: -o wins over PACEQ_OUTPUT, and
+# PACEQ_OUTPUT wins over whatever stdout looks like.
+
+# A pipe gets text now: the variable said so, and it outranks the pipe.
+env PACEQ_OUTPUT=text
+exec paceq version
+stdout 'schema version'
+! stdout '"schema_version":'
+
+# The other side too: json from the variable moves a terminal off its
+# text default, so one rule covers both descriptors.
+ttyrun 0 term_json.txt PACEQ_OUTPUT=json -- version
+grep '"schema_version":' term_json.txt
+! grep 'paceq ' term_json.txt
+
+# The flag beats the variable, because the person typing it said so last.
+env PACEQ_OUTPUT=json
+exec paceq version -o text
+stdout 'schema version'
+! stdout '"schema_version":'
+
+# A value no mode answers to is refused like a bad -o: exit 2, and the
+# message names where the bad value came from.
+env PACEQ_OUTPUT=yaml
+! exec paceq version
+stderr 'PACEQ_OUTPUT "yaml" is not one paceq writes'
+stderr 'set PACEQ_OUTPUT=text for people'

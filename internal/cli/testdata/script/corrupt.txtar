@@ -1,0 +1,16 @@
+# A state database that cannot be opened is exit 1, and paceq says so
+# loudly: 1 means paceq itself failed, and the message tells the user it
+# looks like a bug rather than their mistake.
+
+exec paceq init
+writegarbage .paceq/state.db
+
+wantexit 1 c.json c_err.txt status
+grep 'report it' c_err.txt
+
+# The run command refuses the same way: no silent wrong answers.
+wantexit 1 r.json r_err.txt run anything
+grep 'report it' r_err.txt
+
+# Nothing was written while paceq was confused.
+exists .paceq/state.db

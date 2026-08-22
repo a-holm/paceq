@@ -1,0 +1,61 @@
+# status is the morning view: every job, its newest run, how it ended and
+# how long ago. A job that has never run says so instead of vanishing. This
+# is the golden for the JSON a script reads.
+
+exec paceq init
+cp nightly.yaml jobs/nightly.yaml
+cp import.yaml jobs/import.yaml
+exec paceq apply
+
+# One job runs; the other never has.
+env PULSEQ_FAKE_CLOCK=2026-09-24T09:05:00Z
+exec paceq run nightly
+env PULSEQ_FAKE_CLOCK=2026-09-24T09:00:00Z
+
+wantexit 0 status.json status_err.txt status -o json
+maskfile status.json
+cmpjson status.json status_golden.json
+
+# The table marks the healthy job and points at the empty one.
+wantexit 0 text.txt text_err.txt status -o text
+grep 'nightly' text.txt
+grep 'no runs yet' text.txt
+
+# A job name nothing matches is the did-you-mean refusal.
+wantexit 3 nj.json nj_err.txt status nightl
+grep 'did you mean "nightly"?' nj_err.txt
+
+-- nightly.yaml --
+name: nightly
+description: The long job that runs at night.
+steps:
+  - name: collect
+    run: ["/bin/echo", "nightly done"]
+
+-- import.yaml --
+name: import
+description: Bring yesterday's numbers in.
+steps:
+  - name: fetch
+    run: ["/bin/echo", "import done"]
+
+-- status_golden.json --
+[
+  {
+    "job": "hello"
+  },
+  {
+    "job": "import"
+  },
+  {
+    "created_at": "2026-09-24T09:05:00Z",
+    "finished_at": "2026-09-24T09:05:00Z",
+    "id": "<RUN1>",
+    "job": "nightly",
+    "reason_code": "RUN_SUCCEEDED",
+    "started_at": "2026-09-24T09:05:00Z",
+    "state": "succeeded",
+    "steps_done": 1,
+    "steps_total": 1
+  }
+]

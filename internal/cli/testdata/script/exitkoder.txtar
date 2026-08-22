@@ -1,0 +1,64 @@
+# The exit code table from 03 section 7.2, walked end to end in one file.
+# A cron migration branches on these numbers, so every one of them is
+# asserted here against the real process exit, not against a log line.
+
+# 0 success.
+exec paceq version
+
+# 2 wrong arguments or flags: an unknown command ...
+wantexit 2 u1.json u1_err.txt finnesikke
+grep 'is not a paceq command' u1_err.txt
+grep 'paceq --help' u1_err.txt
+
+# ... an unknown flag ...
+wantexit 2 u2.json u2_err.txt version --wat
+grep 'unknown flag' u2_err.txt
+grep 'lists every flag' u2_err.txt
+
+# ... and an output format paceq does not write.
+wantexit 2 u3.json u3_err.txt version -o yaml
+grep 'not one paceq writes' u3_err.txt
+
+# 3 the resource asked for does not exist: a job nobody applied ...
+exec paceq init
+wantexit 3 j1.json j1_err.txt run ghost
+grep 'no job is named "ghost"' j1_err.txt
+grep 'paceq apply' j1_err.txt
+
+# ... and a run id nothing matches.
+wantexit 3 j2.json j2_err.txt runs show 01AAAAAAAAAAAAAAAAAAAAAAAAAAAA
+grep 'no run matches' j2_err.txt
+
+# 4 validation failed: the file is broken, paceq is not.
+cp broken.yaml jobs/broken.yaml
+wantexit 4 v1.json v1_err.txt validate
+grep 'PQ' v1.json
+
+# The broken file never reaches the database: apply refuses it, names it in
+# the failed list, and the valid files around it still load.
+wantexit 4 a1.json a1_err.txt apply
+grep '"file":"jobs/broken.yaml"' a1.json
+grep 'PQ1010' a1.json
+rm jobs/broken.yaml
+
+# 5 the job failed, and paceq was waiting for it. The difference between
+# this and 1 is the whole contract.
+cp failing.yaml jobs/failing.yaml
+exec paceq apply
+wantexit 5 f1.json f1_err.txt run failing
+grep 'step "die" failed' f1_err.txt
+grep 'RUN_FAILED_STEP' f1_err.txt
+
+-- broken.yaml --
+name: broken
+description: The run key is not an argv list, on purpose.
+steps:
+  - name: build
+    run: "echo this is a shell string, not a list"
+
+-- failing.yaml --
+name: failing
+description: One step, and it dies.
+steps:
+  - name: die
+    run: ["/bin/sh", "-c", "exit 7"]

@@ -1,0 +1,42 @@
+# At a real terminal the command line speaks human: text mode without being
+# asked, colour when nothing says no, ASCII when the locale has no UTF-8,
+# and no colour at all under NO_COLOR. These rows run against a real pseudo
+# terminal, because a fake that answers "yes, a terminal" proves nothing.
+# A run's data never mixes with its progress: at a terminal the record has
+# nowhere to go, and stderr carries the story.
+
+exec paceq init
+
+# A terminal gets text by default, and colour with it: NO_COLOR is cleared
+# for this one command so the terminal itself decides.
+ttyrun 0 doctor_color.txt LC_ALL=C.UTF-8 NO_COLOR= -- doctor
+grep 'state directory' doctor_color.txt
+grep '\[3' doctor_color.txt
+
+# The same terminal under NO_COLOR keeps the text but drops every escape.
+ttyrun 0 doctor_plain.txt LC_ALL=C.UTF-8 -- doctor
+grep 'state directory' doctor_plain.txt
+! grep '\[3' doctor_plain.txt
+
+# A locale without UTF-8 gets ASCII marks instead of symbols.
+ttyrun 0 doctor_ascii.txt LC_ALL=C NO_COLOR= -- doctor
+grep 'OK' doctor_ascii.txt
+! grep '✓' doctor_ascii.txt
+grep '✓' doctor_plain.txt
+
+# A finished run leaves stdout empty at a terminal; the words went to
+# stderr instead.
+cp nice.yaml jobs/nice.yaml
+exec paceq apply
+ttyrun 0 run_tty.txt -- run nice
+cmp run_tty.txt empty.ref
+grep 'run ' run_tty.txt.stderr
+
+-- nice.yaml --
+name: nice
+description: One step, no trouble.
+steps:
+  - name: greet
+    run: ["/bin/echo", "hello from paceq"]
+
+-- empty.ref --

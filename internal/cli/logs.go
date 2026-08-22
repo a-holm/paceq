@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/a-holm/paceq/internal/clock"
+	"github.com/a-holm/paceq/internal/id"
 	"github.com/a-holm/paceq/internal/logsink"
 	"github.com/a-holm/paceq/internal/store"
 )
@@ -116,6 +117,12 @@ func runLogs(ctx context.Context, env Env, g *globals, out *ui, runArg string, f
 				"the ids of finished runs, shortest first: any prefix names a run as soon as it can",
 				"check the id: paceq explains it on every failure it reports",
 			)
+		case errors.Is(err, id.ErrInvalid):
+			return notFoundError(
+				fmt.Sprintf("no run matches %q", runArg),
+				err.Error(),
+				"an id is 26 characters from 0123456789ABCDEFGHJKMNPQRSTVWXYZ; any prefix of one works",
+			)
 		default:
 			return err
 		}
@@ -126,7 +133,10 @@ func runLogs(ctx context.Context, env Env, g *globals, out *ui, runArg string, f
 	if err != nil {
 		return err
 	}
-	if len(sources) == 0 {
+	// A plain read needs something to read. A follow can wait instead: a
+	// live step writes its first line soon, and -f exists for exactly that
+	// wait, so an empty list now only means "not yet".
+	if len(sources) == 0 && !f.follow {
 		where := fmt.Sprintf("steps of run %s", detail.Run.ID)
 		if f.step != "" {
 			where = fmt.Sprintf("step %s of run %s", f.step, detail.Run.ID)
@@ -284,7 +294,9 @@ func followLogs(ctx context.Context, clk clock.Clock, ro *store.Store, root logs
 		}
 
 		list := sources
-		if f.allAttempts || f.step == "" {
+		// An empty list re-resolves too: with a fixed --step the file can
+		// appear after the follow began, and only a fresh look finds it.
+		if len(list) == 0 || f.allAttempts || f.step == "" {
 			// Attempts and steps can appear while following: re-resolve.
 			found, _, err := selectLogSources(root, live, f)
 			if err != nil {

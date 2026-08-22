@@ -1,0 +1,30 @@
+# A second paceq never sneaks past the first: the state directory is held
+# by one process at a time, and the refused one answers exit 6 with who is
+# in the way and how to find out. Reading stays possible: status needs no
+# lock, which is the point of a read only pool.
+
+exec paceq init
+cp nightly.yaml jobs/nightly.yaml
+exec paceq apply
+
+# Another holder takes the state directory, the way a second paceq would.
+holdstate mine
+
+wantexit 6 - busy_err.txt run nightly
+grep 'PQ5002' busy_err.txt
+grep 'paceq doctor' busy_err.txt
+
+# Reading the history while the directory is held still works.
+wantexit 0 s.json s_err.txt status -o json
+
+releasehold mine
+
+# Once it is let go, the same command just runs.
+exec paceq run nightly
+
+-- nightly.yaml --
+name: nightly
+description: The long job that runs at night.
+steps:
+  - name: collect
+    run: ["/bin/echo", "nightly done"]

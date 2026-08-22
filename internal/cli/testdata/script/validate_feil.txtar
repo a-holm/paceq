@@ -1,0 +1,40 @@
+# A job file paceq refuses to load never reaches the database: validate says
+# what is wrong, where, and what to do about it, and the exit is 4. This is
+# the golden for the JSON diagnostics a script reads.
+
+mkdir jobs
+cp broken.yaml jobs/broken.yaml
+
+# The broken file fails validation with its code named in the report.
+wantexit 4 val.json val_err.txt validate
+maskfile val.json
+cmpjson val.json validate_feil_golden.json
+
+grep 'PQ' val.json
+grep 'each message above says what to change and where' val_err.txt
+
+# The same report in text mode names the file for a human.
+wantexit 4 text.txt text_err.txt validate -o text
+grep 'broken.yaml' text.txt
+
+-- broken.yaml --
+name: broken
+description: The run key is not an argv list, on purpose.
+steps:
+  - name: build
+    run: "echo this is a shell string, not a list"
+
+-- validate_feil_golden.json --
+{
+  "diagnostics": [
+    {
+      "code": "PQ1010",
+      "col": 10,
+      "file": "jobs/broken.yaml",
+      "hint": "There is no string form. paceq starts the process itself, so it never splits a\ncommand on spaces, and a file name with a space or a semicolon in it stays one\nargument:\n\n    run: [\"/bin/sh\", \"-c\", \"echo done\"]\n\nor, one element per line:\n\n    run:\n      - /usr/local/bin/extract\n      - --out\n      - /srv/data/raw.parquet",
+      "line": 5,
+      "message": "run in step 1 is text, and run is a list",
+      "severity": "error"
+    }
+  ]
+}

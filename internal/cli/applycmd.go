@@ -177,7 +177,7 @@ func applyToStore(ctx context.Context, env Env, g *globals, loaded []loadedSpec)
 		)
 	}
 
-	s, err := store.OpenState(ctx, stateDir, store.Options{})
+	s, err := store.OpenState(ctx, stateDir, store.Options{Clock: clkOf(env)})
 	if err != nil {
 		return nil, err
 	}

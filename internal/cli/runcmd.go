@@ -50,6 +50,13 @@ that times out failed, so it is 5.
 
 An interrupt asks for a cancellation the way everything else does, durably,
 and the run ends cancelled. Pressing it again stops waiting the hard way.`,
+		Example: `  paceq run nightly
+    Queue a run of nightly and wait for it here.
+
+  paceq run import --param since=2026-09-01 -o json > run.json
+    Run with parameters and keep the machine readable record; the exit
+    code still tells cron whether the job itself failed (5) or paceq
+    did (1).`,
 		Args: exactArgs(1, "one job name"),
 		RunE: runArgsE(env, g, func(ctx context.Context, out *ui, args []string) error {
 			return runRun(ctx, env, g, out, args[0], f)
@@ -88,7 +95,7 @@ func runRun(ctx context.Context, env Env, g *globals, out *ui, jobName string, f
 	execCtx, hardStop := context.WithCancel(context.WithoutCancel(ctx))
 	defer hardStop()
 
-	s, err := store.OpenState(execCtx, stateDir, store.Options{})
+	s, err := store.OpenState(execCtx, stateDir, store.Options{Clock: clkOf(env)})
 	if err != nil {
 		return err
 	}

@@ -1,0 +1,24 @@
+# NO_COLOR is a convention scripts and shells already set, so it outranks
+# everything but its own flag. On a pipe there is no colour to start with,
+# so these rows force the question: CLICOLOR_FORCE asks for colour where
+# none belongs, NO_COLOR overrules it, and --no-color overrules both.
+
+env NO_COLOR=
+env CLICOLOR_FORCE=1
+exec paceq doctor -o text
+stdout '\[3'
+
+env NO_COLOR=1
+env CLICOLOR_FORCE=1
+exec paceq doctor -o text
+! stdout '\[3'
+
+env NO_COLOR=1
+env CLICOLOR_FORCE=1
+exec paceq doctor -o text --no-color
+! stdout '\[3'
+
+# The flag alone is enough at a terminal or without one.
+env CLICOLOR_FORCE=1
+exec paceq doctor -o text --no-color
+! stdout '\[3'
