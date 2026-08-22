@@ -63,6 +63,12 @@ jobs:
       - name: concurrency gate and throughput floor
         run: make gate
 
+      # A job file is untrusted input and the parser is the surface that reads
+      # it. Sixty seconds of fuzzing per pull request, over a corpus that is
+      # seeded from internal/spec/testdata.
+      - name: fuzz the job file parser
+        run: make fuzz
+
       - name: build
         run: make build
 
