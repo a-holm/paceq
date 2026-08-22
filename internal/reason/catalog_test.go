@@ -53,6 +53,7 @@ func TestCodesBelongToTheirLevel(t *testing.T) {
 		LevelTrigger: "TRIGGER_",
 		LevelRun:     "RUN_",
 		LevelStep:    "STEP_",
+		LevelLease:   "LEASE_",
 	}
 	for _, e := range All() {
 		want, ok := prefixes[e.Level]

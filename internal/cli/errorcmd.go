@@ -489,7 +489,7 @@ func listCatalogue(out *ui) error {
 	}
 	out.print("")
 	out.print("Reason codes:")
-	for _, level := range []reason.Level{reason.LevelTick, reason.LevelTrigger, reason.LevelRun, reason.LevelStep} {
+	for _, level := range []reason.Level{reason.LevelTick, reason.LevelTrigger, reason.LevelRun, reason.LevelStep, reason.LevelLease} {
 		out.print("  %s level", level)
 		for _, e := range listEntries() {
 			if e.Series != seriesReason || e.Level != string(level) {

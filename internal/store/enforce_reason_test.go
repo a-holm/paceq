@@ -82,6 +82,8 @@ func TestEveryCatalogueCodeIsStorable(t *testing.T) {
 			stmt = tickInsert("01J0CODE"+itoa(n), "skipped", string(e.Code))
 		case reason.LevelTrigger:
 			stmt = triggerInsert("01J0CODE"+itoa(n), "rejected", string(e.Code))
+		case reason.LevelLease:
+			stmt = leaseEventInsert("scheduler", "holder-"+itoa(n), 1+n, string(e.Code))
 		}
 		if _, err := s.w.ExecContext(ctx, stmt); err != nil {
 			t.Errorf("%s: the schema refused a catalogue code: %v", e.Code, err)
@@ -109,7 +111,12 @@ func tickInsert(id, outcome, code string) string {
 
 func triggerInsert(id, outcome, code string) string {
 	return "INSERT INTO triggers (id, tick_id, job_name, created_at, outcome, reason_code)\n" +
-		"\t\t\tVALUES ('" + id + "', '01J0TICK1', 'nightly', 2001, '" + outcome + "', " + sqlOrNull(code) + ")"
+		"			VALUES ('" + id + "', '01J0TICK1', 'nightly', 2001, '" + outcome + "', " + sqlOrNull(code) + ")"
+}
+
+func leaseEventInsert(lease, holder string, epoch int, code string) string {
+	return "INSERT INTO lease_events (at, lease, holder, epoch, reason_code)\n" +
+		"			VALUES (3001, '" + lease + "', '" + holder + "', " + itoa(epoch) + ", '" + code + "')"
 }
 
 // sqlOrNull quotes a code for these fixtures, or writes NULL when it is empty,

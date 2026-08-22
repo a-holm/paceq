@@ -2,6 +2,9 @@
 # contract: removing or renaming a line fails TestCatalogueMatchesTheStableList
 # and has to be argued for in the commit that does it. Codes are added freely;
 # they are never given a second meaning.
+LEASE_ACQUIRED
+LEASE_LOST
+LEASE_TAKEN_OVER
 RUN_CANCELLED_MANUAL
 RUN_CANCELLED_SHUTDOWN
 RUN_FAILED_STEP

@@ -30,6 +30,8 @@ func runCode(suffix string) Code { return Code("RUN_" + suffix) }
 
 func stepCode(suffix string) Code { return Code("STEP_" + suffix) }
 
+func leaseCode(suffix string) Code { return Code("LEASE_" + suffix) }
+
 // The code variables, grouped by level in catalogue order. Callers take these
 // rather than spelling the strings, so a typo is a compile error, and the
 // closed set is unchanged: every code still appears here by name exactly
@@ -77,6 +79,10 @@ var (
 	STEPFailedSignal           = stepCode("FAILED_SIGNAL")
 	STEPFailedExecutorLost     = stepCode("FAILED_EXECUTOR_LOST")
 	STEPCancelled              = stepCode("CANCELLED")
+
+	LEASEAcquired  = leaseCode("ACQUIRED")
+	LEASELost      = leaseCode("LOST")
+	LEASETakenOver = leaseCode("TAKEN_OVER")
 )
 
 // newCatalog builds the table. It is a function so the entries below read as
@@ -616,6 +622,49 @@ func newCatalog() map[Code]Entry {
 				"wrong inside the step.",
 			Remedy: []string{
 				"the run's own reason code says who cancelled it and why",
+			},
+			Terminal: true,
+		},
+
+		{
+			Code:  LEASEAcquired,
+			Level: LevelLease,
+			Short: "became the leader for this role",
+			Explanation: "This instance took the role lease and is now the single decision maker " +
+				"for the role: the scheduler that fires jobs, or the reaper, or later the " +
+				"sensor runtime. The row records the beginning of a leadership, whether the " +
+				"lease was free because nobody held it or because the previous holder shut " +
+				"down cleanly and deleted its own row.",
+			Remedy: []string{
+				"nothing to fix; correlate other rows of the same period through the epoch beside this one",
+			},
+			Terminal: true,
+		},
+		{
+			Code:  LEASELost,
+			Level: LevelLease,
+			Short: "another holder owns a live lease",
+			Explanation: "A renewal attempt came back empty: another live holder owns this lease, " +
+				"so this instance stopped leading. Two instances were eligible at the same " +
+				"moment, which is exactly the overlapping restart or forgotten terminal the " +
+				"lease exists to make harmless; only one of them kept deciding.",
+			Remedy: []string{
+				"one such row per overlap window is the mechanism working, not a fault",
+				"rows repeating without an obvious second daemon point at two statedirs against one database file",
+			},
+			Terminal: true,
+		},
+		{
+			Code:  LEASETakenOver,
+			Level: LevelLease,
+			Short: "took over from a holder whose lease expired",
+			Explanation: "The lease was held by another holder whose time ran out, and this " +
+				"instance took it over with the fencing token bumped by exactly one. The " +
+				"previous holder either crashed or froze past its ttl; anything it still " +
+				"writes can be recognised as stale by the old epoch and refused.",
+			Remedy: []string{
+				"look for the dead holder's session row to learn how it died",
+				"a takeover right after every deploy means stop times exceed the ttl: raise TimeoutStopSec or the ttl",
 			},
 			Terminal: true,
 		},

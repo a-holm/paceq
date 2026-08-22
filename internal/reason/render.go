@@ -8,7 +8,7 @@ import (
 // levelOrder is the order the generated page and `paceq error --list` group
 // by: the direction data flows, tick to step. It is fixed here rather than
 // sorted, so reordering the levels is a visible diff and not a surprise.
-var levelOrder = []Level{LevelTick, LevelTrigger, LevelRun, LevelStep}
+var levelOrder = []Level{LevelTick, LevelTrigger, LevelRun, LevelStep, LevelLease}
 
 // levelIntro is the one line under each level heading on the generated page.
 var levelIntro = map[Level]string{
@@ -16,6 +16,7 @@ var levelIntro = map[Level]string{
 	LevelTrigger: "Codes stored in the triggers table, one row per trigger a tick produced.",
 	LevelRun:     "Codes stored on the runs table, one row per run.",
 	LevelStep:    "Codes stored on the steps table, one row per step of a run.",
+	LevelLease:   "Codes stored in the lease_events table, one row per moment a role lease changed.",
 }
 
 // Render draws docs/reference/reason-codes.md from the catalogue and nothing
@@ -82,6 +83,8 @@ func levelHeading(l Level) string {
 		return "Run"
 	case LevelStep:
 		return "Step"
+	case LevelLease:
+		return "Lease"
 	}
 	return string(l)
 }

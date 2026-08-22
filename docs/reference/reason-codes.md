@@ -82,6 +82,16 @@ Codes stored on the steps table, one row per step of a run.
 | `STEP_SKIPPED_UPSTREAM_SKIPPED` | an upstream step was itself skipped | yes | `upstream` |
 | `STEP_SUCCEEDED` | exited zero | yes | - |
 
+## Lease level
+
+Codes stored in the lease_events table, one row per moment a role lease changed.
+
+| Code | Meaning | Ends the object | reason_data keys |
+|---|---|---|---|
+| `LEASE_ACQUIRED` | became the leader for this role | yes | - |
+| `LEASE_LOST` | another holder owns a live lease | yes | - |
+| `LEASE_TAKEN_OVER` | took over from a holder whose lease expired | yes | - |
+
 ## The codes in full
 
 ### TICK_ERROR_CONFIG
@@ -605,3 +615,42 @@ lives in its log.
 What to do next:
 - nothing to fix
 - duration_ms beside sibling steps is the cheap way to spot one step drifting
+
+### LEASE_ACQUIRED
+
+became the leader for this role. [lease level, ends the object]
+
+This instance took the role lease and is now the single decision maker for
+the role: the scheduler that fires jobs, or the reaper, or later the sensor
+runtime. The row records the beginning of a leadership, whether the lease
+was free because nobody held it or because the previous holder shut down
+cleanly and deleted its own row.
+
+What to do next:
+- nothing to fix; correlate other rows of the same period through the epoch beside this one
+
+### LEASE_LOST
+
+another holder owns a live lease. [lease level, ends the object]
+
+A renewal attempt came back empty: another live holder owns this lease, so
+this instance stopped leading. Two instances were eligible at the same
+moment, which is exactly the overlapping restart or forgotten terminal the
+lease exists to make harmless; only one of them kept deciding.
+
+What to do next:
+- one such row per overlap window is the mechanism working, not a fault
+- rows repeating without an obvious second daemon point at two statedirs against one database file
+
+### LEASE_TAKEN_OVER
+
+took over from a holder whose lease expired. [lease level, ends the object]
+
+The lease was held by another holder whose time ran out, and this instance
+took it over with the fencing token bumped by exactly one. The previous
+holder either crashed or froze past its ttl; anything it still writes can be
+recognised as stale by the old epoch and refused.
+
+What to do next:
+- look for the dead holder's session row to learn how it died
+- a takeover right after every deploy means stop times exceed the ttl: raise TimeoutStopSec or the ttl
