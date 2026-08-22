@@ -133,7 +133,10 @@ func runLogs(ctx context.Context, env Env, g *globals, out *ui, runArg string, f
 	if err != nil {
 		return err
 	}
-	if len(sources) == 0 {
+	// A plain read needs something to read. A follow can wait instead: a
+	// live step writes its first line soon, and -f exists for exactly that
+	// wait, so an empty list now only means "not yet".
+	if len(sources) == 0 && !f.follow {
 		where := fmt.Sprintf("steps of run %s", detail.Run.ID)
 		if f.step != "" {
 			where = fmt.Sprintf("step %s of run %s", f.step, detail.Run.ID)
@@ -291,7 +294,9 @@ func followLogs(ctx context.Context, clk clock.Clock, ro *store.Store, root logs
 		}
 
 		list := sources
-		if f.allAttempts || f.step == "" {
+		// An empty list re-resolves too: with a fixed --step the file can
+		// appear after the follow began, and only a fresh look finds it.
+		if len(list) == 0 || f.allAttempts || f.step == "" {
 			// Attempts and steps can appear while following: re-resolve.
 			found, _, err := selectLogSources(root, live, f)
 			if err != nil {
