@@ -156,7 +156,6 @@ func runRun(ctx context.Context, env Env, g *globals, out *ui, jobName string, f
 		return &Error{
 			code: ExitInterrupted,
 			what: "the run was cancelled before it finished",
-			err:  nil,
 			next: []string{
 				"nothing was left half written: every change paceq makes is one transaction",
 				"paceq logs " + detail.ID + "  shows how far it got",
