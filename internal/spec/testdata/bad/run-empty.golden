@@ -1,0 +1,12 @@
+FAIL testdata/bad/run-empty.yaml:4:10  PQ1011: run in step 1 is an empty list
+
+   2 | steps:
+   3 |   - name: only
+>  4 |     run: []
+                ^
+
+   The first element is the program to start, so the list needs at least one:
+
+       run: ["/bin/echo", "hello"]
+
+   paceq error PQ1011  for the full explanation

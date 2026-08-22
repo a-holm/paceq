@@ -1,0 +1,1 @@
+{"env":{"PGHOST":"db.internal","PGPORT":"5432"},"max_concurrent":1,"name":"shared-env","schema":"paceq.job.v1","steps":[{"name":"first","run":["/usr/bin/env"],"shell":false,"timeout_ms":30000},{"name":"second","run":["/usr/bin/env"],"shell":false,"timeout_ms":30000}],"timeout_ms":3600000}

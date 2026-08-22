@@ -1,0 +1,15 @@
+FAIL testdata/bad/duplicate-step.yaml:5:11  PQ2001: two steps are called "extract"
+
+   3 |   - name: extract
+   4 |     run: ["/bin/true"]
+>  5 |   - name: extract
+                 ^
+   6 |     run: ["/bin/false"]
+
+   Step 1 already has that name. A step name is how a failure says which step
+   failed, how needs points at it and how a retry names it, so two steps cannot
+   share one. Rename this one:
+
+       - name: extract-2
+
+   paceq error PQ2001  for the full explanation

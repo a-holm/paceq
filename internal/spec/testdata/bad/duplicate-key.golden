@@ -1,0 +1,13 @@
+FAIL testdata/bad/duplicate-key.yaml:3:1  PQ1041: "timeout" is set twice in a job
+
+   1 | name: report
+   2 | timeout: 30m
+>  3 | timeout: 45m
+       ^
+   4 | steps:
+
+   A mapping holds each key once. The second one wins silently in most YAML readers,
+   which is how a job ends up running with a value nobody can find in the file.
+   Delete the one you did not mean.
+
+   paceq error PQ1041  for the full explanation

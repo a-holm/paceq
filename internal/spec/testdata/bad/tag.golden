@@ -1,0 +1,11 @@
+FAIL testdata/bad/tag.yaml:2:10  PQ1043: the tag "!!str" is not one paceq honours
+
+   1 | name: report
+>  2 | timeout: !!str 45m
+                ^
+   3 | steps:
+
+   Remove the tag. Every field in a job has one type already, and paceq reads the
+   value as that type. A tag can only disagree with it.
+
+   paceq error PQ1043  for the full explanation

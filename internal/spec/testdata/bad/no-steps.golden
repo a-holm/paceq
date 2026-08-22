@@ -1,0 +1,13 @@
+FAIL testdata/bad/no-steps.yaml:1:1  PQ1003: the job has no steps
+
+>  1 | name: report
+       ^
+   2 | description: A job that does nothing.
+
+   A job runs steps, and needs at least one:
+
+       steps:
+         - name: say-hello
+           run: ["/bin/echo", "hello"]
+
+   paceq error PQ1003  for the full explanation

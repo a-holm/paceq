@@ -1,0 +1,7 @@
+name: report
+env: &base
+  PGHOST: db.internal
+steps:
+  - name: only
+    run: ["/bin/true"]
+    <<: *base

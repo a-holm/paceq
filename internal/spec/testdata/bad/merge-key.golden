@@ -1,0 +1,14 @@
+FAIL testdata/bad/merge-key.yaml:7:5  PQ1042: a step uses a merge key, which paceq does not resolve
+
+   5 |   - name: only
+   6 |     run: ["/bin/true"]
+>  7 |     <<: *base
+           ^
+
+   << pulls the contents of another mapping into this one, and what wins when both
+   define a key is a rule nobody reading the file can see. Write the fields out, or
+   use an anchor on a single value:
+
+       timeout: &short 30s
+
+   paceq error PQ1042  for the full explanation

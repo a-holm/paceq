@@ -1,0 +1,16 @@
+FAIL testdata/bad/run-relative.yaml:4:11  PQ1012: the command "extract" is not an absolute path
+
+   2 | steps:
+   3 |   - name: only
+>  4 |     run: ["extract", "--out", "/srv/data"]
+                 ^
+
+   paceq starts the process itself. There is no shell to search PATH, and no working
+   directory for a relative name to be relative to, so the first element has to say
+   exactly which program to start:
+
+       run: ["/usr/bin/extract", ...]
+
+       command -v extract    prints the path this machine would use
+
+   paceq error PQ1012  for the full explanation

@@ -1,0 +1,36 @@
+WARN testdata/warn/shell-and-inherit.yaml:2:14  W1002: the job inherits SSH_AUTH_SOCK, HTTPS_PROXY from the environment paceq was started in
+
+   1 | name: legacy-import
+>  2 | inherit_env: [SSH_AUTH_SOCK, HTTPS_PROXY]
+                    ^
+   3 | steps:
+
+   A job starts from an empty environment on purpose (08 section 3.2): what it gets is
+   what the file says, so a run from a terminal and a run from the scheduler are the
+   same run. Every name here is an exception, and it makes the job depend on how
+   paceq itself was started.
+
+   Set the value in the job instead, when it is not a secret:
+
+       env:
+         NAME: value
+
+   paceq error W1002  for the full explanation
+
+WARN testdata/warn/shell-and-inherit.yaml:6:12  W1001: the step "sync" runs its command through a shell
+
+   4 |   - name: sync
+   5 |     run: ["rsync -a /srv/a/ /srv/b/"]
+>  6 |     shell: true
+                  ^
+
+   A shell splits, globs and expands what it is given, so an argument that carries a
+   space, a quote or a semicolon stops being one argument. With shell off, paceq
+   starts the process itself and nothing touches the arguments:
+
+       run: ["/bin/sh", "-c", "echo done"]
+
+   Keep it on only when the command genuinely needs a shell, and say why in the
+   description.
+
+   paceq error W1001  for the full explanation

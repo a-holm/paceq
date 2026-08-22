@@ -1,0 +1,10 @@
+FAIL testdata/bad/empty.yaml  PQ1003: the job file is empty
+
+   A job needs a name and at least one step:
+
+       name: hello
+       steps:
+         - name: say-hello
+           run: ["/bin/echo", "hello"]
+
+   paceq error PQ1003  for the full explanation

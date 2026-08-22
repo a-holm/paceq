@@ -1,0 +1,12 @@
+# The Norway problem: none of these values is a boolean.
+name: scalars
+env:
+  COUNTRY: no
+  ANSWER: yes
+  SWITCH: on
+  VERSION: 1.20
+  PORT: 5432
+inherit_env: [NO, YES, ON, OFF]
+steps:
+  - name: print
+    run: ["/bin/echo", "no", "yes", "1.20"]

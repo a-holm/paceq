@@ -3,6 +3,7 @@ module github.com/a-holm/paceq
 go 1.25.0
 
 require (
+	github.com/goccy/go-yaml v1.19.2
 	github.com/oklog/ulid/v2 v2.1.2
 	github.com/rogpeppe/go-internal v1.14.1
 	github.com/spf13/cobra v1.10.2

@@ -1,0 +1,14 @@
+FAIL testdata/bad/max-concurrent.yaml:2:17  PQ1030: max_concurrent is 0, and the lowest it goes is 1
+
+   1 | name: report
+>  2 | max_concurrent: 0
+                       ^
+   3 | steps:
+
+   There is no value that means "never run". Remove the schedule, or pause the job,
+   if that is what you want. 1 is the default and means what a flock wrapper around
+   a cron line means: a second run waits rather than overlapping.
+
+       max_concurrent: 1
+
+   paceq error PQ1030  for the full explanation

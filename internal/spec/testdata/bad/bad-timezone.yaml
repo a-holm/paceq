@@ -1,0 +1,8 @@
+name: report
+steps:
+  - name: only
+    run: ["/bin/true"]
+schedules:
+  - name: nightly
+    cron: "0 3 * * *"
+    timezone: CET+1

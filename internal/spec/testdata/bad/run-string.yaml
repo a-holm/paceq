@@ -1,0 +1,4 @@
+name: report
+steps:
+  - name: only
+    run: /usr/local/bin/extract --out /srv/data

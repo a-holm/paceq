@@ -1,0 +1,8 @@
+name: nightly-report
+steps:
+  - name: transform
+    needs: [extract]
+    retries: 3
+    run: ["/opt/etl/transform"]
+  - name: extract
+    run: ["/opt/etl/extract"]

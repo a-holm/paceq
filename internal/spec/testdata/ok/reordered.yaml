@@ -1,0 +1,43 @@
+steps:
+  - retry:
+      jitter: full
+      initial: 10000ms
+      backoff: exponential
+      max_delay: 300s
+      max: 3
+    timeout: 1200s
+    run:
+      - /usr/local/bin/extract
+      - --out
+      - /srv/data/raw.parquet
+    name: extract
+  - workdir: /srv/analytics/work
+    needs:
+      - extract
+    run: ["/opt/etl/transform"]
+    name: transform
+  - needs: [extract, transform]
+    shell: false
+    name: notify
+    run: ["/bin/sh", "-c", "echo done"]
+
+sensors:
+  - interval: 15000ms
+    type: file
+    name: dropzone
+schedules:
+  - timezone: Europe/Oslo
+    cron: "0 3 * * *"
+    name: nightly
+
+max_concurrent: 1
+timeout: 2700s
+workdir: /srv/analytics
+inherit_env:
+  - SSH_AUTH_SOCK
+env_file: .env
+env:
+  PGPORT: "5432"
+  PGHOST: db.internal
+description: Builds and sends the daily sales report.
+name: nightly-report

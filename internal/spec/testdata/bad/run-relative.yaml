@@ -1,0 +1,4 @@
+name: report
+steps:
+  - name: only
+    run: ["extract", "--out", "/srv/data"]

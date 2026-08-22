@@ -1,0 +1,8 @@
+# The same job as defaults.yaml with every default written out. Same hash.
+name: defaults
+timeout: 1h
+max_concurrent: 1
+steps:
+  - name: only
+    run: ["/bin/true"]
+    shell: false

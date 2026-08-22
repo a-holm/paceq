@@ -1,0 +1,17 @@
+FAIL testdata/bad/unknown-need.yaml:7:13  PQ2002: step "transform" needs "extrct", and no step is called that
+
+   5 |   - name: transform
+   6 |     run: ["/bin/true"]
+>  7 |     needs: [extrct]
+                   ^
+
+   Did you mean "extract"?
+
+       needs: [extract]
+
+   The steps in this job are: extract, transform.
+
+   needs parses in M1 and is enforced in M4-01, where it becomes the graph. Until
+   then the steps run in the order they are written.
+
+   paceq error PQ2002  for the full explanation

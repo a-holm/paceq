@@ -1,0 +1,41 @@
+# Every field the format has, written the way the issue documents it.
+name: nightly-report
+description: Builds and sends the daily sales report.
+
+env:
+  PGHOST: db.internal
+  PGPORT: "5432"
+env_file: .env
+inherit_env: [SSH_AUTH_SOCK]
+workdir: /srv/analytics
+timeout: 45m
+max_concurrent: 1
+
+steps:
+  - name: extract
+    run: ["/usr/local/bin/extract", "--out", "/srv/data/raw.parquet"]
+    timeout: 20m
+    retry:
+      max: 3
+      backoff: exponential
+      initial: 10s
+      max_delay: 5m
+      jitter: full
+  - name: transform
+    run: ["/opt/etl/transform"]
+    needs: [extract]
+    workdir: /srv/analytics/work
+  - name: notify
+    run: ["/bin/sh", "-c", "echo done"]
+    shell: false
+    needs: [transform, extract]
+
+schedules:
+  - name: nightly
+    cron: "0 3 * * *"
+    timezone: Europe/Oslo
+
+sensors:
+  - name: dropzone
+    type: file
+    interval: 15s

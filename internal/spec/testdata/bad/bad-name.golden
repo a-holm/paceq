@@ -1,0 +1,15 @@
+FAIL testdata/bad/bad-name.yaml:1:7  PQ1002: the job name is "Nightly Report", which is not a name paceq accepts
+
+>  1 | name: Nightly Report
+             ^
+   2 | steps:
+
+   A name is lower case letters, digits, underscores and dashes, starts with a letter
+   or a digit, and is at most 64 characters: ^[a-z0-9][a-z0-9_-]{0,63}$
+
+       name: nightly-report
+
+   It has to survive being typed on a command line, used as a directory name and
+   put in a URL, and a name that needs quoting in any of those gets typed wrong.
+
+   paceq error PQ1002  for the full explanation

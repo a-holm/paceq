@@ -1,0 +1,8 @@
+name: report
+timeout: 45
+steps:
+  - name: only
+    run: ["/bin/true"]
+    retry:
+      max: 2
+      initial: 3 days
