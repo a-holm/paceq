@@ -2,11 +2,14 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/a-holm/paceq/internal/diag"
+	"github.com/a-holm/paceq/internal/reason"
 	"github.com/a-holm/paceq/internal/spec"
 	"github.com/a-holm/paceq/internal/store"
 )
@@ -344,30 +347,83 @@ var catalogue = map[string]explanation{
 	},
 }
 
+// seriesDiagnostic and seriesReason label which catalogue a --list entry came
+// from. They are part of the JSON contract, so they are fixed strings, never
+// derived.
+const (
+	seriesDiagnostic = "diagnostic"
+	seriesReason     = "reason"
+)
+
+// catalogueEntry is one row of `paceq error --list -o json` and of a single
+// reason code lookup: the stable machine contract for the whole catalogue
+// (03 section 7.1). Diagnostic entries carry no level, terminal flag or data
+// keys; those three fields belong to the reason series alone.
+type catalogueEntry struct {
+	Code        string   `json:"code"`
+	Series      string   `json:"series"`
+	Level       string   `json:"level,omitempty"`
+	Terminal    *bool    `json:"terminal,omitempty"`
+	Title       string   `json:"title"`
+	Explanation string   `json:"explanation"`
+	Next        []string `json:"next"`
+	DataKeys    []string `json:"data_keys,omitempty"`
+}
+
 func newErrorCmd(env Env, g *globals) *cobra.Command {
-	return &cobra.Command{
-		Use:   "error <code>",
-		Short: "Explain an error code",
-		Long: `Explain an error code, such as PQ1040.
+	cmd := &cobra.Command{
+		Use:   "error [code | --list]",
+		Short: "Explain an error or reason code",
+		Long: `Explain a code, such as PQ1040 or STEP_FAILED_SPAWN.
 
 Every paceq message carries its code. This command is the long form: what the
-code means, why paceq refuses, and what to do about it.`,
-		Args: exactArgs(1, "one error code"),
+code means, why paceq refuses, and what to do about it. Diagnostic codes
+(PQ1xxx, PQ2xxx, PQ5xxx, W1xxx) come from reading job files and opening state;
+reason codes (RUN_, STEP_, TICK_, TRIGGER_) explain what the scheduler and the
+runner decided.
+
+With --list the command prints the whole catalogue of both series instead:
+human readable on a terminal, one JSON array through a pipe.`,
+		Args: func(cmd *cobra.Command, args []string) error {
+			list, _ := cmd.Flags().GetBool("list")
+			if list {
+				return exactArgs(0, "no arguments beside --list")(cmd, args)
+			}
+			return exactArgs(1, "one error code")(cmd, args)
+		},
 		RunE: runArgsE(env, g, func(_ context.Context, out *ui, args []string) error {
-			return explainCode(out, args[0])
+			return explainOrList(out, args)
 		}),
 	}
+	cmd.Flags().Bool("list", false, "print the whole error catalogue")
+	return cmd
+}
+
+func explainOrList(out *ui, args []string) error {
+	if len(args) == 0 {
+		return listCatalogue(out)
+	}
+	return explainCode(out, args[0])
 }
 
 func explainCode(out *ui, code string) error {
 	name := strings.ToUpper(strings.TrimSpace(code))
+	if e, ok := reason.Lookup(reason.Code(name)); ok {
+		return explainReason(out, e)
+	}
 	found, ok := catalogue[name]
 	if !ok {
+		next := []string{
+			"check the code in the message that sent you here: paceq prints it in front of every refusal",
+			"paceq version  says which build this is",
+		}
+		if s := diag.Suggest(name, knownCodes()); s != "" {
+			next = append([]string{"did you mean " + s + "? paceq error " + s + "  explains it"}, next...)
+		}
 		return notFoundError(
 			"no error code "+name+" in this build",
 			"the catalogue of "+strings.Join(knownCodes(), ", "),
-			"check the code in the message that sent you here: paceq prints it in front of every refusal",
-			"paceq version  says which build this is",
+			next...,
 		)
 	}
 
@@ -386,13 +442,109 @@ func explainCode(out *ui, code string) error {
 	return nil
 }
 
-// knownCodes is the catalogue in a stable order, so a refusal names the same
-// set every time it is printed.
+// explainReason renders one entry of the runtime catalogue: the short line
+// with its level tag, the long explanation, the remediation steps, and the
+// reason_data keys the code promises (06 section 2.1).
+func explainReason(out *ui, e reason.Entry) error {
+	if out.mode == modeJSON {
+		return out.json(reasonCatalogueEntry(e))
+	}
+	out.print("%s  %s  %s", e.Code, e.Short, reasonTag(e))
+	out.print("")
+	out.print("%s", e.Explanation)
+	out.print("")
+	out.print("What to do next:")
+	for _, r := range e.Remedy {
+		out.print("  %s %s", out.symbols.arrow, r)
+	}
+	if len(e.DataKeys) > 0 {
+		out.print("")
+		out.print("Promised reason_data keys: %s", strings.Join(e.DataKeys, ", "))
+	}
+	return nil
+}
+
+// reasonTag is the bracketed annotation after the short text: the level, plus
+// whether the code ends its object. Terminal is exactly the set of writes the
+// schema refuses without a code, so the tag doubles as the rule made visible.
+func reasonTag(e reason.Entry) string {
+	if e.Terminal {
+		return fmt.Sprintf("[%s, ends the object]", e.Level)
+	}
+	return fmt.Sprintf("[%s]", e.Level)
+}
+
+// listCatalogue prints every entry of both catalogues, sorted by code in JSON
+// and grouped by series and level as text.
+func listCatalogue(out *ui) error {
+	if out.mode == modeJSON {
+		return out.json(listEntries())
+	}
+	out.print("Diagnostic codes:")
+	for _, e := range listEntries() {
+		if e.Series != seriesDiagnostic {
+			continue
+		}
+		out.print("  %s  %s", e.Code, e.Title)
+	}
+	out.print("")
+	out.print("Reason codes:")
+	for _, level := range []reason.Level{reason.LevelTick, reason.LevelTrigger, reason.LevelRun, reason.LevelStep} {
+		out.print("  %s level", level)
+		for _, e := range listEntries() {
+			if e.Series != seriesReason || e.Level != string(level) {
+				continue
+			}
+			out.print("    %s  %s", e.Code, e.Title)
+		}
+	}
+	return nil
+}
+
+// listEntries is the whole catalogue as one stable array: diagnostics first by
+// code, then reason codes by code, then everything sorted together, so the
+// order is a function of the content alone.
+func listEntries() []catalogueEntry {
+	entries := make([]catalogueEntry, 0, len(catalogue)+len(reason.Codes()))
+	for code, e := range catalogue {
+		entries = append(entries, catalogueEntry{
+			Code:        code,
+			Series:      seriesDiagnostic,
+			Title:       e.Title,
+			Explanation: e.Explanation,
+			Next:        e.Next,
+		})
+	}
+	for _, e := range reason.All() {
+		entries = append(entries, reasonCatalogueEntry(e))
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Code < entries[j].Code })
+	return entries
+}
+
+func reasonCatalogueEntry(e reason.Entry) catalogueEntry {
+	terminal := e.Terminal
+	return catalogueEntry{
+		Code:        string(e.Code),
+		Series:      seriesReason,
+		Level:       string(e.Level),
+		Terminal:    &terminal,
+		Title:       e.Short,
+		Explanation: e.Explanation,
+		Next:        e.Remedy,
+		DataKeys:    e.DataKeys,
+	}
+}
+
+// knownCodes is the union of both catalogues in a stable order, so a refusal
+// names the same set every time it is printed and a near miss can be matched
+// against everything this build can explain.
 func knownCodes() []string {
-	codes := make([]string, 0, len(catalogue))
+	codes := make([]string, 0, len(catalogue)+len(reason.Codes()))
 	for code := range catalogue {
 		codes = append(codes, code)
 	}
+	codes = append(codes, reason.Codes()...)
 	sort.Strings(codes)
 	return codes
 }
