@@ -489,6 +489,13 @@ func TestHotQueriesUseTheirIndexes(t *testing.T) {
 			`SELECT id FROM triggers WHERE tick_id = '01J0TICK1'`,
 		},
 		{
+			// Naming a run by an id prefix is a range scan on the primary key,
+			// the way a git object is named. It must never read a row that
+			// cannot match, however long the history is.
+			"run lookup by id prefix", "sqlite_autoindex_runs_1",
+			`SELECT id FROM runs WHERE id >= '01J0RUN0' AND id < '01J0RUN2' ORDER BY id LIMIT 2`,
+		},
+		{
 			"the versions of one job", "idx_job_versions_job",
 			`SELECT id FROM job_versions WHERE job_name = 'nightly' ORDER BY version DESC LIMIT 1`,
 		},
@@ -532,6 +539,8 @@ func TestDeletingARunTakesItsChildrenAndLeavesTheDedupKeys(t *testing.T) {
 		}
 	}
 
+	assertForeignKeysHold(t, s)
+
 	var keys int
 	if err := s.w.QueryRowContext(ctx, "SELECT count(*) FROM run_keys").Scan(&keys); err != nil {
 		t.Fatalf("count run_keys: %v", err)
@@ -555,9 +564,14 @@ func TestDeletingARunTakesItsChildrenAndLeavesTheDedupKeys(t *testing.T) {
 // TestForeignKeysHoldAfterASeededMigration is the criterion stated as a query:
 // no row in the database points at a parent that is not there.
 func TestForeignKeysHoldAfterASeededMigration(t *testing.T) {
-	ctx := context.Background()
-	s := seededStore(t)
+	assertForeignKeysHold(t, seededStore(t))
+}
 
+// assertForeignKeysHold fails naming every row that points at a missing parent.
+func assertForeignKeysHold(t *testing.T, s *Store) {
+	t.Helper()
+
+	ctx := context.Background()
 	rows, err := s.w.QueryContext(ctx, "PRAGMA foreign_key_check")
 	if err != nil {
 		t.Fatalf("foreign key check: %v", err)

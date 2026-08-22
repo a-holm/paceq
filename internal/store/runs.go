@@ -363,6 +363,14 @@ const runColumns = `id, job_name, job_version_id, trigger_id, origin, run_key, s
 // A prefix matching more than one run is ErrAmbiguousRunID rather than the
 // first match. Picking one would mean cancelling or replaying whichever run the
 // database happened to order first.
+//
+// The run and its steps are two queries against the read pool, and the pool has
+// many connections, so they are two snapshots and not one. A step that changes
+// between them shows up as a step further along than the run says. That is the
+// deliberate price of never opening an explicit read transaction: a read
+// snapshot held open across a listing is what stops WAL checkpointing and grows
+// the file without bound. Anything that has to see one instant reads it inside
+// a write transaction instead.
 func (s *Store) GetRun(ctx context.Context, idOrPrefix string) (RunDetail, error) {
 	span, err := id.PrefixRange(idOrPrefix)
 	if err != nil {
