@@ -26,10 +26,10 @@ var allowedImports = map[string][]string{
 	"diag":     {},
 	"spec":     {"diag"},
 	"runner":   {"clock"},
-	"store":    {"model", "clock", "id"},
+	"store":    {"model", "clock", "id", "reason"},
 	"engine":   {"model", "store", "runner", "clock", "id", "notify"},
 	"doctor":   {"store"},
-	"cli":      {"engine", "store", "doctor", "explain", "spec", "diag", "obs", "model", "clock", "id"},
+	"cli":      {"engine", "store", "doctor", "explain", "spec", "diag", "obs", "model", "clock", "id", "reason"},
 	"testutil": {"model", "clock", "id", "store"},
 }
 

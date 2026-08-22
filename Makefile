@@ -27,6 +27,13 @@ export CGO_ENABLED = 0
 # Builds never edit go.mod or go.sum. Drift is reported by tidy-check instead.
 export GOFLAGS = -mod=readonly
 
+# VCS stamping reads repository metadata. Inside a worktree of a bare checkout
+# the metadata is unreachable and every build fails with "error obtaining VCS
+# status", so builds run with stamping off everywhere. The Makefile stamps the
+# same three values itself with -ldflags, so nothing is lost on the shipped
+# binary; test fixtures gain a stable build.
+export GOFLAGS += -buildvcs=false
+
 # Platforms cross built and asserted cgo free on every pull request.
 CROSS_TARGETS := linux/amd64 linux/arm64 darwin/arm64
 
