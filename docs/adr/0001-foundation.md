@@ -85,7 +85,7 @@ One exception, scoped to the test target: the race detector requires cgo, so `ma
 
 ## Decision 6: Quality gates run locally first, CI is the backstop
 
-`make hooks` points `core.hooksPath` at `.githooks`. `pre-commit` runs the fast checks, gofumpt plus `go vet ./...`. `pre-push` runs `make ci` in full, with one exception: a push whose every ref line carries the zero sha in the local sha field deletes remote refs only, and the hook skips the gate for it.
+`make hooks` points `core.hooksPath` at `.githooks`. `pre-commit` runs the fast checks, gofumpt plus `go vet ./...`. `pre-push` runs `make ci` in full, with one exception for every push that moves no code: a push whose every ref line carries the zero sha in the local sha field deletes remote refs only, and a push that hands the hook no ref lines at all pushes nothing (git fires the hook even when everything is up to date). The hook skips the gate for both.
 
 The reason is cost. GitHub Actions minutes are a budget, and a red build discovered after a push has already spent them. A developer machine has the toolchain, the module cache and the test cache warm, so the same checks cost seconds there. CI still runs everything, because a hook can be bypassed and a contributor may not have run `make hooks`.
 

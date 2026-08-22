@@ -19,8 +19,18 @@ refs=$(mktemp)
 trap 'rm -f "$refs"' EXIT INT TERM
 cat >"$refs"
 
-# Skipping needs at least one ref line and a deletion on every one of them. Every
-# other push runs the gate, a line that does not parse included.
+# git fires this hook even for a push with nothing in it: when everything is
+# up to date, git answers "Everything up-to-date" and hands the hook no ref
+# lines at all. Plain push does it, and so do --all, --tags and --mirror on a
+# synced clone. No ref lines means nothing moves, and the gate has nothing to
+# say about that either.
+if [ ! -s "$refs" ]; then
+	echo "pre-push: nothing to push, skipping the gate."
+	exit 0
+fi
+
+# Skipping needs a deletion on every one of the lines. Every other push runs
+# the gate, a line that does not parse included.
 if awk -v zero=0000000000000000000000000000000000000000 '
 	{ lines++ }
 	$2 == zero { deletions++ }

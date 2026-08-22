@@ -44,7 +44,7 @@ func (r hookRun) gateRan() bool {
 	return false
 }
 
-func TestPrePushRunsTheGateUnlessThePushOnlyDeletes(t *testing.T) {
+func TestPrePushRunsTheGateUnlessThePushMovesNoCode(t *testing.T) {
 	deletion := "(delete) " + zeroSHA + " refs/heads/feature " + oldSHA + "\n"
 	update := "refs/heads/feature " + newSHA + " refs/heads/feature " + oldSHA + "\n"
 	creation := "HEAD " + newSHA + " refs/heads/feature " + zeroSHA + "\n"
@@ -53,21 +53,32 @@ func TestPrePushRunsTheGateUnlessThePushOnlyDeletes(t *testing.T) {
 		name     string
 		refLines string
 		wantGate bool
+		// wantNote is the reason a skipped push has to print. Every push
+		// that skips the gate says which kind of nothing it is.
+		wantNote string
 	}{
-		{"one deletion", deletion, false},
-		{"two deletions", deletion + "(delete) " + zeroSHA + " refs/heads/other " + newSHA + "\n", false},
-		{"an update", update, true},
+		{"one deletion", deletion, false, "deletion only"},
+		{"two deletions", deletion + "(delete) " + zeroSHA + " refs/heads/other " + newSHA + "\n", false, "deletion only"},
+		// Deleting a ref that never existed on either side is still a
+		// deletion: git offers it with both shas at zero (observed on
+		// git 2.43 for `git push origin :refs/heads/ghost`).
+		{"a ghost ref deletion", "(delete) " + zeroSHA + " refs/heads/ghost " + zeroSHA + "\n", false, "deletion only"},
+		{"an update", update, true, ""},
 		// The zero sha is in the remote sha field here. Reading the wrong field
 		// turns every new branch into a skipped gate.
-		{"a new branch", creation, true},
-		{"an update and a deletion", update + deletion, true},
-		{"a deletion and an update", deletion + update, true},
+		{"a new branch", creation, true, ""},
+		{"an update and a deletion", update + deletion, true, ""},
+		{"a deletion and an update", deletion + update, true, ""},
 		// git always ends its ref lines with a newline. A reader that drops an
 		// unterminated last line would skip the gate on this push.
-		{"an update without a trailing newline", deletion + strings.TrimSuffix(update, "\n"), true},
-		// Nothing to classify is not a deletion. The gate is the safe answer.
-		{"no ref lines", "", true},
-		{"a line that is not a ref line", "unexpected\n", true},
+		{"an update without a trailing newline", deletion + strings.TrimSuffix(update, "\n"), true, ""},
+		// git fires this hook even when there is nothing to push: a clone
+		// where everything is up to date answers "Everything up-to-date"
+		// and hands the hook zero ref lines (git 2.43, plain push, --all,
+		// --tags and --mirror all do it). Nothing moves then either, so
+		// this is the same kind of nothing as a deletion-only push.
+		{"no ref lines", "", false, "nothing to push"},
+		{"a line that is not a ref line", "unexpected\n", true, ""},
 	}
 
 	// The hook gets the remote name as its first argument. None of this may depend
@@ -83,8 +94,8 @@ func TestPrePushRunsTheGateUnlessThePushOnlyDeletes(t *testing.T) {
 				if got := run.gateRan(); got != tc.wantGate {
 					t.Fatalf("gate ran = %v, want %v\nmake calls: %q\nstdout: %s", got, tc.wantGate, run.makeCalls, run.stdout)
 				}
-				if !tc.wantGate && !strings.Contains(run.stdout, "deletion only") {
-					t.Fatalf("a skipped push has to say so, stdout = %q", run.stdout)
+				if !tc.wantGate && !strings.Contains(run.stdout, tc.wantNote) {
+					t.Fatalf("a skipped push has to say %q, stdout = %q", tc.wantNote, run.stdout)
 				}
 			})
 		}
