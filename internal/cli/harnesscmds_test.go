@@ -335,10 +335,9 @@ func cmdCmpJSON(ts *testscript.TestScript, neg bool, args []string) {
 		}
 		return
 	}
-	var patch []byte
 	// diff.Diff renders a readable unified diff between the canonical
 	// forms, so a broken contract names the field that moved.
-	patch = diff.Diff(args[0], canonicalActual, args[1], canonicalExpected)
+	patch := diff.Diff(args[0], canonicalActual, args[1], canonicalExpected)
 	ts.Fatalf("%s does not match %s:\n%s", args[0], args[1], patch)
 }
 
