@@ -192,8 +192,15 @@ func TestApplyJobsRacingTheSameFileLandsInOneState(t *testing.T) {
 	ready.Add(racers)
 	var goAhead sync.WaitGroup
 	goAhead.Add(1)
+	// done gives the main goroutine a happens-before edge on every racer's
+	// writes to its results/errs slot. Reading those slots before the racers
+	// have returned is a data race, even though each racer touches only its
+	// own index.
+	var done sync.WaitGroup
+	done.Add(racers)
 	for i := 0; i < racers; i++ {
 		go func(i int) {
+			defer done.Done()
 			ready.Done()
 			goAhead.Wait()
 			results[i], errs[i] = s.ApplyJobs(ctx, []JobVersionInput{applyInput("nightly", "aa")})
@@ -201,6 +208,7 @@ func TestApplyJobsRacingTheSameFileLandsInOneState(t *testing.T) {
 	}
 	ready.Wait()
 	goAhead.Done()
+	done.Wait()
 
 	for i, err := range errs {
 		if err != nil {
