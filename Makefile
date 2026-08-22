@@ -38,7 +38,7 @@ export GOFLAGS += -buildvcs=false
 CROSS_TARGETS := linux/amd64 linux/arm64 darwin/arm64
 
 .PHONY: all build test gate bench fuzz fmt fmt-check vet staticcheck lint gosec govulncheck \
-	tidy-check cross ci hooks clean
+	tidy-check cross ci fixture-change hooks clean
 
 all: build
 
@@ -113,6 +113,14 @@ cross:
 	@for target in $(CROSS_TARGETS); do \
 		scripts/cross-build.sh "$${target%/*}" "$${target#*/}" || exit 1; \
 	done
+
+# Gold standard fixtures are expectations, not code: a commit that edits one
+# must carry a FIXTURE-CHANGE: line with the reason (plan 04 section 8 point
+# 2). The same check runs as a GitHub Actions job on every pull request. It is
+# deliberately not part of `make ci`, whose checkout is shallow and has no
+# history to walk.
+fixture-change:
+	scripts/check-fixture-change.sh origin/main HEAD
 
 ci: fmt-check vet staticcheck gosec govulncheck tidy-check test gate fuzz build cross
 

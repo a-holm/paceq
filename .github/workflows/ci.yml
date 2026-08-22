@@ -72,6 +72,20 @@ jobs:
       - name: build
         run: make build
 
+  # Gold standard fixtures are expectations, not code. A commit that edits one
+  # must carry a FIXTURE-CHANGE: line with a reason (plan 04 section 8 point
+  # 2). This needs history, so it runs in its own full checkout job instead of
+  # the shallow verify job. `make fixture-change` is the local equivalent.
+  fixture-change:
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: fixture changes carry a FIXTURE-CHANGE reason
+        run: scripts/check-fixture-change.sh "refs/remotes/origin/${{ github.base_ref }}" HEAD
+
   cross-build:
     runs-on: ubuntu-24.04
     strategy:
