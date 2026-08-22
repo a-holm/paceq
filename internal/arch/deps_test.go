@@ -218,3 +218,38 @@ func selfDir(t *testing.T) string {
 	}
 	return wd
 }
+
+// stdlibOnly names the internal packages whose whole dependency graph has to be
+// the standard library. The rule table above keeps them from importing another
+// internal package; this rule keeps them from taking a third party dependency
+// as well. It is what makes internal/model provable without a mock and reusable
+// from a property test that has no database.
+var stdlibOnly = []string{"model"}
+
+func TestPackagesThatMustDependOnStdlibOnly(t *testing.T) {
+	for _, name := range stdlibOnly {
+		t.Run(name, func(t *testing.T) {
+			self := internalPrefix + name
+			out := runGo(t, "list", "-deps", "-f", "{{.ImportPath}} {{.Standard}}", self)
+
+			checked := 0
+			for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+				path, standard, ok := strings.Cut(line, " ")
+				if !ok {
+					t.Fatalf("go list printed %q, want an import path and whether it is standard", line)
+				}
+				if path == self {
+					continue
+				}
+				checked++
+				if standard != "true" {
+					t.Errorf("internal/%s depends on %s: forbidden, its dependency graph is the standard library only",
+						name, path)
+				}
+			}
+			if checked == 0 {
+				t.Fatalf("internal/%s reported no dependencies at all, so the check proved nothing", name)
+			}
+		})
+	}
+}
