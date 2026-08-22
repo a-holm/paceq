@@ -63,14 +63,16 @@ gate:
 	$(GO) test ./internal/store -run 'TestConcurrentWriters|TestWALRecoveryUnderKill|TestLoadHarness' -count=1 -v
 	$(GO) test ./internal/spec -run 'TestParsingAHundredFilesStaysUnderTheBudget' -count=1 -v
 
-# The parser gate. A job file is untrusted input, so the fuzz target runs on
+# The parser gate. A job file is untrusted input, so the fuzz targets run on
 # every pull request rather than nightly only. -count=1 is required with -fuzz
 # and is written out anyway, because the repository rule is that no go test in
-# the gate may take a cached pass for a real one.
+# the gate may take a cached pass for a real one. The cronx target gives the
+# schedule parser the same treatment: expressions are untrusted input too.
 FUZZTIME ?= 60s
 
 fuzz:
 	$(GO) test ./internal/spec -run '^$$' -fuzz 'FuzzParseJobSpec' -fuzztime $(FUZZTIME) -count=1
+	$(GO) test ./internal/cronx -run '^$$' -fuzz 'FuzzCronParse' -fuzztime $(FUZZTIME) -count=1
 
 # Detailed numbers behind the gate, including what synchronous=FULL costs.
 # Not part of ci: a benchmark on a shared runner measures the runner.
