@@ -86,29 +86,53 @@ func TestEngineCannotRunAProcessInsideATransaction(t *testing.T) {
 	}
 
 	fset := token.NewFileSet()
-	packages, err := parser.ParseDir(fset, filepath.Join(root, "internal", "store"),
-		func(info fs.FileInfo) bool {
-			return !strings.HasSuffix(info.Name(), "_test.go")
-		}, 0)
+	methods, err := exportedMethods(filepath.Join(root, "internal", "store"), fset)
 	if err != nil {
-		t.Fatalf("parse internal/store: %v", err)
+		t.Fatalf("read internal/store: %v", err)
 	}
-	for _, pkg := range packages {
-		for _, file := range pkg.Files {
-			for _, decl := range file.Decls {
-				fn, ok := decl.(*ast.FuncDecl)
-				if !ok || fn.Recv == nil || len(fn.Recv.List) == 0 || !fn.Name.IsExported() {
-					continue
-				}
-				if takesFunc(fn) {
-					rel := rel(root, fset.Position(fn.Pos()).Filename)
-					t.Errorf("%s: exported store method %s accepts a function value"+
-						": a callback is a way to run code inside a transaction",
-						rel, fn.Name.Name)
-				}
-			}
+	for _, m := range methods {
+		if takesFunc(m.decl) {
+			t.Errorf("%s: exported store method %s accepts a function value"+
+				": a callback is a way to run code inside a transaction",
+				m.file, m.name)
 		}
 	}
+}
+
+// storeMethod is one exported method of internal/store, with the file that
+// declared it named the way a reader would find it.
+type storeMethod struct {
+	file string
+	name string
+	decl *ast.FuncDecl
+}
+
+// exportedMethods parses every non-test file of the directory and returns its
+// exported methods.
+func exportedMethods(dir string, fset *token.FileSet) ([]storeMethod, error) {
+	var out []storeMethod
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".go") ||
+			strings.HasSuffix(path, "_test.go") || strings.Contains(path, "testdata") {
+			return nil
+		}
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			return err
+		}
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Recv == nil || len(fn.Recv.List) == 0 || !fn.Name.IsExported() {
+				continue
+			}
+			out = append(out, storeMethod{file: filepath.Base(path), name: fn.Name.Name, decl: fn})
+		}
+		return nil
+	})
+	return out, err
 }
 
 // takesFunc reports whether the declaration names any func type among its
@@ -136,20 +160,26 @@ func directImports(t *testing.T, dir string) []string {
 	t.Helper()
 
 	fset := token.NewFileSet()
-	packages, err := parser.ParseDir(fset, dir, func(info fs.FileInfo) bool {
-		return !strings.HasSuffix(info.Name(), "_test.go")
-	}, parser.ImportsOnly)
-	if err != nil {
-		t.Fatalf("parse %s: %v", dir, err)
-	}
 	var seen []string
-	for _, pkg := range packages {
-		for _, file := range pkg.Files {
-			for _, imp := range file.Imports {
-				path := strings.Trim(imp.Path.Value, `"`)
-				seen = append(seen, path)
-			}
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
 		}
+		if d.IsDir() || !strings.HasSuffix(path, ".go") ||
+			strings.HasSuffix(path, "_test.go") || strings.Contains(path, "testdata") {
+			return nil
+		}
+		file, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
+		if err != nil {
+			return err
+		}
+		for _, imp := range file.Imports {
+			seen = append(seen, strings.Trim(imp.Path.Value, `"`))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("read %s: %v", dir, err)
 	}
 	return seen
 }
