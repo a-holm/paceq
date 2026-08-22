@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/a-holm/paceq/internal/clock"
+	"github.com/a-holm/paceq/internal/id"
 	"github.com/a-holm/paceq/internal/logsink"
 	"github.com/a-holm/paceq/internal/store"
 )
@@ -115,6 +116,12 @@ func runLogs(ctx context.Context, env Env, g *globals, out *ui, runArg string, f
 				fmt.Sprintf("no run matches %q", runArg),
 				"the ids of finished runs, shortest first: any prefix names a run as soon as it can",
 				"check the id: paceq explains it on every failure it reports",
+			)
+		case errors.Is(err, id.ErrInvalid):
+			return notFoundError(
+				fmt.Sprintf("no run matches %q", runArg),
+				err.Error(),
+				"an id is 26 characters from 0123456789ABCDEFGHJKMNPQRSTVWXYZ; any prefix of one works",
 			)
 		default:
 			return err
