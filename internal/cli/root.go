@@ -83,7 +83,8 @@ type globals struct {
 const rootLong = `paceq runs scheduled jobs, sensors and small DAGs from one static binary.
 
 Output follows the stream: a terminal gets human text, a pipe gets JSON.
--o overrides both. Data goes to stdout, progress and warnings to stderr.`
+PACEQ_OUTPUT picks a side for a caller that cannot pass flags, and -o
+overrides everything. Data goes to stdout, progress and warnings to stderr.`
 
 func newRoot(env Env) *cobra.Command {
 	var g globals
@@ -123,7 +124,7 @@ func newRoot(env Env) *cobra.Command {
 	})
 
 	flags := root.PersistentFlags()
-	flags.StringVarP(&g.output, "output", "o", "", "text or json (default: text at a terminal, json in a pipe)")
+	flags.StringVarP(&g.output, "output", "o", "", "text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe)")
 	flags.StringVar(&g.db, "db", "", "state database to use (default: ./"+stateDirName+"/"+store.DatabaseFileName+")")
 	flags.BoolVarP(&g.quiet, "quiet", "q", false, "only report what needs attention")
 	flags.CountVarP(&g.verbose, "verbose", "v", "progress on stderr, repeatable: -v, -vv")
@@ -190,7 +191,7 @@ func runArgsE(env Env, g *globals, body func(ctx context.Context, out *ui, args 
 
 // ui resolves the flags into the decisions a command renders with.
 func (g *globals) ui(env Env) (*ui, error) {
-	mode, err := g.mode(env.Stdout)
+	mode, err := g.mode(env)
 	if err != nil {
 		return nil, err
 	}
@@ -205,22 +206,40 @@ func (g *globals) ui(env Env) (*ui, error) {
 	}, nil
 }
 
-// mode is 03 section 7.1: a terminal gets text, everything else gets JSON, and
-// -o overrides both.
-func (g *globals) mode(stdout io.Writer) (outputMode, error) {
-	switch strings.ToLower(strings.TrimSpace(g.output)) {
-	case "text":
+// mode is 03 section 7.1: a terminal gets text, everything else gets JSON.
+// PACEQ_OUTPUT picks a side without a flag, which is how a caller on a pipe
+// that cannot pass arguments pins the mode, and -o beats both of them.
+func (g *globals) mode(env Env) (outputMode, error) {
+	mode, said, err := chosenMode(g.output, "output format",
+		"use -o text for people, or -o json for scripts")
+	if said || err != nil {
+		return mode, err
+	}
+	mode, said, err = chosenMode(env.Getenv("PACEQ_OUTPUT"), "PACEQ_OUTPUT",
+		"set PACEQ_OUTPUT=text for people, or PACEQ_OUTPUT=json for scripts")
+	if said || err != nil {
+		return mode, err
+	}
+	if isTerminal(env.Stdout) {
 		return modeText, nil
+	}
+	return modeJSON, nil
+}
+
+// chosenMode reads one explicit output selection. An empty value means
+// nothing was said, and the caller falls through to the next way to decide;
+// anything else must be a word paceq writes.
+func chosenMode(value, source, next string) (outputMode, bool, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "text":
+		return modeText, true, nil
 	case "json":
-		return modeJSON, nil
+		return modeJSON, true, nil
 	case "":
-		if isTerminal(stdout) {
-			return modeText, nil
-		}
-		return modeJSON, nil
+		return modeText, false, nil
 	default:
-		return modeText, usageError(fmt.Sprintf("output format %q is not one paceq writes", g.output),
-			"use -o text for people, or -o json for scripts")
+		return modeText, true, usageError(
+			fmt.Sprintf("%s %q is not one paceq writes", source, value), next)
 	}
 }
 

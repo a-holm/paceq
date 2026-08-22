@@ -17,7 +17,8 @@ grep 'Examples:' run_help.txt
 paceq runs scheduled jobs, sensors and small DAGs from one static binary.
 
 Output follows the stream: a terminal gets human text, a pipe gets JSON.
--o overrides both. Data goes to stdout, progress and warnings to stderr.
+PACEQ_OUTPUT picks a side for a caller that cannot pass flags, and -o
+overrides everything. Data goes to stdout, progress and warnings to stderr.
 
 Exit codes:
   0  success
@@ -52,7 +53,7 @@ Flags:
       --db string       state database to use (default: ./.paceq/state.db)
   -h, --help            help for paceq
       --no-color        no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE)
-  -o, --output string   text or json (default: text at a terminal, json in a pipe)
+  -o, --output string   text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe)
   -q, --quiet           only report what needs attention
   -v, --verbose count   progress on stderr, repeatable: -v, -vv
       --version         same as paceq version
@@ -91,6 +92,6 @@ Flags:
 Global Flags:
       --db string       state database to use (default: ./.paceq/state.db)
       --no-color        no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE)
-  -o, --output string   text or json (default: text at a terminal, json in a pipe)
+  -o, --output string   text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe)
   -q, --quiet           only report what needs attention
   -v, --verbose count   progress on stderr, repeatable: -v, -vv

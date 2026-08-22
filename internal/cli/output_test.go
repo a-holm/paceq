@@ -108,6 +108,59 @@ func TestOutputModeFollowsTheStream(t *testing.T) {
 	}
 }
 
+// TestOutputModeFollowsTheEnvironment is the seam a daemon needs: the mode
+// picked by PACEQ_OUTPUT, for the caller on a pipe that cannot pass flags.
+// The order is fixed and tested here against real descriptors: -o wins over
+// the variable, the variable wins over whatever stdout looks like.
+func TestOutputModeFollowsTheEnvironment(t *testing.T) {
+	cases := []struct {
+		name     string
+		terminal bool
+		environ  map[string]string
+		args     []string
+		wantJSON bool
+	}{
+		{name: "the variable turns a pipe text", environ: map[string]string{"PACEQ_OUTPUT": "text"}, args: []string{"version"}},
+		{name: "the variable turns a terminal json", terminal: true, environ: map[string]string{"PACEQ_OUTPUT": "json"}, args: []string{"version"}, wantJSON: true},
+		{name: "the flag beats the variable", terminal: true, environ: map[string]string{"PACEQ_OUTPUT": "json"}, args: []string{"version", "-o", "text"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var stdout *os.File
+			var read func() string
+			if c.terminal {
+				stdout, read = terminalFile(t)
+			} else {
+				stdout, read = pipeFile(t)
+			}
+
+			got := runFile(t, stdout, t.TempDir(), c.environ, c.args...)
+			if err := stdout.Close(); err != nil {
+				t.Fatalf("close stdout: %v", err)
+			}
+			written := read()
+
+			if got.code != ExitOK {
+				t.Fatalf("paceq %s = %d, want %d\n%s", strings.Join(c.args, " "), got.code, ExitOK, got.stderr)
+			}
+			if isJSON := json.Valid([]byte(strings.TrimSpace(written))); isJSON != c.wantJSON {
+				t.Errorf("json output = %v, want %v:\n%s", isJSON, c.wantJSON, written)
+			}
+		})
+	}
+
+	// A value no mode answers to is refused like a bad -o, with the same
+	// three parts, naming where the value came from.
+	stdout, _ := pipeFile(t)
+	got := runFile(t, stdout, t.TempDir(), map[string]string{"PACEQ_OUTPUT": "yaml"}, "version")
+	if got.code != ExitUsage {
+		t.Errorf("PACEQ_OUTPUT=yaml exited %d, want %d\n%s", got.code, ExitUsage, got.stderr)
+	}
+	if !strings.Contains(got.stderr, "not one paceq writes") || !strings.Contains(got.stderr, "PACEQ_OUTPUT") {
+		t.Errorf("the refusal does not name the bad value and where it came from:\n%s", got.stderr)
+	}
+}
+
 // TestRedirectionToAFileIsJSON is the same rule for `paceq version > file`. A
 // file is not a terminal, and a character device such as /dev/null is not one
 // either, which is what a mode bit check alone would get wrong.
