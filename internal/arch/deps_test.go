@@ -25,6 +25,7 @@ var allowedImports = map[string][]string{
 	"clock":    {},
 	"diag":     {},
 	"spec":     {"diag"},
+	"runner":   {"clock"},
 	"store":    {"model", "clock", "id"},
 	"engine":   {"model", "store", "runner", "clock", "id", "notify"},
 	"doctor":   {"store"},
