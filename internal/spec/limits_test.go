@@ -252,6 +252,63 @@ func TestAWideAliasThatStaysUnderTheLimitsIsStillCheap(t *testing.T) {
 	t.Logf("refused in %v with %v", elapsed, codesOf(diags))
 }
 
+// TestOneFileReportsABoundedNumberOfProblems is a limit on the output rather
+// than on the input, and it is load bearing for the same reason.
+//
+// An anchor used many times turns one mistake into one message per use, and one
+// mistake per field into the product of the two. Without a cap that is orders
+// of magnitude more memory than the file it came from, minutes for a terminal
+// to draw, and nothing anybody reads. The fuzzer found this before a user did.
+func TestOneFileReportsABoundedNumberOfProblems(t *testing.T) {
+	// One anchored step full of fields nobody has heard of, used as every step
+	// in the job.
+	var fields strings.Builder
+	for i := range 100 {
+		if i > 0 {
+			fields.WriteString(",")
+		}
+		fmt.Fprintf(&fields, "u%d: 1", i)
+	}
+	var b strings.Builder
+	b.WriteString("name: report\n")
+	b.WriteString("step: &s {" + fields.String() + "}\n")
+	b.WriteString("steps: [" + strings.TrimSuffix(strings.Repeat("*s,", 90), ",") + "]\n")
+
+	start := time.Now()
+	_, diags := spec.Parse("many.yaml", []byte(b.String()))
+	elapsed := time.Since(start)
+
+	if len(diags) > 101 {
+		t.Errorf("got %d diagnostics for one file, want the cap plus the message that says so", len(diags))
+	}
+	requireCode(t, diags, spec.CodeTooManyProblems)
+	if last := diags[len(diags)-1]; last.Code != spec.CodeTooManyProblems {
+		t.Errorf("the last diagnostic is %s, want the one that says paceq stopped reading", last.Code)
+	}
+	if elapsed > 100*time.Millisecond {
+		t.Errorf("reporting on it took %v, want under 100ms", elapsed)
+	}
+}
+
+// TestAFileWithManyMistakesReportsThemAllUpToTheCap keeps the cap from becoming
+// a reason to report less than a person can work with in one pass.
+func TestAFileWithManyMistakesReportsThemAllUpToTheCap(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("name: report\nsteps:\n  - name: only\n    run: [\"/bin/true\"]\n")
+	for i := range 20 {
+		fmt.Fprintf(&b, "unknown%d: x\n", i)
+	}
+
+	_, diags := spec.Parse("many.yaml", []byte(b.String()))
+
+	if len(diags) != 20 {
+		t.Errorf("got %d diagnostics for 20 unknown fields, want all 20: %v", len(diags), codesOf(diags))
+	}
+	if _, capped := find(diags, spec.CodeTooManyProblems); capped {
+		t.Error("twenty problems tripped the cap")
+	}
+}
+
 // TestAnchorsThatStayInsideTheLimitsStillWork keeps the limits from being a ban
 // on the feature. Anchors are the reason a job file can share one env block.
 func TestAnchorsThatStayInsideTheLimitsStillWork(t *testing.T) {
