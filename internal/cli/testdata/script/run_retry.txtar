@@ -1,0 +1,63 @@
+# A transient failure is not the end of a run: the step's retry policy buys
+# one more attempt, attempt 1 leaves its log stream behind, attempt 2 does
+# the job, and the run still ends succeeded. Cron reads exit 0 and one
+# clean record, not the detour.
+#
+# The step branches on PACEQ_ATTEMPT, which is how paceq tells a command
+# which try this is: the first try says so and dies, the second passes.
+#
+# The run command below goes out with the suite's fake clock cleared: that
+# clock never moves, so a retry gate opening five milliseconds later would
+# never open at all inside one process. Nothing here pins a stamp, so the
+# row asserts by selection rather than by a golden; the record's shape is
+# the contract the run_ok and run_failed goldens already pin, and how a
+# wait is computed and slept through is the engine suite's own proof. A
+# passing exec is the exit 0 assertion: any other code fails the row. The
+# log reads afterwards do not touch the clock, so they go back to the
+# exact-exit harness command.
+#
+# The policy waits five milliseconds: short enough that the row costs
+# nothing, long enough to prove the run really parked and came back.
+
+env PULSEQ_FAKE_CLOCK=
+exec paceq init
+cp wobble.yaml jobs/wobble.yaml
+exec paceq apply
+
+exec paceq run wobble
+cp stdout run.json
+
+# The run ended succeeded on the second attempt: the record says both, and
+# the log path names attempt 2, never attempt 1.
+grep '"state":"succeeded"' run.json
+grep '"reason_code":"STEP_SUCCEEDED"' run.json
+grep '"exit_code":0' run.json
+grep 'wobble\.2\.ndjson' run.json
+! grep 'wobble\.1\.ndjson' run.json
+
+# Attempt 1 happened and its stream is still there: asking for that one
+# attempt by number works, and it holds the line the first try wrote and
+# nothing else.
+writeid latest.id
+wantexit 0 attempt1.ndjson - logs @latest.id --step wobble --attempt 1
+grep '"attempt":1,"ts"' attempt1.ndjson
+grep 'first try fails' attempt1.ndjson
+! grep 'second try passes' attempt1.ndjson
+
+# Attempt 2 answered it, and only it.
+wantexit 0 attempt2.ndjson - logs @latest.id --step wobble --attempt 2
+grep '"attempt":2,"ts"' attempt2.ndjson
+grep 'second try passes' attempt2.ndjson
+! grep 'first try fails' attempt2.ndjson
+
+-- wobble.yaml --
+name: wobble
+description: Dies on the first try, passes on the second.
+steps:
+  - name: wobble
+    run: ["/bin/sh", "-c", "if [ \"$PACEQ_ATTEMPT\" = 1 ]; then echo first try fails; exit 9; fi; echo second try passes"]
+    retry:
+      max: 1
+      backoff: fixed
+      initial: 5ms
+      jitter: none
