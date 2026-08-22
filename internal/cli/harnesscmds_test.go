@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -395,7 +396,7 @@ func cmdStartRun(ts *testscript.TestScript, neg bool, args []string) {
 		ts.Fatalf("startrun needs a \"--\" between the files and the paceq command")
 	}
 	key := "sigproc/" + ts.Name()
-	if harnessValues[key] != nil {
+	if harnessGet(key) != nil {
 		ts.Fatalf("a run is already started in this script; sigwait it first")
 	}
 	paceqArgs, err := expandFileArgs(ts, args[separator+1:])
@@ -411,11 +412,11 @@ func cmdStartRun(ts *testscript.TestScript, neg bool, args []string) {
 	if err := p.cmd.Start(); err != nil {
 		ts.Fatalf("could not start %v: %v", paceqArgs, err)
 	}
-	harnessValues[key] = p
+	harnessSet(key, p)
 	// A script that fails between startrun and sigwait must not leave a
 	// paceq process behind: the safety net kills it, ungraded.
 	ts.Defer(func() {
-		if live := harnessValues[key]; live != nil {
+		if live := harnessGet(key); live != nil {
 			run := live.(*sigProcess)
 			_ = run.cmd.Process.Signal(syscall.SIGKILL)
 		}
@@ -445,7 +446,7 @@ func cmdSigWait(ts *testscript.TestScript, neg bool, args []string) {
 		ts.Fatalf("%q is not a positive deadline such as 30s", args[2])
 	}
 	key := "sigproc/" + ts.Name()
-	value := harnessValues[key]
+	value := harnessGet(key)
 	p, ok := value.(*sigProcess)
 	if !ok {
 		ts.Fatalf("no started run to wait for; startrun begins one")
@@ -470,12 +471,12 @@ func cmdSigWait(ts *testscript.TestScript, neg bool, args []string) {
 // finishSigProcess reaps the backgrounded run, grades its exit code when
 // asked, and writes what it wrote to the files startrun was given.
 func finishSigProcess(ts *testscript.TestScript, key string, wantExit int, grade bool) {
-	value := harnessValues[key]
+	value := harnessGet(key)
 	p, ok := value.(*sigProcess)
 	if !ok {
 		return
 	}
-	delete(harnessValues, key)
+	harnessDelete(key)
 	got := 0
 	err := p.cmd.Wait()
 	if err != nil {
@@ -550,7 +551,7 @@ func cmdHoldState(ts *testscript.TestScript, neg bool, args []string) {
 		ts.Fatalf("usage: holdstate NAME")
 	}
 	key := "holdstate/" + ts.Name() + "/" + args[0]
-	if harnessValues[key] != nil {
+	if harnessGet(key) != nil {
 		ts.Fatalf("a holder named %s already exists", args[0])
 	}
 	// OpenState takes the state DIRECTORY, exactly as paceq run does; the
@@ -574,7 +575,7 @@ func cmdHoldState(ts *testscript.TestScript, neg bool, args []string) {
 		case <-time.After(2 * time.Minute):
 		}
 	}()
-	harnessValues[key] = h
+	harnessSet(key, h)
 	ts.Defer(func() { releaseHolder(ts, args[0]) })
 
 	// The row after holdstate must meet a holder that HAS the lock, not
@@ -591,14 +592,14 @@ func cmdHoldState(ts *testscript.TestScript, neg bool, args []string) {
 // the body of releasehold and the safety net behind holdstate's Defer.
 func releaseHolder(ts *testscript.TestScript, name string) {
 	key := "holdstate/" + ts.Name() + "/" + name
-	value := harnessValues[key]
+	value := harnessGet(key)
 	h, ok := value.(*holdState)
 	if !ok {
 		return
 	}
 	close(h.close)
 	<-h.done
-	delete(harnessValues, key)
+	harnessDelete(key)
 }
 
 // cmdReleaseHold lets go of a lock taken with holdstate, and waits until it
@@ -607,7 +608,7 @@ func cmdReleaseHold(ts *testscript.TestScript, neg bool, args []string) {
 	if neg || len(args) != 1 {
 		ts.Fatalf("usage: releasehold NAME")
 	}
-	if harnessValues["holdstate/"+ts.Name()+"/"+args[0]] == nil {
+	if harnessGet("holdstate/"+ts.Name()+"/"+args[0]) == nil {
 		ts.Fatalf("no holder named %s exists", args[0])
 	}
 	releaseHolder(ts, args[0])
@@ -662,8 +663,30 @@ func cmdPlantRun(ts *testscript.TestScript, neg bool, args []string) {
 	ts.Logf("planted a broken event chain on run %s", queued.Run.ID)
 }
 
-// harnessValues is scratch state for commands that must remember something
-// between two lines of one script, such as a lock holder. Scripts run one
-// after the other, and every key carries the script name, so two scripts
-// never see each other's state.
-var harnessValues = map[string]any{}
+// harnessMu guards harnessValues. testscript runs every script as its own
+// subtest and those subtests run in parallel, so cancel's sigwait can be
+// mid-read while busy's holdstate is mid-write; the lock, not the script
+// name in the key, is what keeps the map honest. holdstate's driver
+// goroutine never touches the map itself, so one plain mutex is enough.
+var (
+	harnessMu     sync.Mutex
+	harnessValues = map[string]any{}
+)
+
+func harnessGet(key string) any {
+	harnessMu.Lock()
+	defer harnessMu.Unlock()
+	return harnessValues[key]
+}
+
+func harnessSet(key string, value any) {
+	harnessMu.Lock()
+	defer harnessMu.Unlock()
+	harnessValues[key] = value
+}
+
+func harnessDelete(key string) {
+	harnessMu.Lock()
+	defer harnessMu.Unlock()
+	delete(harnessValues, key)
+}
