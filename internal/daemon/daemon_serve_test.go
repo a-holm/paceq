@@ -293,6 +293,203 @@ func TestHealthEndpointServesWithoutTheDatabase(t *testing.T) {
 	}
 }
 
+// TestServeRestartConvergesWhatACrashLeftRunning is the restart story: a
+// previous executor died holding a running run, and the next serve start
+// converges it through the existing recovery before anything else happens.
+// The tick interval is pushed an hour out so nothing can re-execute the
+// requeued run while the test watches; the end state is the recovery's own
+// work and nothing else.
+func TestServeRestartConvergesWhatACrashLeftRunning(t *testing.T) {
+	rec, logger := newRecLog()
+	clk := clock.NewFake(time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC))
+	root := t.TempDir()
+	cfg := Config{
+		StateDir:     filepath.Join(root, "state"),
+		Version:      "test",
+		JobsDir:      "jobs",
+		Logger:       logger,
+		Owner:        "serve:test",
+		TickInterval: time.Hour, // no dispatcher wake can race the assertions
+	}
+	if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
+		t.Fatalf("create the state directory: %v", err)
+	}
+
+	runID := seedRunHeldByADeadExecutor(t, cfg.StateDir, clk)
+	clk.Advance(2 * store.DefaultLeaseTTL) // the dead executor's lease lapses
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() { errCh <- Serve(ctx, cfg, clk) }()
+
+	waitForLogLine(t, rec, "recovered a run left running by an earlier executor", 10*time.Second)
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("a clean stop reported %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Serve did not return within 10s of cancellation")
+	}
+
+	st, err := store.Open(context.Background(),
+		filepath.Join(cfg.StateDir, store.DatabaseFileName), store.Options{Clock: clk})
+	if err != nil {
+		t.Fatalf("reopen the state: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	detail, err := st.GetRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("read the run back: %v", err)
+	}
+	if detail.Run.State != string(model.RunQueued) {
+		t.Errorf("the recovered run is %s, want queued", detail.Run.State)
+	}
+	if detail.Run.DeferReason != model.DeferReasonAfterCrash {
+		t.Errorf("defer_reason is %q, want %q", detail.Run.DeferReason, model.DeferReasonAfterCrash)
+	}
+	if len(detail.Steps) != 1 {
+		t.Fatalf("%d steps came back, want 1", len(detail.Steps))
+	}
+	step := detail.Steps[0]
+	if step.State != string(model.StepPending) || step.Attempt != 1 {
+		t.Errorf("the step is %s at attempt %d, want pending at attempt 1 (the lost one counts)",
+			step.State, step.Attempt)
+	}
+	if step.ReasonCode != string(reason.STEPFailedExecutorLost) {
+		t.Errorf("the step says %q, want %q", step.ReasonCode, reason.STEPFailedExecutorLost)
+	}
+
+	events, err := st.RunEvents(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	var sawLost, sawRequeue bool
+	for _, e := range events {
+		// The lost verdict lands as a retry: with a budget left, the
+		// machine sends the step back to pending under the lost code.
+		if e.Kind == "step.retry_scheduled" && e.ReasonCode == string(reason.STEPFailedExecutorLost) {
+			sawLost = true
+		}
+		if e.Kind == "run.requeued" && e.ToState == string(model.RunQueued) {
+			sawRequeue = true
+		}
+	}
+	if !sawLost || !sawRequeue {
+		t.Fatalf("the recovery events are incomplete: lost=%v requeue=%v in %+v", sawLost, sawRequeue, events)
+	}
+
+	violations, err := st.Fsck(context.Background())
+	if err != nil {
+		t.Fatalf("fsck: %v", err)
+	}
+	if len(violations) != 0 {
+		t.Errorf("fsck found %v after the restart convergence", violations)
+	}
+}
+
+// seedRunHeldByADeadExecutor materialises one run with a retry budget,
+// claims it as a doomed executor and starts its only step. The lease it
+// writes expires on the given clock, so advancing that clock is what kills
+// the executor without killing anything real.
+func seedRunHeldByADeadExecutor(t *testing.T, stateDir string, clk clock.Clock) string {
+	t.Helper()
+	ctx := context.Background()
+
+	st, err := store.OpenState(ctx, stateDir, store.Options{Clock: clk})
+	if err != nil {
+		t.Fatalf("open the state to seed it: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	spec := `{"schema":"paceq.job.v1","name":"restartme","max_concurrent":1,` +
+		`"steps":[{"name":"only","run":["sleep","60"],"shell":false}]}`
+	version, _, err := st.UpsertJobVersion(ctx, store.JobVersionInput{
+		JobName: "restartme", SpecHash: "sha256:restartme", SpecJSON: spec,
+	})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	run, err := st.CreateRunWithSteps(ctx, store.NewRun{
+		JobName:      "restartme",
+		JobVersionID: version.ID,
+		Origin:       "manual",
+		Actor:        "test",
+		Steps:        []store.NewStep{{Name: "only", MaxAttempts: 2}},
+	})
+	if err != nil {
+		t.Fatalf("materialise: %v", err)
+	}
+	if _, err := st.ClaimRun(ctx, run.ID,
+		store.LeaseInput{Owner: "dead-executor", TTL: store.DefaultLeaseTTL}); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := st.StartStep(ctx, run.ID, "only"); err != nil {
+		t.Fatalf("start the step: %v", err)
+	}
+	return run.ID
+}
+
+// TestServeHoldsUntilTheCallerAsksForAStop pins the property that makes serve
+// a long lived process at all: between startup and a stop request, Serve does
+// nothing except run its loops. A daemon that returns on its own would release
+// the state lock milliseconds after starting, and the acceptance promise that
+// a second serve is refused would be a timing accident instead of a rule.
+func TestServeHoldsUntilTheCallerAsksForAStop(t *testing.T) {
+	rec, logger := newRecLog()
+	root := t.TempDir()
+	cfg := Config{
+		StateDir: filepath.Join(root, "state"),
+		Version:  "test",
+		JobsDir:  "jobs",
+		Logger:   logger,
+		Owner:    "serve:test",
+	}
+	if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
+		t.Fatalf("create the state directory: %v", err)
+	}
+	st, err := store.OpenState(t.Context(), cfg.StateDir, store.Options{})
+	if err != nil {
+		t.Fatalf("pre-open the state: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	returned := make(chan error, 1)
+	go func() { returned <- Serve(ctx, cfg, clock.System()) }()
+
+	waitForLogLine(t, rec, "daemon ready", 10*time.Second)
+
+	// The bounded proof that nothing ended the daemon on its own: a healthy
+	// Serve is still running here, because nothing asked it to stop. The
+	// window has to outlast the whole startup-plus-self-teardown path a
+	// broken Serve walks (intake budget, drain, checkpoint); anything that
+	// exits inside it without a stop request is the defect this test
+	// exists to catch.
+	select {
+	case err := <-returned:
+		t.Fatalf("Serve returned %v although nobody asked it to stop", err)
+	case <-time.After(5 * time.Second):
+	}
+
+	cancel()
+	select {
+	case err := <-returned:
+		if err != nil {
+			t.Fatalf("a clean stop reported %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Serve did not return within 10s of cancellation")
+	}
+}
+
 func waitForLogLine(t *testing.T, rec *recLog, msg string, within time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(within)

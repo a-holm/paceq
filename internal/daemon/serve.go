@@ -124,14 +124,29 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 		go watchHardStop(cfg.Signals, log, cfg.OnHardStop)
 	}
 
-	// The group's wait moves to a channel so the shutdown can bound how long
-	// it waits for the remaining loops.
+	// The group's wait moves to a channel so the shutdown can bound how
+	// long it waits for the remaining loops, and so its verdict travels as
+	// a value: reading a variable another goroutine writes would be a race,
+	// receiving from a channel is not.
 	loopsDone := make(chan struct{})
-	var loopErr error
+	waiter := make(chan error, 1) // buffered: nobody may be left blocked on it
 	go func() {
-		loopErr = grp.wait()
+		err := grp.wait()
+		waiter <- err
 		close(loopsDone)
 	}()
+
+	// This select is the daemon's working life. Between startup and a stop
+	// request there is nothing to decide: hold until the caller asks for a
+	// stop, or until a loop fails and cancels the rest. A daemon that
+	// returned on its own would release the state lock moments after
+	// taking it, and every other promise on this process rests on that
+	// lock.
+	var loopErr error
+	select {
+	case <-ctx.Done():
+	case loopErr = <-waiter:
+	}
 
 	sd := &shutdown{
 		cfg:          cfg,
