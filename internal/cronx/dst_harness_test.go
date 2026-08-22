@@ -83,7 +83,6 @@ func TestRandomCronExprsAreFiveValidFields(t *testing.T) {
 }
 
 func TestPartitionCutsTileTheWindow(t *testing.T) {
-	rng := rand.New(rand.NewPCG(1234, 5))
 	from := time.Date(2026, 3, 27, 0, 0, 0, 0, time.UTC)
 	to := time.Date(2026, 3, 31, 0, 0, 0, 0, time.UTC)
 
@@ -109,10 +108,10 @@ func TestPartitionCutsTileTheWindow(t *testing.T) {
 		prev = cut
 	}
 
-	rng = rand.New(rand.NewPCG(9, 9))
+	rng := rand.New(rand.NewPCG(9, 9))
 	for range 500 {
 		cuts := partitionCuts(rng, from, to, 8)
-		if len(cuts) < 0 || len(cuts) > 8 {
+		if len(cuts) > 8 {
 			t.Fatalf("%d cuts outside the 0 to 8 range", len(cuts))
 		}
 	}
