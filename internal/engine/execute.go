@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"time"
 
+	"github.com/a-holm/paceq/internal/faults"
 	"github.com/a-holm/paceq/internal/logsink"
 	"github.com/a-holm/paceq/internal/model"
 	"github.com/a-holm/paceq/internal/reason"
@@ -193,6 +195,12 @@ func (e *Engine) runStep(ctx context.Context, run store.Run, name string, st spe
 		return fail(fmt.Errorf("open the log: %w", err))
 	}
 
+	// The crash window between the committed start and the spawn. A
+	// process killed here leaves a running step whose command never ran,
+	// which is the safest window to recover: retrying cannot duplicate an
+	// effect that never happened.
+	faults.Point("M1:step:before_exec")
+
 	timeout := st.Timeout
 	if timeout <= 0 {
 		timeout = runner.DefaultTimeout
@@ -245,7 +253,7 @@ func (e *Engine) runStep(ctx context.Context, run store.Run, name string, st spe
 		InheritEnv: job.InheritEnv,
 		Timeout:    timeout,
 		Clock:      e.Clock,
-		Stdout:     sink.Writer(logsink.StreamStdout),
+		Stdout:     crashOnFirstWrite(sink.Writer(logsink.StreamStdout), "M1:step:under_exec"),
 		Stderr:     sink.Writer(logsink.StreamStderr),
 		Ctx: runner.RunContext{
 			RunID:   run.ID,
@@ -263,6 +271,10 @@ func (e *Engine) runStep(ctx context.Context, run store.Run, name string, st spe
 	if err != nil {
 		return fail(fmt.Errorf("close the log: %w", err))
 	}
+	// The crash window between a finalized log file and the metadata write
+	// that records it. The bytes are on disk, the database knows nothing
+	// yet; recovery has to leave both sides telling the same story.
+	faults.Point("M1:step:after_log_finish")
 	if runErr != nil {
 		return fail(fmt.Errorf("the process could not start: %w", runErr))
 	}
@@ -464,4 +476,23 @@ func msToTime(ms int64) time.Time {
 		return time.Time{}
 	}
 	return time.UnixMilli(ms).UTC()
+}
+
+// crashOnFirstWrite arms the under_exec crash point on a step's stdout. The
+// point fires while the command is alive and producing output, which is what
+// makes the kill land inside execution rather than beside it: the first line
+// a job prints proves a process exists to print it. In a build without the
+// pulseq_faults tag Point does nothing and the wrapper is pass through.
+type firstWriteWriter struct {
+	next io.Writer
+	name string
+}
+
+func crashOnFirstWrite(next io.Writer, name string) io.Writer {
+	return &firstWriteWriter{next: next, name: name}
+}
+
+func (w *firstWriteWriter) Write(p []byte) (int, error) {
+	faults.Point(w.name)
+	return w.next.Write(p)
 }
