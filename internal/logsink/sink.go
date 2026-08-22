@@ -149,8 +149,10 @@ func (s *Sink) Writer(stream string) io.Writer {
 }
 
 // assembler collects a stream's chunks into lines. Chunks arrive in arbitrary
-// sizes, so a partial line waits here until its newline shows up, and a line
-// longer than maxFragment is cut without waiting for one.
+// sizes, so a partial line waits here until its newline shows up. The wait is
+// bounded: once the accumulated partial line reaches maxFragment it is cut
+// and emitted, so the buffer never holds more than that however the stream
+// is sliced.
 type assembler struct {
 	sink    *Sink
 	stream  string
@@ -171,16 +173,32 @@ func (a *assembler) Write(p []byte) (int, error) {
 			rest = rest[i+1:]
 			continue
 		}
-		// No newline left. Whatever overflows the fragment size goes out
-		// now, marked as a split piece; the remainder waits.
-		for len(rest) >= maxFragment {
-			if err := a.sink.writeLine(a.stream, appendTo(a.partial, rest[:maxFragment]), true); err != nil {
+		// No newline left in the payload. Fill the partial line up to the
+		// fragment window and cut the moment the window is full: the split
+		// is driven by the accumulated line length, never by how much one
+		// call happens to carry. An endless line is cut the same way
+		// whether exec hands it over as one huge write or as a river of
+		// pipe-sized chunks, so the quota machinery sees the bytes either
+		// way and the partial buffer stays bounded.
+		for {
+			space := maxFragment - len(a.partial)
+			if space > len(rest) {
+				space = len(rest)
+			}
+			a.partial = appendTo(a.partial, rest[:space])
+			rest = rest[space:]
+			if len(a.partial) < maxFragment {
+				// Genuinely short, still waiting for its newline.
+				break
+			}
+			// The window filled without a newline: hard split. The slice
+			// pins the cap so writeLineLocked's newline append for the
+			// text tails cannot write into the buffer behind the window.
+			if err := a.sink.writeLine(a.stream, a.partial[:maxFragment:maxFragment], true); err != nil {
 				return len(p) - len(rest), err
 			}
 			a.partial = a.partial[:0]
-			rest = rest[maxFragment:]
 		}
-		a.partial = appendTo(a.partial, rest)
 		return len(p), nil
 	}
 }
