@@ -47,10 +47,6 @@ type Engine struct {
 	// a timeout. Zero means runner.DefaultTimeout.
 	StepTimeoutDefault time.Duration
 
-	// LeaseTTL is how long the claim taken for ExecuteRun lasts. Zero
-	// means the store's default. An executor that waits out long retry
-	// backoffs inside one execution needs this to span them, because
-	// finishing the run requires holding the lease it claimed.
 	LeaseTTL time.Duration
 
 	// Rnd is the source full-jitter draws from. Nil means one seeded
