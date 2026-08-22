@@ -35,10 +35,10 @@ const (
 	listLimitMax     = 500
 )
 
-// stateVocabulary lives in internal/model, not here. These fields are strings
-// because the database is the second enforcement of the state machine, not the
-// first: a value the machine forbids is refused by a CHECK either way, and
-// duplicating the vocabulary in this package would give it a third owner.
+// State and origin are plain strings in the types below. internal/model owns
+// the vocabulary and the transitions; the schema enforces the same values a
+// second time through its CHECKs. Naming them here as well would give one rule
+// three owners, and the third would be the one that drifts.
 
 // NewRun is a run to materialise, with the steps it will run.
 type NewRun struct {
@@ -498,14 +498,15 @@ func scanRuns(rows *sql.Rows) ([]Run, error) {
 	var out []Run
 	for rows.Next() {
 		var (
-			run                                          Run
-			trigger, runKey, concurrency, defer_, params sql.NullString
-			reasonCode, reasonText, failure              sql.NullString
-			scheduledFor, startedAt, finishedAt          sql.NullInt64
-			availableAt, createdAt, updatedAt            int64
+			run                                  Run
+			trigger, runKey, concurrency, params sql.NullString
+			deferReason, reasonCode, reasonText  sql.NullString
+			failure                              sql.NullString
+			scheduledFor, startedAt, finishedAt  sql.NullInt64
+			availableAt, createdAt, updatedAt    int64
 		)
 		if err := rows.Scan(&run.ID, &run.JobName, &run.JobVersionID, &trigger, &run.Origin,
-			&runKey, &run.State, &concurrency, &availableAt, &defer_, &scheduledFor, &params,
+			&runKey, &run.State, &concurrency, &availableAt, &deferReason, &scheduledFor, &params,
 			&run.Attempt, &run.MaxAttempts, &reasonCode, &reasonText, &failure,
 			&createdAt, &startedAt, &finishedAt, &updatedAt); err != nil {
 			return nil, err
@@ -513,7 +514,7 @@ func scanRuns(rows *sql.Rows) ([]Run, error) {
 		run.TriggerID = trigger.String
 		run.RunKey = runKey.String
 		run.ConcurrencyKey = concurrency.String
-		run.DeferReason = defer_.String
+		run.DeferReason = deferReason.String
 		run.ParamsJSON = params.String
 		run.ReasonCode = reasonCode.String
 		run.ReasonText = reasonText.String

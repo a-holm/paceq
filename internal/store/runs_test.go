@@ -126,6 +126,14 @@ func TestCreateRunWithStepsWritesTheWholeRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the run back: %v", err)
 	}
+	if detail.ID != run.ID || detail.JobName != "nightly" || detail.Origin != "manual" ||
+		detail.State != "queued" || detail.JobVersionID != version.ID {
+		t.Errorf("the run read back as %+v, want the one that was written", detail.Run)
+	}
+	if !detail.CreatedAt.Equal(run.CreatedAt) || !detail.AvailableAt.Equal(run.AvailableAt) {
+		t.Errorf("the run read back at (%s, %s), want (%s, %s)",
+			detail.CreatedAt, detail.AvailableAt, run.CreatedAt, run.AvailableAt)
+	}
 	if len(detail.Steps) != 2 {
 		t.Fatalf("the run has %d steps, want 2", len(detail.Steps))
 	}
