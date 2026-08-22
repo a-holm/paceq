@@ -58,11 +58,6 @@ func (r *ring) flush(fn func(encoded []byte) error) error {
 	return nil
 }
 
-// empty reports whether anything at all survived in the tail buffer.
-func (r *ring) empty() bool {
-	return len(r.entries) == 0
-}
-
 // textTail keeps the last cap bytes of one stream as plain text. This is the
 // material error_tail is made of: the newest bytes of what the job actually
 // wrote, not a summary of it.
@@ -92,6 +87,7 @@ func (t *textTail) text() string {
 	return strings.ToValidUTF8(string(t.buf), "\ufffd")
 }
 
+// empty reports whether this stream never said anything.
 func (t *textTail) empty() bool {
 	return len(t.buf) == 0
 }

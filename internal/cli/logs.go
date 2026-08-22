@@ -22,16 +22,9 @@ import (
 // filesystem events, just Stat and Read.
 const followInterval = 100 * time.Millisecond
 
-// terminalRunStates are the states after which nothing new can happen: the
-// run stops being followed once it reaches one, and so does every step.
-var terminalRunStates = map[string]bool{
-	"succeeded": true,
-	"failed":    true,
-	"cancelled": true,
-}
-
-// terminalStepStates is terminalRunStates plus skipped: a step nobody ran has
-// no more output coming either.
+// terminalStepStates are the states after which nothing new can happen: a
+// step stops being followed once it reaches one, and so does the run when all
+// of its steps have.
 var terminalStepStates = map[string]bool{
 	"succeeded": true,
 	"failed":    true,
