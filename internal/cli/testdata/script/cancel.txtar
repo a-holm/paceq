@@ -1,0 +1,28 @@
+# Ctrl-C asks for a cancellation, the same way everything else does: the
+# signal becomes a durable request in the database, the run finishes
+# cancelled, and the process answers exit 8. The wait here is on the store
+# and on the process itself, never on a timer that hopes.
+
+exec paceq init
+cp slow.yaml jobs/slow.yaml
+exec paceq apply
+
+# The run starts; its only step sleeps long enough to be interruptible.
+startrun sig_out.txt sig_err.txt -- run slow
+sigwait 8 cancelled 30s
+
+# The progress lines named the run while it worked.
+grep 'run ' sig_err.txt
+
+# The history agrees: cancelled, and nothing half done.
+writeid latest.id
+wantexit 0 rec.json rec_err.txt runs show @latest.id
+grep '"state":"cancelled"' rec.json
+exec paceq fsck
+
+-- slow.yaml --
+name: slow
+description: Long enough to be worth stopping.
+steps:
+  - name: wait-around
+    run: ["/bin/sleep", "120"]

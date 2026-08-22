@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/rogpeppe/go-internal/diff"
@@ -364,23 +365,140 @@ func updateScriptGolden(ts *testscript.TestScript, name string, content []byte) 
 	return os.WriteFile(scriptPath, txtar.Format(archive), 0o644)
 }
 
-// cmdWaitRunState polls the state database until some run reaches the named
-// state, or the deadline passes. It exists so a script can wait for a
-// background paceq run without sleeping: the poll reads the store the same
-// way paceq status does, every 20 milliseconds, and gives up with an
-// explanation instead of hanging.
-//
-//	waitrunstate running 30s
-func cmdWaitRunState(ts *testscript.TestScript, neg bool, args []string) {
-	if neg || len(args) != 2 {
-		ts.Fatalf("usage: waitrunstate STATE DEADLINE")
-	}
-	deadline, err := time.ParseDuration(args[1])
-	if err != nil || deadline <= 0 {
-		ts.Fatalf("%q is not a positive deadline such as 30s", args[1])
-	}
-	dbPath := filepath.Join(workDirOf(ts), stateDirName, store.DatabaseFileName)
+// sigProcess is one backgrounded paceq run this harness controls.
+type sigProcess struct {
+	cmd    *exec.Cmd
+	stdout bytes.Buffer
+	stderr bytes.Buffer
+	out    string
+	err    string
+}
 
+// cmdStartRun starts one paceq command in the background and remembers it,
+// so sigwait can watch the state database and then interrupt exactly that
+// process. Standard output and standard error are held until the run ends,
+// then written to the two named files, whatever way it ended.
+//
+//	startrun out.txt err.txt -- run slow
+//	sigwait 8 cancelled 30s
+func cmdStartRun(ts *testscript.TestScript, neg bool, args []string) {
+	if neg || len(args) < 3 {
+		ts.Fatalf("usage: startrun STDOUT-FILE STDERR-FILE -- ARGS...")
+	}
+	separator := -1
+	for i, arg := range args {
+		if arg == "--" {
+			separator = i
+			break
+		}
+	}
+	if separator < 0 {
+		ts.Fatalf("startrun needs a \"--\" between the files and the paceq command")
+	}
+	key := "sigproc/" + ts.Name()
+	if harnessValues[key] != nil {
+		ts.Fatalf("a run is already started in this script; sigwait it first")
+	}
+	paceqArgs, err := expandFileArgs(ts, args[separator+1:])
+	if err != nil {
+		ts.Fatalf("%v", err)
+	}
+	if len(paceqArgs) == 0 {
+		ts.Fatalf("startrun needs a paceq command after \"--\"")
+	}
+	p := &sigProcess{cmd: spawnPaceq(ts, nil, paceqArgs), out: args[0], err: args[1]}
+	p.cmd.Stdout = &p.stdout
+	p.cmd.Stderr = &p.stderr
+	if err := p.cmd.Start(); err != nil {
+		ts.Fatalf("could not start %v: %v", paceqArgs, err)
+	}
+	harnessValues[key] = p
+	// A script that fails between startrun and sigwait must not leave a
+	// paceq process behind: the safety net kills it, ungraded.
+	ts.Defer(func() {
+		if live := harnessValues[key]; live != nil {
+			run := live.(*sigProcess)
+			_ = run.cmd.Process.Signal(syscall.SIGKILL)
+		}
+		finishSigProcess(ts, key, 0, false)
+	})
+}
+
+// cmdSigWait drives one started run to its cancelled end: it waits until
+// the store shows the run actually executing, sends SIGINT exactly as a
+// user's Ctrl-C would, demands one exact exit code from the process, and
+// then confirms the record reached the named end state. Every step is
+// bounded and event driven: the waits poll the store every 20 milliseconds
+// and give up with an explanation at the deadline; nothing sleeps a fixed
+// amount hoping time has passed.
+//
+//	sigwait 8 cancelled 30s
+func cmdSigWait(ts *testscript.TestScript, neg bool, args []string) {
+	if neg || len(args) != 3 {
+		ts.Fatalf("usage: sigwait EXITCODE STATE DEADLINE")
+	}
+	wantExit, err := strconv.Atoi(args[0])
+	if err != nil {
+		ts.Fatalf("%q is not an exit code", args[0])
+	}
+	deadline, err := time.ParseDuration(args[2])
+	if err != nil || deadline <= 0 {
+		ts.Fatalf("%q is not a positive deadline such as 30s", args[2])
+	}
+	key := "sigproc/" + ts.Name()
+	value := harnessValues[key]
+	p, ok := value.(*sigProcess)
+	if !ok {
+		ts.Fatalf("no started run to wait for; startrun begins one")
+	}
+
+	// First the run must be alive: interrupting before anything runs
+	// would prove nothing about the durable path.
+	waitForRunState(ts, "running", deadline)
+
+	// The interrupt is a request, delivered as the same signal a user's
+	// Ctrl-C becomes. A process that already ended makes itself heard
+	// below, as the wrong exit code rather than as silence.
+	if sigErr := p.cmd.Process.Signal(syscall.SIGINT); sigErr != nil {
+		ts.Logf("the signal arrived after the process ended: %v", sigErr)
+	}
+	finishSigProcess(ts, key, wantExit, true)
+
+	// The record must say what the exit code claimed.
+	waitForRunState(ts, args[1], deadline)
+}
+
+// finishSigProcess reaps the backgrounded run, grades its exit code when
+// asked, and writes what it wrote to the files startrun was given.
+func finishSigProcess(ts *testscript.TestScript, key string, wantExit int, grade bool) {
+	value := harnessValues[key]
+	p, ok := value.(*sigProcess)
+	if !ok {
+		return
+	}
+	delete(harnessValues, key)
+	got := 0
+	err := p.cmd.Wait()
+	if err != nil {
+		exitErr, isExit := err.(*exec.ExitError)
+		if !isExit {
+			ts.Logf("the started paceq could not be reaped: %v", err)
+			return
+		}
+		got = exitErr.ExitCode()
+	}
+	if grade && got != wantExit {
+		ts.Fatalf("the interrupted run exited %d, want %d\nstdout:\n%s\nstderr:\n%s",
+			got, wantExit, p.stdout.String(), p.stderr.String())
+	}
+	ts.Check(os.WriteFile(ts.MkAbs(p.out), p.stdout.Bytes(), 0o644))
+	ts.Check(os.WriteFile(ts.MkAbs(p.err), p.stderr.Bytes(), 0o644))
+}
+
+// waitForRunState polls the state database until some run reaches the named
+// state, or fails naming what it waited for.
+func waitForRunState(ts *testscript.TestScript, state string, deadline time.Duration) {
+	dbPath := filepath.Join(workDirOf(ts), stateDirName, store.DatabaseFileName)
 	ctx := context.Background()
 	var ro *store.Store
 	defer func() {
@@ -401,14 +519,14 @@ func cmdWaitRunState(ts *testscript.TestScript, neg bool, args []string) {
 			rows, listErr := ro.ListRuns(ctx, store.RunFilter{Limit: 10})
 			if listErr == nil {
 				for _, row := range rows {
-					if row.State == args[0] {
+					if row.State == state {
 						return
 					}
 				}
 			}
 		}
 		if !time.Now().Before(giveUp) {
-			ts.Fatalf("no run reached state %q within %s. Is the paceq run still alive, and did the job's steps start?", args[0], args[1])
+			ts.Fatalf("no run reached state %q within %s. Is the paceq run still alive, and did the job's steps start?", state, deadline)
 		}
 		<-ticker.C
 	}
@@ -416,8 +534,9 @@ func cmdWaitRunState(ts *testscript.TestScript, neg bool, args []string) {
 
 // holdState is one background holder of the state lock, for the busy rows.
 type holdState struct {
-	close chan struct{}
-	done  chan struct{}
+	close    chan struct{}
+	done     chan struct{}
+	acquired chan struct{}
 }
 
 // cmdHoldState takes the state directory lock the way a second paceq
@@ -435,18 +554,22 @@ func cmdHoldState(ts *testscript.TestScript, neg bool, args []string) {
 	if harnessValues[key] != nil {
 		ts.Fatalf("a holder named %s already exists", args[0])
 	}
-	dbPath := filepath.Join(workDirOf(ts), stateDirName, store.DatabaseFileName)
-	h := &holdState{close: make(chan struct{}), done: make(chan struct{})}
+	// OpenState takes the state DIRECTORY, exactly as paceq run does; the
+	// database file name is its business, not ours.
+	stateDir := filepath.Join(workDirOf(ts), stateDirName)
+	h := &holdState{close: make(chan struct{}), done: make(chan struct{}), acquired: make(chan struct{})}
 	go func() {
 		defer close(h.done)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		s, err := store.OpenState(ctx, dbPath, store.Options{})
+		s, err := store.OpenState(ctx, stateDir, store.Options{})
 		if err != nil {
 			ts.Logf("holdstate %s: could not take the lock: %v", args[0], err)
+			close(h.acquired)
 			return
 		}
 		defer func() { _ = s.Close() }()
+		close(h.acquired)
 		select {
 		case <-h.close:
 		case <-time.After(2 * time.Minute):
@@ -454,6 +577,15 @@ func cmdHoldState(ts *testscript.TestScript, neg bool, args []string) {
 	}()
 	harnessValues[key] = h
 	ts.Defer(func() { releaseHolder(ts, args[0]) })
+
+	// The row after holdstate must meet a holder that HAS the lock, not
+	// one still reaching for it, so this command returns only once the
+	// lock is confirmed held (or the attempt has plainly failed).
+	select {
+	case <-h.acquired:
+	case <-time.After(30 * time.Second):
+		ts.Fatalf("holdstate %s: the lock was never taken within 30s", args[0])
+	}
 }
 
 // releaseHolder closes a holder and waits until the lock is let go. It is
