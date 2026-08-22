@@ -125,6 +125,10 @@ func newRoot(env Env) *cobra.Command {
 		newDoctorCmd(env, &g),
 		newValidateCmd(env, &g),
 		newApplyCmd(env, &g),
+		newRunCmd(env, &g),
+		newRunsCmd(env, &g),
+		newStatusCmd(env, &g),
+		newFsckCmd(env, &g),
 		newErrorCmd(env, &g),
 		newLogsCmd(env, &g),
 	)

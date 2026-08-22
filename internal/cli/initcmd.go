@@ -141,7 +141,7 @@ func runInit(ctx context.Context, env Env, g *globals, out *ui) error {
 		NextSteps: []nextStep{
 			{Command: "paceq doctor", Note: "check the installation"},
 			{Command: "paceq validate", Note: "check the job files"},
-			{Command: "paceq run hello", Note: "run the example job (arrives in M1)"},
+			{Command: "paceq run hello", Note: "run the example job now"},
 		},
 	}
 	if ignored {
