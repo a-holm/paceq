@@ -105,12 +105,12 @@ func lockOwner(ctx context.Context, dbPath string) *Session {
 // there is one, because "already running" without a pid is not actionable.
 func (e *LockedError) Error() string {
 	if e.Owner == nil {
-		return fmt.Sprintf("PQ1001: another process already holds %s, and no session row names it: "+
+		return fmt.Sprintf("PQ5002: another process already holds %s, and no session row names it: "+
 			"it may be a foreign process, or a start that died before its first write\n"+
 			"  Run this instance against another state directory\n"+
 			"  Or find the holder: fuser %s", e.Path, e.Path)
 	}
-	return fmt.Sprintf("PQ1001: another paceq process already uses %s\n"+
+	return fmt.Sprintf("PQ5002: another paceq process already uses %s\n"+
 		"  owner: pid %d, version %s, started %s\n"+
 		"  Run this instance against another state directory\n"+
 		"  Or stop the running one: systemctl stop paceq, or kill %d",
