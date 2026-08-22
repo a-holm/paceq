@@ -47,21 +47,30 @@ type UnexplainedReason struct {
 
 // UnexplainedReasons runs the audit query and returns every terminal run,
 // step, tick and trigger stored without a usable reason code. A healthy
-// database returns nothing, and `paceq fsck` (M1-12) will print exactly this
-// list.
+// database returns nothing, and `paceq fsck` prints exactly this list.
+//
+// It reads through the read only pool like every other read: fsck has to run
+// while another process holds the state lock, and a checker that needed the
+// single writer would be part of whatever it is checking.
 func (s *Store) UnexplainedReasons(ctx context.Context) ([]UnexplainedReason, error) {
-	rs, err := s.w.QueryContext(ctx, UnexplainedReasonSQL)
-	if err != nil {
-		return nil, fmt.Errorf("audit reason codes: %w", err)
-	}
-	defer rs.Close()
 	var rows []UnexplainedReason
-	for rs.Next() {
-		var r UnexplainedReason
-		if err := rs.Scan(&r.Kind, &r.Key); err != nil {
-			return nil, fmt.Errorf("audit reason codes: %w", err)
+	err := s.withRead(ctx, func(ctx context.Context, r reader) error {
+		rs, err := r.QueryContext(ctx, UnexplainedReasonSQL)
+		if err != nil {
+			return fmt.Errorf("audit reason codes: %w", err)
 		}
-		rows = append(rows, r)
+		defer rs.Close()
+		for rs.Next() {
+			var row UnexplainedReason
+			if err := rs.Scan(&row.Kind, &row.Key); err != nil {
+				return fmt.Errorf("audit reason codes: %w", err)
+			}
+			rows = append(rows, row)
+		}
+		return rs.Err()
+	})
+	if err != nil {
+		return nil, err
 	}
-	return rows, rs.Err()
+	return rows, nil
 }
