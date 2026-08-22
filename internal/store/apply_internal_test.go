@@ -229,6 +229,40 @@ func TestApplyJobsRacingTheSameFileLandsInOneState(t *testing.T) {
 	}
 }
 
+// TestListJobVersionsReadsNewestFirst pins the read the CLI reports and a
+// future history view stand on: every version of the named job, newest first,
+// and nothing from any other job.
+func TestListJobVersionsReadsNewestFirst(t *testing.T) {
+	ctx := context.Background()
+	s := migratedStore(t)
+
+	if _, err := s.ApplyJobs(ctx, []JobVersionInput{
+		applyInput("nightly", "aa"),
+		applyInput("other", "zz"),
+	}); err != nil {
+		t.Fatalf("first apply: %v", err)
+	}
+	if _, err := s.ApplyJobs(ctx, []JobVersionInput{applyInput("nightly", "bb")}); err != nil {
+		t.Fatalf("second apply: %v", err)
+	}
+
+	versions, err := s.ListJobVersions(ctx, "nightly")
+	if err != nil {
+		t.Fatalf("list the versions: %v", err)
+	}
+	if len(versions) != 2 {
+		t.Fatalf("the list holds %d versions, want 2", len(versions))
+	}
+	if versions[0].Version != 2 || versions[1].Version != 1 {
+		t.Errorf("the list is ordered [%d, %d], want [2, 1]",
+			versions[0].Version, versions[1].Version)
+	}
+	if versions[0].SpecHash != "sha256:bb" || versions[1].SpecHash != "sha256:aa" {
+		t.Errorf("the hashes came back as %s and %s, want bb then aa",
+			versions[0].SpecHash, versions[1].SpecHash)
+	}
+}
+
 // TestApplyJobsLeavesEveryPointerOnARealVersion: after any successful apply,
 // every job points at a version row that exists. The foreign key is deferred,
 // so the invariant is checked here rather than trusted from the schema.

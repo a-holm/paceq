@@ -142,3 +142,36 @@ FROM job_versions WHERE job_name = ? AND spec_hash = ?`, in.JobName, in.SpecHash
 	}
 	return out, created, nil
 }
+
+// ListJobVersions reads every version of one job, newest first. A job's
+// history is short, so the whole list comes back: a report that says "you are
+// on version 4 of 7" needs the same rows a rollback check needs.
+func (s *Store) ListJobVersions(ctx context.Context, jobName string) ([]JobVersion, error) {
+	var out []JobVersion
+	err := s.withRead(ctx, func(ctx context.Context, r reader) error {
+		rows, err := r.QueryContext(ctx, `SELECT id, job_name, version, spec_hash, spec_json, source_path, created_at
+FROM job_versions WHERE job_name = ? ORDER BY version DESC`, jobName)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = rows.Close() }()
+
+		for rows.Next() {
+			var v JobVersion
+			var source sql.NullString
+			var createdAt int64
+			if err := rows.Scan(&v.ID, &v.JobName, &v.Version, &v.SpecHash, &v.SpecJSON,
+				&source, &createdAt); err != nil {
+				return err
+			}
+			v.SourcePath = source.String
+			v.CreatedAt = time.UnixMilli(createdAt).UTC()
+			out = append(out, v)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list the versions of job %s: %w", jobName, err)
+	}
+	return out, nil
+}

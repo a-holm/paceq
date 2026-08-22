@@ -1,13 +1,11 @@
 package cli
 
 import (
-	"database/sql"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	_ "modernc.org/sqlite"
 
 	"github.com/a-holm/paceq/internal/spec"
 	"github.com/a-holm/paceq/internal/store"
@@ -26,33 +24,23 @@ func applyProject(t *testing.T, files map[string]string) string {
 	return dir
 }
 
-// readDB opens the project's database read-only, straight through the driver.
-// It runs after the command has exited, so nothing holds the file.
-func readDB(t *testing.T, dir string) *sql.DB {
+// countVersions reads how many versions one job has by opening the state
+// database and closing it again, so a later apply in the same test can still
+// take the state lock.
+func countVersions(t *testing.T, dir, job string) int {
 	t.Helper()
 
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(dir, stateDirName, store.DatabaseFileName)+"?mode=ro")
+	s, err := store.OpenState(context.Background(), filepath.Join(dir, stateDirName), store.Options{})
 	if err != nil {
-		t.Fatalf("open the state database: %v", err)
+		t.Fatalf("open the state store: %v", err)
 	}
-	t.Cleanup(func() {
-		if err := db.Close(); err != nil {
-			t.Errorf("close the state database: %v", err)
-		}
-	})
-	return db
-}
+	defer func() { _ = s.Close() }()
 
-// countVersions reads how many versions one job has.
-func countVersions(t *testing.T, db *sql.DB, job string) int {
-	t.Helper()
-
-	var n int
-	if err := db.QueryRow("SELECT count(*) FROM job_versions WHERE job_name = ?",
-		job).Scan(&n); err != nil {
-		t.Fatalf("count versions of %s: %v", job, err)
+	versions, err := s.ListJobVersions(context.Background(), job)
+	if err != nil {
+		t.Fatalf("list the versions of %s: %v", job, err)
 	}
-	return n
+	return len(versions)
 }
 
 // writeFile replaces one project file between applies.
@@ -84,7 +72,7 @@ func TestApplyTwiceLoadsOneVersion(t *testing.T) {
 		t.Errorf("the second apply does not say unchanged:\n%s", second.stdout)
 	}
 
-	if got := countVersions(t, readDB(t, dir), "nightly"); got != 1 {
+	if got := countVersions(t, dir, "nightly"); got != 1 {
 		t.Errorf("two applies left %d versions of nightly, want 1", got)
 	}
 }
@@ -121,8 +109,7 @@ steps:
 	if !strings.Contains(got.stdout, "unchanged") {
 		t.Errorf("a comment and a key order became a new version:\n%s", got.stdout)
 	}
-	db := readDB(t, dir)
-	if got := countVersions(t, db, "nightly"); got != 1 {
+	if got := countVersions(t, dir, "nightly"); got != 1 {
 		t.Errorf("two spellings of one spec left %d versions, want 1", got)
 	}
 
@@ -134,7 +121,7 @@ steps:
 	if got := runCLI(t, dir, nil, "apply"); got.code != ExitOK {
 		t.Fatalf("third apply = %d\n%s%s", got.code, got.stdout, got.stderr)
 	}
-	if got := countVersions(t, db, "nightly"); got != 2 {
+	if got := countVersions(t, dir, "nightly"); got != 2 {
 		t.Errorf("a real change left %d versions, want 2", got)
 	}
 }
@@ -160,11 +147,10 @@ func TestApplyOneBrokenFileAmongGoodOnes(t *testing.T) {
 		}
 	}
 
-	db := readDB(t, dir)
-	if got := countVersions(t, db, "nightly"); got != 1 {
+	if got := countVersions(t, dir, "nightly"); got != 1 {
 		t.Errorf("the good job was loaded %d times, want once", got)
 	}
-	if got := countVersions(t, db, "broken"); got != 0 {
+	if got := countVersions(t, dir, "broken"); got != 0 {
 		t.Errorf("the broken file wrote %d versions, want 0", got)
 	}
 }
@@ -243,7 +229,7 @@ func TestApplyReadsTheJobsDirectoryFromTheEnvironment(t *testing.T) {
 	if got.code != ExitOK {
 		t.Fatalf("paceq apply = %d, want %d\n%s%s", got.code, ExitOK, got.stdout, got.stderr)
 	}
-	if got := countVersions(t, readDB(t, dir), "nightly"); got != 1 {
+	if got := countVersions(t, dir, "nightly"); got != 1 {
 		t.Errorf("the environment catalog loaded %d versions of nightly, want 1", got)
 	}
 }
