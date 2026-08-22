@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"sync"
 	"testing"
 )
@@ -175,6 +176,65 @@ func TestApplyJobsIsAllOrNothing(t *testing.T) {
 	}
 	if jobs != 0 {
 		t.Errorf("the failed batch left %d job rows, want 0", jobs)
+	}
+}
+
+// TestApplyJobsFailedBatchKeepsTheOldVersion: a good version exists, then a
+// batch that both changes that job and carries an invalid spec fails. The
+// failure must leave the old world exactly as it stood: the error surfaces,
+// the pointer still names version 1, and no version row appears or disappears.
+// A failed apply that retired or moved the last good version would be worse
+// than the broken file it was asked about.
+//
+// max_concurrent -1 is refused by the CHECK on the jobs table, which is a
+// deterministic failure in the middle of the batch.
+func TestApplyJobsFailedBatchKeepsTheOldVersion(t *testing.T) {
+	ctx := context.Background()
+	s := migratedStore(t)
+
+	if _, err := s.ApplyJobs(ctx, []JobVersionInput{applyInput("nightly", "aa")}); err != nil {
+		t.Fatalf("first apply: %v", err)
+	}
+	good := versionIDByNumber(t, s, "nightly", 1)
+	if pointerID(t, s, "nightly") != good {
+		t.Fatal("the first apply did not leave the pointer on version 1")
+	}
+
+	bad := applyInput("broken", "cc")
+	bad.MaxConcurrent = -1
+	results, err := s.ApplyJobs(ctx, []JobVersionInput{
+		applyInput("nightly", "bb"),
+		bad,
+	})
+	if err == nil {
+		t.Fatal("a batch with an invalid job applied without an error")
+	}
+	if results != nil {
+		t.Errorf("the failed batch reported %d results, want none", len(results))
+	}
+	// Read the pointer as nullable, so a mutant that retired it fails this
+	// assertion instead of dying in a scan error.
+	var pointer sql.NullString
+	if err := s.r.QueryRow(
+		"SELECT current_version_id FROM jobs WHERE name = ?", "nightly").Scan(&pointer); err != nil {
+		t.Fatalf("read the pointer of nightly: %v", err)
+	}
+	got := pointer.String
+	if !pointer.Valid {
+		got = "<retired>"
+	}
+	if got != good {
+		t.Errorf("the failed batch left the pointer at %s, want version 1 (%s)", got, good)
+	}
+	if got := versionCount(t, s, "nightly"); got != 1 {
+		t.Errorf("after the failed batch %s holds %d versions, want 1", "nightly", got)
+	}
+	var total int
+	if err := s.r.QueryRow("SELECT count(*) FROM job_versions").Scan(&total); err != nil {
+		t.Fatalf("count all version rows: %v", err)
+	}
+	if total != 1 {
+		t.Errorf("the failed batch left %d version rows in the database, want 1", total)
 	}
 }
 
