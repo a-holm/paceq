@@ -211,7 +211,7 @@ func TestDataOnStdoutNotesOnStderr(t *testing.T) {
 
 	quiet.json(t)
 	loud.json(t)
-	if quiet.stdout != loud.stdout {
+	if stripVolatile(quiet.stdout) != stripVolatile(loud.stdout) {
 		t.Errorf("-vv changed the data on stdout:\n%s\n%s", quiet.stdout, loud.stdout)
 	}
 	if quiet.stderr != "" {
@@ -220,6 +220,25 @@ func TestDataOnStdoutNotesOnStderr(t *testing.T) {
 	if loud.stderr == "" {
 		t.Error("-vv wrote no notes to stderr")
 	}
+}
+
+// stripVolatile erases the two fields that legitimately differ between two
+// doctor runs seconds apart: the free disk space reading and nothing else.
+// Verbosity must not change the document, but the machine is allowed to.
+func stripVolatile(s string) string {
+	start := strings.Index(s, `"disk space"`)
+	if start < 0 {
+		return s
+	}
+	end := strings.Index(s[start:], `"}')`)
+	if end < 0 {
+		end = strings.Index(s[start:], `"}"`)
+		if end < 0 {
+			return s
+		}
+		return s[:start] + `"disk space"` + s[start+end+len(`"}"`):]
+	}
+	return s[:start] + `"disk space"` + s[start+end:]
 }
 
 // TestQuietDropsEverythingButTheFindingsThatMatter. A report that is silent

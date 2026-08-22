@@ -36,6 +36,11 @@ type reader interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
+// ErrReadOnly is returned when a store opened through OpenReadOnly is asked
+// to write. It lives beside the transaction machinery rather than beside any
+// one writer, because refusing is the transaction machinery's own act.
+var ErrReadOnly = errors.New("the store is open read only")
+
 // withTx runs fn inside one BEGIN IMMEDIATE transaction on the single write
 // connection. It commits when fn returns nil and rolls back otherwise.
 //

@@ -117,13 +117,32 @@ type Run struct {
 	ParamsJSON     string
 	Attempt        int
 	MaxAttempts    int
-	ReasonCode     string
-	ReasonText     string
-	Error          string
-	CreatedAt      time.Time
-	StartedAt      time.Time
-	FinishedAt     time.Time
-	UpdatedAt      time.Time
+
+	// LeaseOwner and LeaseEpoch say who is executing the run now. M2 adds
+	// reaping across processes; M1 uses them as fencing values its single
+	// executor checks against its own name.
+	LeaseOwner     string
+	LeaseEpoch     int64
+	LeaseExpiresAt time.Time
+
+	// The cancellation request, durable before anything is killed. Empty
+	// time means nobody asked.
+	CancelRequestedAt time.Time
+	CancelRequestedBy string
+	CancelReason      string
+
+	ReasonCode string
+	ReasonText string
+
+	// ReasonData is the canonical detail object beside the reason code: for
+	// a failed run, which step failed and why the run ended as it did.
+	ReasonData string
+
+	Error      string
+	CreatedAt  time.Time
+	StartedAt  time.Time
+	FinishedAt time.Time
+	UpdatedAt  time.Time
 }
 
 // Step is one step of a run.
@@ -146,6 +165,7 @@ type Step struct {
 	DurationMS int64
 	ReasonCode string
 	ReasonText string
+	ReasonData string
 	Error      string
 	LogPath    string
 
@@ -156,6 +176,12 @@ type Step struct {
 	LogBytes     int64
 	LogTruncated bool
 	ErrorTail    string
+
+	// NextAttemptAt is when a pending step that failed with attempts left
+	// becomes runnable again. M1 computes no retries, so nothing sets it
+	// yet; the claim gate reads it all the same, because M1-09 will fill
+	// it without touching a single reader.
+	NextAttemptAt time.Time
 }
 
 // RunDetail is a run with its steps, which is what showing one run needs.
@@ -363,7 +389,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 // the two cannot drift apart.
 const runColumns = `id, job_name, job_version_id, trigger_id, origin, run_key, state,
 	concurrency_key, available_at, defer_reason, scheduled_for, params_json, attempt,
-	max_attempts, reason_code, reason_text, error, created_at, started_at, finished_at, updated_at`
+	max_attempts, lease_owner, lease_epoch, lease_expires_at, cancel_requested_at,
+	cancel_requested_by, cancel_reason, reason_code, reason_text, reason_data, error,
+	created_at, started_at, finished_at, updated_at`
 
 // GetRun reads one run and its steps. The argument is a whole id or any prefix
 // of one, the way a git object is named: ids are ULIDs, so a prefix is a range
@@ -510,14 +538,19 @@ func scanRuns(rows *sql.Rows) ([]Run, error) {
 			run                                  Run
 			trigger, runKey, concurrency, params sql.NullString
 			deferReason, reasonCode, reasonText  sql.NullString
+			reasonData                           sql.NullString
 			failure                              sql.NullString
+			leaseOwner, cancelBy, cancelReason   sql.NullString
 			scheduledFor, startedAt, finishedAt  sql.NullInt64
+			leaseExpiresAt, cancelRequestedAt    sql.NullInt64
 			availableAt, createdAt, updatedAt    int64
+			leaseEpoch                           int64
 		)
 		if err := rows.Scan(&run.ID, &run.JobName, &run.JobVersionID, &trigger, &run.Origin,
 			&runKey, &run.State, &concurrency, &availableAt, &deferReason, &scheduledFor, &params,
-			&run.Attempt, &run.MaxAttempts, &reasonCode, &reasonText, &failure,
-			&createdAt, &startedAt, &finishedAt, &updatedAt); err != nil {
+			&run.Attempt, &run.MaxAttempts, &leaseOwner, &leaseEpoch, &leaseExpiresAt,
+			&cancelRequestedAt, &cancelBy, &cancelReason, &reasonCode, &reasonText, &reasonData,
+			&failure, &createdAt, &startedAt, &finishedAt, &updatedAt); err != nil {
 			return nil, err
 		}
 		run.TriggerID = trigger.String
@@ -527,7 +560,16 @@ func scanRuns(rows *sql.Rows) ([]Run, error) {
 		run.ParamsJSON = params.String
 		run.ReasonCode = reasonCode.String
 		run.ReasonText = reasonText.String
+		run.ReasonData = reasonData.String
 		run.Error = failure.String
+		run.LeaseOwner = leaseOwner.String
+		run.LeaseEpoch = leaseEpoch
+		run.LeaseExpiresAt = timeOrZero(leaseExpiresAt)
+		if cancelRequestedAt.Valid {
+			run.CancelRequestedAt = time.UnixMilli(cancelRequestedAt.Int64).UTC()
+		}
+		run.CancelRequestedBy = cancelBy.String
+		run.CancelReason = cancelReason.String
 		run.AvailableAt = time.UnixMilli(availableAt).UTC()
 		run.ScheduledFor = timeOrZero(scheduledFor)
 		run.CreatedAt = time.UnixMilli(createdAt).UTC()
@@ -542,12 +584,20 @@ func scanRuns(rows *sql.Rows) ([]Run, error) {
 // readSteps is the steps of one run in spec order.
 func readSteps(ctx context.Context, r reader, runID string) ([]Step, error) {
 	rows, err := r.QueryContext(ctx, `SELECT name, idx, state, attempt, max_attempts, exit_code,
-signal, started_at, finished_at, duration_ms, reason_code, reason_text, error, log_path,
-log_bytes, log_truncated, error_tail
+signal, started_at, finished_at, duration_ms, reason_code, reason_text, reason_data, error,
+log_path, log_bytes, log_truncated, error_tail, next_attempt_at
 FROM steps WHERE run_id = ? ORDER BY idx`, runID)
 	if err != nil {
 		return nil, fmt.Errorf("read the steps of run %s: %w", runID, err)
 	}
+	return scanSteps(rows)
+}
+
+// scanSteps reads the steps projection, shared by every step read in the
+// package so the columns cannot drift between the read pool and a write
+// transaction. It closes the rows: an unread result set on the single write
+// connection deadlocks the process against itself.
+func scanSteps(rows *sql.Rows) ([]Step, error) {
 	defer func() { _ = rows.Close() }()
 
 	var out []Step
@@ -556,13 +606,16 @@ FROM steps WHERE run_id = ? ORDER BY idx`, runID)
 			step                                          Step
 			exitCode                                      sql.NullInt64
 			signal, reasonCode, reasonText, failure, logs sql.NullString
+			reasonData                                    sql.NullString
 			startedAt, finishedAt, durationMS             sql.NullInt64
+			nextAttemptAt                                 sql.NullInt64
 		)
 		errorTail := sql.NullString{}
 		if err := rows.Scan(&step.Name, &step.Index, &step.State, &step.Attempt, &step.MaxAttempts,
 			&exitCode, &signal, &startedAt, &finishedAt, &durationMS, &reasonCode, &reasonText,
-			&failure, &logs, &step.LogBytes, &step.LogTruncated, &errorTail); err != nil {
-			return nil, fmt.Errorf("scan a step of run %s: %w", runID, err)
+			&reasonData, &failure, &logs, &step.LogBytes, &step.LogTruncated, &errorTail,
+			&nextAttemptAt); err != nil {
+			return nil, fmt.Errorf("scan a step: %w", err)
 		}
 		step.ExitCode = int(exitCode.Int64)
 		step.HasExitCode = exitCode.Valid
@@ -572,13 +625,15 @@ FROM steps WHERE run_id = ? ORDER BY idx`, runID)
 		step.DurationMS = durationMS.Int64
 		step.ReasonCode = reasonCode.String
 		step.ReasonText = reasonText.String
+		step.ReasonData = reasonData.String
 		step.Error = failure.String
 		step.LogPath = logs.String
 		step.ErrorTail = errorTail.String
+		step.NextAttemptAt = timeOrZero(nextAttemptAt)
 		out = append(out, step)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the steps of run %s: %w", runID, err)
+		return nil, fmt.Errorf("scan a step: %w", err)
 	}
 	return out, nil
 }

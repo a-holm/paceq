@@ -5,12 +5,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/a-holm/paceq/internal/reason"
 )
 
 // internalStore is a migrated store for the in-package tests, which exist to
-// reach the writer pool directly. The external tests in steps_test.go cover
-// the behaviour; this one covers the guarantee that needs the handle.
+// reach the writer pool directly. The external tests in transitions_test.go
+// cover the behaviour; this one covers the guarantee that needs the handle.
 func internalStore(t *testing.T) *Store {
 	t.Helper()
 
@@ -46,18 +47,10 @@ func aJobInternal(t *testing.T, s *Store, name string) JobVersion {
 	return version
 }
 
-// TestFinishStepRollsBackWholesale is the atomicity criterion for the log
-// metadata: error_tail, log_path, log_bytes and log_truncated are written in
-// the SAME transaction as the step's terminal transition. A failure between
-// the two writes would leave a step whose verdict and its evidence disagree,
-// and that drift is what this rule exists to prevent.
-//
-// The failure is injected with a trigger that aborts exactly the statement
-// that writes log_path: the earliest moment the metadata write can fail on
-// its own. The verdict may not survive it.
-func TestFinishStepRollsBackWholesale(t *testing.T) {
+func aRunningStepInternal(t *testing.T, s *Store) string {
+	t.Helper()
+
 	ctx := context.Background()
-	s := internalStore(t)
 	version := aJobInternal(t, s, "nightly")
 	run, err := s.CreateRunWithSteps(ctx, NewRun{
 		JobName:      "nightly",
@@ -68,26 +61,48 @@ func TestFinishStepRollsBackWholesale(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create the run: %v", err)
 	}
-	if err := s.StartStep(ctx, run.ID, "extract", time.Now()); err != nil {
+	if _, err := s.ClaimRun(ctx, run.ID, LeaseInput{Owner: "exec-1"}); err != nil {
+		t.Fatalf("claim the run: %v", err)
+	}
+	if err := s.StartStep(ctx, run.ID, "extract"); err != nil {
 		t.Fatalf("start the step: %v", err)
 	}
+	return run.ID
+}
 
-	// Abort the transaction from inside the metadata statement.
-	_, err = s.w.ExecContext(ctx, `CREATE TRIGGER paceq_test_abort_on_log_metadata
+// TestVerdictRollsBackWholesale is the atomicity criterion for the log
+// metadata: error_tail, log_path, log_bytes and log_truncated are written in
+// the SAME transaction as the step's terminal transition. A failure between
+// the two would leave a step whose verdict and its evidence disagree, and
+// that drift is what this rule exists to prevent.
+//
+// The failure is injected with a trigger that aborts exactly the statement
+// that writes log_path: the earliest moment the metadata write can fail on
+// its own. The verdict may not survive it, and neither may its event.
+func TestVerdictRollsBackWholesale(t *testing.T) {
+	ctx := context.Background()
+	s := internalStore(t)
+	runID := aRunningStepInternal(t, s)
+
+	// Abort the transaction from inside the metadata columns of the
+	// verdict statement.
+	_, err := s.w.ExecContext(ctx, `CREATE TRIGGER paceq_test_abort_on_log_metadata
 AFTER UPDATE OF log_path ON steps
 WHEN NEW.log_path IS NOT NULL AND OLD.log_path IS NULL
-BEGIN SELECT RAISE(ABORT, 'injected failure after the terminal update'); END`)
+BEGIN SELECT RAISE(ABORT, 'injected failure inside the verdict write'); END`)
 	if err != nil {
 		t.Fatalf("install the injection trigger: %v", err)
 	}
+	eventsBefore, err := s.RunEvents(ctx, runID)
+	if err != nil {
+		t.Fatalf("read events before the injected failure: %v", err)
+	}
 
-	err = s.FinishStep(ctx, StepFinish{
-		RunID:      run.ID,
-		Step:       "extract",
-		ToState:    "failed",
-		ReasonCode: "STEP_FAILED_NONZERO_EXIT",
-		FinishedAt: time.Now(),
-		Log: StepLog{
+	err = s.RecordStepOutcome(ctx, runID, "extract", StepOutcome{
+		Event:      "step_failed",
+		ReasonCode: reason.STEPFailedNonzeroExit,
+		ExitCode:   intPtr(1),
+		LogMeta: LogMeta{
 			RelPath:   "2026-09-17/run/extract.1.ndjson",
 			Bytes:     4096,
 			Truncated: true,
@@ -95,13 +110,13 @@ BEGIN SELECT RAISE(ABORT, 'injected failure after the terminal update'); END`)
 		},
 	})
 	if err == nil {
-		t.Fatal("FinishStep succeeded although the metadata write aborted")
+		t.Fatal("the verdict succeeded although its log metadata aborted")
 	}
 	if !strings.Contains(err.Error(), "injected failure") {
 		t.Fatalf("error does not name the injected failure: %v", err)
 	}
 
-	detail, err := s.GetRun(ctx, run.ID)
+	detail, err := s.GetRun(ctx, runID)
 	if err != nil {
 		t.Fatalf("get run: %v", err)
 	}
@@ -113,4 +128,14 @@ BEGIN SELECT RAISE(ABORT, 'injected failure after the terminal update'); END`)
 	if step.LogPath != "" || step.ErrorTail != "" || step.LogBytes != 0 || step.LogTruncated {
 		t.Fatalf("log metadata survived the failed finish: %+v", step)
 	}
+	eventsAfter, err := s.RunEvents(ctx, runID)
+	if err != nil {
+		t.Fatalf("read events after the injected failure: %v", err)
+	}
+	if len(eventsBefore) != len(eventsAfter) {
+		t.Errorf("events went from %d to %d: a rolled back transition left an event",
+			len(eventsBefore), len(eventsAfter))
+	}
 }
+
+func intPtr(i int) *int { return &i }

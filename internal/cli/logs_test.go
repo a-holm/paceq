@@ -15,8 +15,12 @@ import (
 
 	"github.com/a-holm/paceq/internal/clock"
 	"github.com/a-holm/paceq/internal/logsink"
+	"github.com/a-holm/paceq/internal/reason"
 	"github.com/a-holm/paceq/internal/store"
 )
+
+// ptr is the exit code a fixture verdict carries.
+func ptr(i int) *int { return &i }
 
 // fixtureJobInput is the one job every fixture run is a run of. Re-upserting
 // it returns the version already stored, so extra fixtures need no lookup.
@@ -61,53 +65,54 @@ func logsFixture(t *testing.T) (dir, runID string) {
 	root := logsink.NewRoot(stateDir)
 	at := time.Date(2026, 9, 17, 3, 0, 1, 0, time.UTC)
 
-	// Attempt 1 of extract fails after two lines.
+	// The engine holds the run while its steps take their turns.
+	if _, err := s.ClaimRun(ctx, run.ID, store.LeaseInput{Owner: "engine"}); err != nil {
+		t.Fatalf("claim run: %v", err)
+	}
+
+	// Attempt 1 of extract fails after two lines. It still has an attempt
+	// left, so the machine sends it back to pending for attempt 2.
 	finishWithSink(t, s, root, run.ID, "extract", 1, at, func(sk *logsink.Sink) {
 		writeFixtureLine(t, sk, logsink.StreamStdout, "connecting to warehouse")
 		writeFixtureLine(t, sk, logsink.StreamStderr, "warning: slow response")
-	}, store.StepFinish{
-		RunID: run.ID, Step: "extract",
-		ToState: "failed", ReasonCode: "STEP_FAILED_NONZERO_EXIT",
-		ExitCode: 1, HasExitCode: true,
-		FinishedAt: at.Add(time.Minute), Actor: "engine",
+	}, store.StepOutcome{
+		Event: "step_failed", ReasonCode: reason.STEPFailedNonzeroExit,
+		ExitCode:   ptr(1),
+		FinishedAt: at.Add(time.Minute),
 	})
-	// A retry is scheduled, which is what puts the step back to pending.
-	if err := s.RetryStep(ctx, run.ID, "extract", at.Add(90*time.Second)); err != nil {
-		t.Fatalf("retry extract: %v", err)
-	}
 
 	// Attempt 2 succeeds with one line.
 	at2 := at.Add(2 * time.Minute)
 	finishWithSink(t, s, root, run.ID, "extract", 2, at2, func(sk *logsink.Sink) {
 		writeFixtureLine(t, sk, logsink.StreamStdout, "second attempt connected")
-	}, store.StepFinish{
-		RunID: run.ID, Step: "extract",
-		ToState: "succeeded", ReasonCode: "STEP_SUCCEEDED",
-		FinishedAt: at2.Add(time.Minute), Actor: "engine",
+	}, store.StepOutcome{
+		Event: "step_succeeded", ReasonCode: reason.STEPSucceeded,
+		ExitCode:   ptr(0),
+		FinishedAt: at2.Add(time.Minute),
 	})
 
 	// load runs once and succeeds.
 	at3 := at.Add(5 * time.Minute)
 	finishWithSink(t, s, root, run.ID, "load", 1, at3, func(sk *logsink.Sink) {
 		writeFixtureLine(t, sk, logsink.StreamStdout, "loaded 42 rows")
-	}, store.StepFinish{
-		RunID: run.ID, Step: "load",
-		ToState: "succeeded", ReasonCode: "STEP_SUCCEEDED",
-		FinishedAt: at3.Add(time.Minute), Actor: "engine",
+	}, store.StepOutcome{
+		Event: "step_succeeded", ReasonCode: reason.STEPSucceeded,
+		ExitCode:   ptr(0),
+		FinishedAt: at3.Add(time.Minute),
 	})
 
 	return dir, run.ID
 }
 
 // finishWithSink starts a step, lets the test write through a real sink, then
-// finishes the step with what the sink reported.
+// records the verdict with what the sink reported.
 func finishWithSink(t *testing.T, s *store.Store, root logsink.Root, runID, step string,
-	attempt int, at time.Time, write func(*logsink.Sink), finish store.StepFinish,
+	attempt int, at time.Time, write func(*logsink.Sink), out store.StepOutcome,
 ) {
 	t.Helper()
 	ctx := context.Background()
 
-	if err := s.StartStep(ctx, runID, step, at); err != nil {
+	if err := s.StartStep(ctx, runID, step); err != nil {
 		t.Fatalf("start %s attempt %d: %v", step, attempt, err)
 	}
 	sink, err := logsink.Open(root, runID, step, attempt, logsink.Options{Clock: clock.NewFake(at)})
@@ -119,9 +124,9 @@ func finishWithSink(t *testing.T, s *store.Store, root logsink.Root, runID, step
 	if err != nil {
 		t.Fatalf("finish the sink of %s attempt %d: %v", step, attempt, err)
 	}
-	finish.Log = store.StepLog{RelPath: sink.RelPath(), Bytes: bytes, Truncated: truncated, ErrorTail: tail}
-	if err := s.FinishStep(ctx, finish); err != nil {
-		t.Fatalf("finish %s attempt %d: %v", step, attempt, err)
+	out.LogMeta = store.LogMeta{RelPath: sink.RelPath(), Bytes: bytes, Truncated: truncated, ErrorTail: tail}
+	if err := s.RecordStepOutcome(ctx, runID, step, out); err != nil {
+		t.Fatalf("record %s attempt %d: %v", step, attempt, err)
 	}
 }
 
@@ -438,7 +443,10 @@ func TestLogsFollowShowsNewLinesAndExitsWhenTheRunEnds(t *testing.T) {
 		t.Fatalf("create the followed run: %v", err)
 	}
 	at := time.Date(2026, 9, 17, 9, 0, 0, 0, time.UTC)
-	if err := s.StartStep(ctx, live.ID, "notify", at); err != nil {
+	if _, err := s.ClaimRun(ctx, live.ID, store.LeaseInput{Owner: "engine"}); err != nil {
+		t.Fatalf("claim the followed run: %v", err)
+	}
+	if err := s.StartStep(ctx, live.ID, "notify"); err != nil {
 		t.Fatalf("start notify: %v", err)
 	}
 
@@ -469,11 +477,10 @@ func TestLogsFollowShowsNewLinesAndExitsWhenTheRunEnds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("finish the live sink: %v", err)
 	}
-	if err := s.FinishStep(ctx, store.StepFinish{
-		RunID: live.ID, Step: "notify",
-		ToState: "failed", ReasonCode: "STEP_FAILED_NONZERO_EXIT",
-		ExitCode: 2, HasExitCode: true, FinishedAt: time.Now(), Actor: "engine",
-		Log: store.StepLog{RelPath: sink.RelPath(), Bytes: bytes, Truncated: truncated, ErrorTail: tail},
+	if err := s.RecordStepOutcome(ctx, live.ID, "notify", store.StepOutcome{
+		Event: "step_failed", ReasonCode: reason.STEPFailedNonzeroExit,
+		ExitCode: ptr(2), FinishedAt: time.Now(),
+		LogMeta: store.LogMeta{RelPath: sink.RelPath(), Bytes: bytes, Truncated: truncated, ErrorTail: tail},
 	}); err != nil {
 		t.Fatalf("finish notify: %v", err)
 	}
