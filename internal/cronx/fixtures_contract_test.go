@@ -132,24 +132,18 @@ func loadGoldenFixtures(t *testing.T) map[string]goldenFixture {
 }
 
 // fixtureWindow describes one required window: a zone, a window that contains
-// a named transition, and the expressions that must appear in it.
+// a named transition, and the expressions that must appear in it under every
+// named policy. Policy names follow the fixture strings: skip and shift for
+// spring forward, first and both for fall back, default for windows without
+// an interesting transition.
 type fixtureWindow struct {
-	name    string
-	tz      string
-	midUTC  string // a moment inside the window, used only for reporting
-	exprs   []string
-	policy  func(goldenPolicy) bool
-	minHits int // distinct exprs required in the window
-}
-
-func springPolicies(p goldenPolicy) bool {
-	return (p.SpringForward == "skip" || p.SpringForward == "shift") &&
-		(p.FallBack == "" || p.FallBack == "first")
-}
-
-func fallPolicies(p goldenPolicy) bool {
-	return (p.FallBack == "first" || p.FallBack == "both") &&
-		(p.SpringForward == "" || p.SpringForward == "skip")
+	name   string
+	tz     string
+	midUTC string // a moment inside the window, used only for reporting
+	exprs  []string
+	// policies lists what must exist PER EXPRESSION. Spring windows demand
+	// both spring policies, fall windows both fall policies.
+	policies []string
 }
 
 func defaultOnly(p goldenPolicy) bool {
@@ -157,81 +151,105 @@ func defaultOnly(p goldenPolicy) bool {
 		(p.FallBack == "" || p.FallBack == "first")
 }
 
+// policyMatches answers whether a fixture's policy satisfies one required
+// policy name for the window kind implied by that name.
+func policyMatches(p goldenPolicy, want string) bool {
+	switch want {
+	case "skip":
+		return p.SpringForward == "skip"
+	case "shift":
+		return p.SpringForward == "shift"
+	case "first":
+		return p.FallBack == "first"
+	case "both":
+		return p.FallBack == "both"
+	case "default":
+		return defaultOnly(p)
+	default:
+		panic("unknown required policy " + want)
+	}
+}
+
 func TestGoldenFixtureCoverage(t *testing.T) {
 	fixtures := loadGoldenFixtures(t)
 
 	windows := []fixtureWindow{
 		{
-			name:    "oslo spring 2026-03-29",
-			tz:      "Europe/Oslo",
-			midUTC:  "2026-03-29T00:00:00Z",
-			exprs:   []string{"0 2 * * *", "30 2 * * *", "*/30 * * * *", "@every 90m"},
-			policy:  springPolicies,
-			minHits: 4,
+			name:     "oslo spring 2026-03-29",
+			tz:       "Europe/Oslo",
+			midUTC:   "2026-03-29T00:00:00Z",
+			exprs:    []string{"0 2 * * *", "30 2 * * *", "*/30 * * * *"},
+			policies: []string{"skip", "shift"},
 		},
 		{
-			name:    "oslo fall 2026-10-25",
-			tz:      "Europe/Oslo",
-			midUTC:  "2026-10-25T00:00:00Z",
-			exprs:   []string{"0 2 * * *", "30 2 * * *", "*/30 * * * *", "@every 90m"},
-			policy:  fallPolicies,
-			minHits: 4,
+			name:     "oslo spring 2026-03-29, interval",
+			tz:       "Europe/Oslo",
+			midUTC:   "2026-03-29T00:00:00Z",
+			exprs:    []string{"@every 90m"},
+			policies: []string{"default"},
 		},
 		{
-			name:    "santiago spring, which falls in September on the southern hemisphere",
-			tz:      "America/Santiago",
-			midUTC:  "2026-09-06T00:00:00Z",
-			exprs:   []string{"0 0 * * *", "*/30 * * * *"},
-			policy:  springPolicies,
-			minHits: 2,
+			name:     "oslo fall 2026-10-25",
+			tz:       "Europe/Oslo",
+			midUTC:   "2026-10-25T00:00:00Z",
+			exprs:    []string{"0 2 * * *", "30 2 * * *", "*/30 * * * *"},
+			policies: []string{"first", "both"},
 		},
 		{
-			name:    "santiago fall, which falls in April on the southern hemisphere",
-			tz:      "America/Santiago",
-			midUTC:  "2026-04-05T00:00:00Z",
-			exprs:   []string{"30 23 * * *", "*/30 * * * *"},
-			policy:  fallPolicies,
-			minHits: 2,
+			name:     "oslo fall 2026-10-25, interval",
+			tz:       "Europe/Oslo",
+			midUTC:   "2026-10-25T00:00:00Z",
+			exprs:    []string{"@every 90m"},
+			policies: []string{"default"},
 		},
 		{
-			name:    "lord howe spring, the 30 minute jump",
-			tz:      "Australia/Lord_Howe",
-			midUTC:  "2026-10-03T15:00:00Z",
-			exprs:   []string{"0 2 * * *", "*/30 * * * *"},
-			policy:  springPolicies,
-			minHits: 2,
+			name:     "santiago spring, which falls in September on the southern hemisphere",
+			tz:       "America/Santiago",
+			midUTC:   "2026-09-06T00:00:00Z",
+			exprs:    []string{"0 0 * * *", "*/30 * * * *"},
+			policies: []string{"skip", "shift"},
 		},
 		{
-			name:    "lord howe fall, the 30 minute duplicate",
-			tz:      "Australia/Lord_Howe",
-			midUTC:  "2026-04-04T15:00:00Z",
-			exprs:   []string{"45 1 * * *", "*/30 * * * *"},
-			policy:  fallPolicies,
-			minHits: 2,
+			name:     "santiago fall, which falls in April on the southern hemisphere",
+			tz:       "America/Santiago",
+			midUTC:   "2026-04-05T00:00:00Z",
+			exprs:    []string{"30 23 * * *", "*/30 * * * *"},
+			policies: []string{"first", "both"},
 		},
 		{
-			name:    "kolkata, half hour offset without DST",
-			tz:      "Asia/Kolkata",
-			midUTC:  "2026-01-17T00:00:00Z",
-			exprs:   []string{"45 9 * * *", "0 12 * * *"},
-			policy:  defaultOnly,
-			minHits: 2,
+			name:     "lord howe spring, the 30 minute jump",
+			tz:       "Australia/Lord_Howe",
+			midUTC:   "2026-10-03T15:00:00Z",
+			exprs:    []string{"0 2 * * *", "*/30 * * * *"},
+			policies: []string{"skip", "shift"},
 		},
 		{
-			name:    "kiritimati, the lost day of 1994-12-31",
-			tz:      "Pacific/Kiritimati",
-			midUTC:  "1995-01-01T00:00:00Z",
-			exprs:   []string{"0 6 * * *", "30 12 * * *"},
-			policy:  defaultOnly,
-			minHits: 2,
+			name:     "lord howe fall, the 30 minute duplicate",
+			tz:       "Australia/Lord_Howe",
+			midUTC:   "2026-04-04T15:00:00Z",
+			exprs:    []string{"45 1 * * *", "*/30 * * * *"},
+			policies: []string{"first", "both"},
 		},
 		{
-			name:    "utc reference over the oslo spring window",
-			tz:      "UTC",
-			midUTC:  "2026-03-29T00:00:00Z",
-			exprs:   []string{"0 2 * * *", "*/30 * * * *"},
-			policy:  defaultOnly,
-			minHits: 2,
+			name:     "kolkata, half hour offset without DST",
+			tz:       "Asia/Kolkata",
+			midUTC:   "2026-01-17T00:00:00Z",
+			exprs:    []string{"45 9 * * *", "0 12 * * *"},
+			policies: []string{"default"},
+		},
+		{
+			name:     "kiritimati, the lost day of 1994-12-31",
+			tz:       "Pacific/Kiritimati",
+			midUTC:   "1995-01-01T00:00:00Z",
+			exprs:    []string{"0 6 * * *", "30 12 * * *"},
+			policies: []string{"default"},
+		},
+		{
+			name:     "utc reference over the oslo spring window",
+			tz:       "UTC",
+			midUTC:   "2026-03-29T00:00:00Z",
+			exprs:    []string{"0 2 * * *", "*/30 * * * *"},
+			policies: []string{"default"},
 		},
 	}
 
@@ -246,41 +264,23 @@ func TestGoldenFixtureCoverage(t *testing.T) {
 				}
 				from := mustParseUTC(t, fx.FromUTC, id+" from_utc")
 				to := mustParseUTC(t, fx.ToUTC, id+" to_utc")
-				if from.Before(mid) && to.After(mid) && w.policy(fx.Policy) {
-					hits[fx.Expr+"|"+fx.Policy.String()] = true
+				if from.Before(mid) && to.After(mid) {
+					for _, tag := range w.policies {
+						if policyMatches(fx.Policy, tag) {
+							hits[fx.Expr+"/"+tag] = true
+						}
+					}
 				}
 			}
 			for _, expr := range w.exprs {
-				found := false
-				for key := range hits {
-					if strings.HasPrefix(key, expr+"|") {
-						found = true
-						break
+				for _, tag := range w.policies {
+					if !hits[expr+"/"+tag] {
+						t.Errorf("zone %s: no fixture covers expression %q inside the window under policy %q", w.tz, expr, tag)
 					}
 				}
-				if !found {
-					t.Errorf("zone %s: no fixture covers expression %q inside the window with an allowed policy", w.tz, expr)
-				}
-			}
-			if len(hits) < w.minHits {
-				t.Errorf("zone %s: want at least %d expr/policy combinations in the window, got %d (%v)", w.tz, w.minHits, len(hits), keysOf(hits))
 			}
 		})
 	}
-}
-
-// String renders a policy the way the fixtures spell it, for messages.
-func (p goldenPolicy) String() string {
-	return p.SpringForward + "/" + p.FallBack
-}
-
-func keysOf(m map[string]bool) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }
 
 func TestGoldenFixturesAreWellFormed(t *testing.T) {
