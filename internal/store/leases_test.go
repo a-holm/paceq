@@ -251,3 +251,71 @@ func TestLeaseHolderOfAnUnknownNameReportsNone(t *testing.T) {
 		t.Fatalf("unknown lease read back ok=%v err=%v", ok, err)
 	}
 }
+
+// TestAClockJumpDoesNotFenceTheHolderOffItsOwnLease is the wall clock part of
+// the no cross process comparison rule: a big NTP correction must not turn a
+// leader into an intruder in its own row. The same holder arm of the admission
+// statement ignores expiry entirely, so a forward jump renews straight over
+// the stale deadline and a backward one changes nothing at all.
+func TestAClockJumpDoesNotFenceTheHolderOffItsOwnLease(t *testing.T) {
+	clk := clock.NewFake(leaseOrigin)
+	s := leaseStore(t, clk)
+
+	held, ok, err := s.AcquireOrRenew(context.Background(), "scheduler", "holder-a", leaseTTL)
+	if err != nil || !ok {
+		t.Fatalf("acquire: ok=%v err=%v", ok, err)
+	}
+
+	// A day forward: the row reads as long expired, but it is ours.
+	clk.Advance(25 * time.Hour)
+	got, ok, err := s.AcquireOrRenew(context.Background(), "scheduler", "holder-a", leaseTTL)
+	if err != nil || !ok {
+		t.Fatalf("renew after a day forward: ok=%v err=%v", ok, err)
+	}
+	if got.Epoch != held.Epoch {
+		t.Errorf("the jump bumped epoch to %d, want %d: nobody took anything from anybody",
+			got.Epoch, held.Epoch)
+	}
+	wantExpiry := leaseOrigin.Add(25 * time.Hour).Add(leaseTTL)
+	if !got.ExpiresAt.Equal(wantExpiry) {
+		t.Errorf("expiry after the jump is %s, want %s", got.ExpiresAt, wantExpiry)
+	}
+
+	// An hour backward from there: the deadline sits far in the future and
+	// the renewal is a plain heartbeat.
+	clk.Set(wantExpiry.Add(-time.Hour))
+	got, ok, err = s.AcquireOrRenew(context.Background(), "scheduler", "holder-a", leaseTTL)
+	if err != nil || !ok {
+		t.Fatalf("renew after an hour backward: ok=%v err=%v", ok, err)
+	}
+	if got.Epoch != held.Epoch || !got.AcquiredAt.Equal(held.AcquiredAt) {
+		t.Errorf("the backward jump moved epoch/acquired_at to %d/%s, want %d/%s",
+			got.Epoch, got.AcquiredAt, held.Epoch, held.AcquiredAt)
+	}
+}
+
+// TestAHolderReclaimsItsOwnExpiredRowWithoutABump pins the other side of the
+// same arm: a holder that froze past its own ttl and comes back to a row
+// nobody took still owns it, with its fencing token and acquisition history
+// intact. Only a foreign holder pays the epoch for an expiry.
+func TestAHolderReclaimsItsOwnExpiredRowWithoutABump(t *testing.T) {
+	clk := clock.NewFake(leaseOrigin)
+	s := leaseStore(t, clk)
+
+	held, ok, err := s.AcquireOrRenew(context.Background(), "reaper", "holder-a", leaseTTL)
+	if err != nil || !ok {
+		t.Fatalf("acquire: ok=%v err=%v", ok, err)
+	}
+
+	clk.Advance(2 * leaseTTL)
+	got, ok, err := s.AcquireOrRenew(context.Background(), "reaper", "holder-a", leaseTTL)
+	if err != nil || !ok {
+		t.Fatalf("reclaim after expiry: ok=%v err=%v", ok, err)
+	}
+	if got.Epoch != held.Epoch {
+		t.Errorf("reclaiming your own expired row produced epoch %d, want %d", got.Epoch, held.Epoch)
+	}
+	if !got.AcquiredAt.Equal(held.AcquiredAt) {
+		t.Errorf("reclaiming reset acquired_at to %s, want the original %s", got.AcquiredAt, held.AcquiredAt)
+	}
+}
