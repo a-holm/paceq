@@ -48,16 +48,20 @@ func (p *pulse) ping() {
 }
 
 // wait parks until cond holds, pings waking the checker between virtual time
-// steps.
+// steps. The deadline is armed once per call, not per park: a mutant that
+// keeps producing harmless pings must still run into a hard stop instead of
+// sliding the deadline forward forever.
 func (p *pulse) wait(t *testing.T, what string, cond func() bool) {
 	t.Helper()
+	deadline := time.NewTimer(parkDeadline)
+	defer deadline.Stop()
 	for {
 		if cond() {
 			return
 		}
 		select {
 		case <-p.c:
-		case <-time.After(parkDeadline):
+		case <-deadline.C:
 			t.Fatalf("never settled: %s", what)
 		}
 	}
