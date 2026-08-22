@@ -108,6 +108,12 @@ func walkJobFiles(dir string) ([]string, error) {
 			}
 			return nil
 		}
+		if !entry.Type().IsRegular() {
+			// A link inside the jobs tree can name anything on disk (08 T11),
+			// and a pipe or a socket is nobody's job file. Neither is read,
+			// and a link to a directory is never walked into.
+			return nil
+		}
 		if IsJobFile(entry.Name()) {
 			files = append(files, filepath.Clean(path))
 		}
