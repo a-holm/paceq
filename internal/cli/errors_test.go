@@ -7,6 +7,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -35,7 +36,9 @@ func TestEveryErrorCarriesAllThreeParts(t *testing.T) {
 		"timeoutError":     timeoutError("opening the state took longer than allowed", context.DeadlineExceeded),
 		"interruptedError": interruptedError(context.Canceled),
 		"internalError":    internalError("could not write paceq.yaml", errors.New("read only file system")),
-		"classify":         classify(ctx, errors.New("something nobody classified")),
+		"pathError":        pathError("jobs/nightly.yaml", fs.ErrNotExist),
+
+		"classify": classify(ctx, errors.New("something nobody classified")),
 	}
 
 	for name, err := range built {
