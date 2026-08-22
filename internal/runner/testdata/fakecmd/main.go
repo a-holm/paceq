@@ -41,6 +41,28 @@ func main() {
 		}
 		os.Exit(code)
 
+	case "exit-unless-attempt":
+		// A job that recovers on its Nth try: it prints its own attempt
+		// number, so every attempt's log stream carries a marker line,
+		// then exits 75 while PACEQ_ATTEMPT is still below the named
+		// one. Exit 75 is EX_TEMPFAIL, the always retryable code. The
+		// attempts share no state; the runner's environment is what
+		// tells them apart.
+		want, err := strconv.Atoi(arg(args, 0))
+		if err != nil {
+			die("exit-unless-attempt: bad attempt %q", arg(args, 0))
+		}
+		attempt := 0
+		if v := os.Getenv("PACEQ_ATTEMPT"); v != "" {
+			if parsed, err := strconv.Atoi(v); err == nil {
+				attempt = parsed
+			}
+		}
+		fmt.Printf("attempt %d\n", attempt)
+		if attempt < want {
+			os.Exit(75)
+		}
+
 	case "sleep":
 		d, err := time.ParseDuration(arg(args, 0))
 		if err != nil {

@@ -1,6 +1,10 @@
 package engine
 
 import (
+	crand "crypto/rand"
+	"encoding/binary"
+	"math/rand/v2"
+	"sync"
 	"time"
 
 	"github.com/a-holm/paceq/internal/clock"
@@ -42,6 +46,41 @@ type Engine struct {
 	// StepTimeoutDefault applies when neither the job nor the step names
 	// a timeout. Zero means runner.DefaultTimeout.
 	StepTimeoutDefault time.Duration
+
+	// LeaseTTL is how long the claim taken for ExecuteRun lasts. Zero
+	// means the store's default. An executor that waits out long retry
+	// backoffs inside one execution needs this to span them, because
+	// finishing the run requires holding the lease it claimed.
+	LeaseTTL time.Duration
+
+	// Rnd is the source full-jitter draws from. Nil means one seeded
+	// from system entropy on first use. Tests inject a seeded source so
+	// backoff sequences replay exactly.
+	Rnd *rand.Rand
+
+	rndOnce sync.Once
+}
+
+// rnd returns the injected jitter source, creating the default one on first
+// use. The seed comes from crypto/rand, not the time and not a package
+// global, so two engines never share a draw sequence.
+func (e *Engine) rnd() *rand.Rand {
+	e.rndOnce.Do(func() {
+		if e.Rnd == nil {
+			var seed [16]byte
+			if _, err := crand.Read(seed[:]); err != nil {
+				panic("engine: seed the jitter source: " + err.Error())
+			}
+			// The source only spaces retry attempts out; nothing
+			// security relevant reads its output, and a fast non
+			// cryptographic generator is exactly what jitter wants.
+			e.Rnd = rand.New(rand.NewPCG( // #nosec G404 - backoff spacing, not a secret
+				binary.LittleEndian.Uint64(seed[:8]),
+				binary.LittleEndian.Uint64(seed[8:]),
+			))
+		}
+	})
+	return e.Rnd
 }
 
 func (e *Engine) pollInterval() time.Duration {
