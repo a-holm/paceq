@@ -52,6 +52,9 @@ type reader interface {
 // write transaction is an invitation to call out of the process while holding
 // the write lock.
 func (s *Store) withTx(ctx context.Context, fn func(*sql.Tx) error) error {
+	if s.w == nil {
+		return fmt.Errorf("write refused: %w", ErrReadOnly)
+	}
 	for attempt := 1; ; attempt++ {
 		err := s.withTxOnce(ctx, fn)
 		if err == nil || attempt == maxWriteAttempts || !isBusySnapshot(err) {

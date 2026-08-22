@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/a-holm/paceq/internal/clock"
 	"github.com/a-holm/paceq/internal/store"
 )
 
@@ -23,6 +24,9 @@ type Env struct {
 	Dir string
 	// Getenv reads one environment variable.
 	Getenv func(string) string
+	// Clk is the clock commands run on. Nil means clock.System. A test
+	// brings its own so a follow loop ticks when the test says so.
+	Clk clock.Clock
 }
 
 // stateDirName is the state directory paceq creates inside a project.
@@ -121,6 +125,7 @@ func newRoot(env Env) *cobra.Command {
 		newDoctorCmd(env, &g),
 		newValidateCmd(env, &g),
 		newErrorCmd(env, &g),
+		newLogsCmd(env, &g),
 	)
 	return root
 }
