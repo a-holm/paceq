@@ -38,6 +38,14 @@ const (
 	// EvOperatorRetry is a person reopening a finished run. It is the only
 	// event that leads out of a terminal state (02 T14).
 	EvOperatorRetry Event = "operator_retry"
+	// EvShutdownDrain is the daemon giving in flight work back during its own
+	// clean stop (05 section 3.2, point 4). On a step it sends the running
+	// attempt back to pending with the attempt restored, because a daemon
+	// restart is not the user's fault and must not spend a retry. On a run it
+	// hands a claimed run back to the queue without counting a crash: the
+	// executor left on purpose, which is the opposite of what lease_expired
+	// means, so the two share no transition.
+	EvShutdownDrain Event = "shutdown_drain"
 )
 
 func (e Event) String() string { return string(e) }
@@ -57,5 +65,6 @@ func AllEvents() []Event {
 		EvCancelObserved,
 		EvLeaseExpired,
 		EvOperatorRetry,
+		EvShutdownDrain,
 	}
 }

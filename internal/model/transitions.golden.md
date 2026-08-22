@@ -8,13 +8,13 @@ A cross table cell holds the states an event can lead to, over every combination
 
 ## The run machine
 
-| state | claim | deferred | step_started | step_succeeded | step_failed | upstream_failed | all_steps_done | cancel_observed | lease_expired | operator_retry |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| queued | running, cancelled | queued | - | - | - | - | - | - | - | - |
-| running | - | - | - | - | - | - | succeeded, failed | cancelled | queued, failed | - |
-| succeeded | - | - | - | - | - | - | - | - | - | queued |
-| failed | - | - | - | - | - | - | - | - | - | queued |
-| cancelled | - | - | - | - | - | - | - | - | - | queued |
+| state | claim | deferred | step_started | step_succeeded | step_failed | upstream_failed | all_steps_done | cancel_observed | lease_expired | operator_retry | shutdown_drain |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| queued | running, cancelled | queued | - | - | - | - | - | - | - | - | - |
+| running | - | - | - | - | - | - | succeeded, failed | cancelled | queued, failed | - | queued |
+| succeeded | - | - | - | - | - | - | - | - | - | queued | - |
+| failed | - | - | - | - | - | - | - | - | - | queued | - |
+| cancelled | - | - | - | - | - | - | - | - | - | queued | - |
 
 ### Transitions
 
@@ -30,6 +30,7 @@ A cross table cell holds the states an event can lead to, over every combination
 | running | cancel_observed | cancelled | an observed cancellation kills the process group and finishes the run | kill_process_group, set_finished, release_lease, emit(run.cancelled) |
 | running | lease_expired | queued | an expired lease requeues the run while the crash budget lasts | bump_epoch, inc_crash_count, set_defer_reason(reconciled_after_crash), emit(run.requeued) |
 | running | lease_expired | failed | a run out of crash budget is poisoned | set_finished, emit(run.poisoned) |
+| running | shutdown_drain | queued | a clean drain hands a claimed run back to the queue without counting a crash | bump_epoch, release_lease, set_available_at, set_defer_reason(requeued_after_shutdown), emit(run.drained) |
 | succeeded | operator_retry | queued | an operator reopens a succeeded run | bump_epoch, emit(run.reopened) |
 | failed | operator_retry | queued | an operator reopens a failed run | bump_epoch, emit(run.reopened) |
 | cancelled | operator_retry | queued | an operator reopens a cancelled run | bump_epoch, emit(run.reopened) |
@@ -48,17 +49,18 @@ A cross table cell holds the states an event can lead to, over every combination
 | running | cancel_observed | cancelling a running run needs a reason code | missing reason code |
 | running | lease_expired | poisoning a run needs a reason code | missing reason code |
 | running | lease_expired | a lease that has not expired cannot expire | lease has not expired |
+| running | shutdown_drain | a writer without the lease cannot drain the run | lease is not held |
 
 ## The step machine
 
-| state | claim | deferred | step_started | step_succeeded | step_failed | upstream_failed | all_steps_done | cancel_observed | lease_expired | operator_retry |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| pending | - | - | running | - | - | skipped | - | - | - | - |
-| running | - | - | - | succeeded | pending, failed | - | - | cancelled | - | - |
-| succeeded | - | - | - | - | - | - | - | - | - | - |
-| failed | - | - | - | - | - | - | - | - | - | - |
-| skipped | - | - | - | - | - | - | - | - | - | - |
-| cancelled | - | - | - | - | - | - | - | - | - | - |
+| state | claim | deferred | step_started | step_succeeded | step_failed | upstream_failed | all_steps_done | cancel_observed | lease_expired | operator_retry | shutdown_drain |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| pending | - | - | running | - | - | skipped | - | - | - | - | - |
+| running | - | - | - | succeeded | pending, failed | - | - | cancelled | - | - | pending |
+| succeeded | - | - | - | - | - | - | - | - | - | - | - |
+| failed | - | - | - | - | - | - | - | - | - | - | - |
+| skipped | - | - | - | - | - | - | - | - | - | - | - |
+| cancelled | - | - | - | - | - | - | - | - | - | - | - |
 
 ### Transitions
 
@@ -70,6 +72,7 @@ A cross table cell holds the states an event can lead to, over every combination
 | running | step_failed | failed | a failed attempt with no retries left fails the step | set_finished, emit(step.failed) |
 | pending | upstream_failed | skipped | a failed upstream skips a pending step | set_finished, emit(step.skipped) |
 | running | cancel_observed | cancelled | an observed cancellation kills the process group and cancels the step | kill_process_group, set_finished, emit(step.cancelled) |
+| running | shutdown_drain | pending | a drain puts an interrupted attempt back to pending without spending it | restore_attempt, set_next_attempt_at, emit(step.interrupted) |
 
 ### Refusals
 
@@ -80,3 +83,4 @@ A cross table cell holds the states an event can lead to, over every combination
 | running | step_failed | failing a step needs a reason code | missing reason code |
 | pending | upstream_failed | skipping a step needs a reason code | missing reason code |
 | running | cancel_observed | cancelling a step needs a reason code | missing reason code |
+| running | shutdown_drain | interrupting an attempt for the drain needs a reason code | missing reason code |

@@ -45,6 +45,7 @@ Available Commands:
   logs        Show the log files of one run
   run         Run a job now, in this process, and wait for it
   runs        Inspect run history
+  serve       Run the daemon: schedules, dispatch and execution in one process
   status      Show the latest outcome of every job
   validate    Check job files and say exactly what is wrong with them
   version     Show the version, the build and the schema this binary carries

@@ -81,8 +81,8 @@ func runMachine() machine {
 			return model.NextRunState(s.(model.RunState), ev, g)
 		},
 		legal:     legal,
-		wantPairs: 50,
-		wantLegal: 8,
+		wantPairs: 55,
+		wantLegal: 9,
 	}
 }
 
@@ -105,8 +105,8 @@ func stepMachine() machine {
 			return model.NextStepState(s.(model.StepState), ev, g)
 		},
 		legal:     legal,
-		wantPairs: 60,
-		wantLegal: 5,
+		wantPairs: 66,
+		wantLegal: 6,
 	}
 }
 

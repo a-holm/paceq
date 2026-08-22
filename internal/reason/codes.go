@@ -59,14 +59,15 @@ var (
 	TRIGGERRejectedJobPaused  = triggerCode("REJECTED_JOB_PAUSED")
 	TRIGGERRejectedPayload    = triggerCode("REJECTED_PAYLOAD")
 
-	RUNQueuedConcurrency  = runCode("QUEUED_CONCURRENCY")
-	RUNCancelledManual    = runCode("CANCELLED_MANUAL")
-	RUNCancelledShutdown  = runCode("CANCELLED_SHUTDOWN")
-	RUNTimedOut           = runCode("TIMED_OUT")
-	RUNFailedStep         = runCode("FAILED_STEP")
-	RUNSucceeded          = runCode("SUCCEEDED")
-	RUNOrphanedReconciled = runCode("ORPHANED_RECONCILED")
-	RUNPoisoned           = runCode("POISONED")
+	RUNQueuedConcurrency   = runCode("QUEUED_CONCURRENCY")
+	RUNCancelledManual     = runCode("CANCELLED_MANUAL")
+	RUNCancelledShutdown   = runCode("CANCELLED_SHUTDOWN")
+	RUNInterruptedShutdown = runCode("INTERRUPTED_SHUTDOWN")
+	RUNTimedOut            = runCode("TIMED_OUT")
+	RUNFailedStep          = runCode("FAILED_STEP")
+	RUNSucceeded           = runCode("SUCCEEDED")
+	RUNOrphanedReconciled  = runCode("ORPHANED_RECONCILED")
+	RUNPoisoned            = runCode("POISONED")
 
 	STEPSucceeded              = stepCode("SUCCEEDED")
 	STEPSkippedUpstreamFailed  = stepCode("SKIPPED_UPSTREAM_FAILED")
@@ -400,6 +401,19 @@ func newCatalog() map[Code]Entry {
 				"runs closed this way are safe to start again once the daemon is back",
 			},
 			Terminal: true,
+		},
+		{
+			Code:  RUNInterruptedShutdown,
+			Level: LevelRun,
+			Short: "interrupted by a clean daemon stop, nothing was lost",
+			Explanation: "The daemon was stopped on purpose while this work was mid flight. The step " +
+				"was put back exactly as it was before the attempt started: pending, with no " +
+				"attempt spent and no verdict invented. The next daemon picks it up again from " +
+				"the top, which makes a stop safe at any moment but never free.",
+			Remedy: []string{
+				"nothing needs doing: the work resumes on its own once a daemon serves again",
+				"steps interrupted this way start over from their first command, so keep jobs idempotent",
+			},
 		},
 		{
 			Code:  RUNTimedOut,

@@ -47,6 +47,17 @@ func NextStepState(cur StepState, ev Event, g Guards) (StepState, []Effect, erro
 		}
 		return StepCancelled, effects(act(EffectKillProcessGroup), act(EffectSetFinished),
 			emit("step.cancelled")), nil
+
+	case cur == StepRunning && ev == EvShutdownDrain:
+		// The daemon is stopping and this attempt was cut short by it.
+		// The attempt goes back to pending with the start's increment
+		// restored (05 section 3.2, point 4): a restart of paceq is not
+		// the user's fault, so it must not spend a retry.
+		if err := requireReason(cur, ev, StepPending, g); err != nil {
+			return cur, nil, err
+		}
+		return StepPending, effects(act(EffectRestoreAttempt), act(EffectSetNextAttemptAt),
+			emit("step.interrupted")), nil
 	}
 
 	return cur, nil, IllegalTransitionError{From: cur, Event: ev}

@@ -58,6 +58,7 @@ Codes stored on the runs table, one row per run.
 | `RUN_CANCELLED_MANUAL` | cancelled by request | yes | - |
 | `RUN_CANCELLED_SHUTDOWN` | cancelled because the daemon stopped | yes | - |
 | `RUN_FAILED_STEP` | a step failed | yes | `attempt`, `step` |
+| `RUN_INTERRUPTED_SHUTDOWN` | interrupted by a clean daemon stop, nothing was lost | no | - |
 | `RUN_ORPHANED_RECONCILED` | found running with no process, reconciled | yes | - |
 | `RUN_POISONED` | crashed more often than allowed | yes | `crash_count`, `max_crash_count` |
 | `RUN_QUEUED_CONCURRENCY` | held back by a concurrency limit | no | `limit`, `scope` |
@@ -392,6 +393,19 @@ What to do next:
 - its own reason code says whether it exited non-zero, was killed, or never started
 
 Promised reason_data keys: attempt, step.
+
+### RUN_INTERRUPTED_SHUTDOWN
+
+interrupted by a clean daemon stop, nothing was lost. [run level]
+
+The daemon was stopped on purpose while this work was mid flight. The step
+was put back exactly as it was before the attempt started: pending, with no
+attempt spent and no verdict invented. The next daemon picks it up again
+from the top, which makes a stop safe at any moment but never free.
+
+What to do next:
+- nothing needs doing: the work resumes on its own once a daemon serves again
+- steps interrupted this way start over from their first command, so keep jobs idempotent
 
 ### RUN_ORPHANED_RECONCILED
 

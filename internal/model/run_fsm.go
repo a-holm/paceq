@@ -6,6 +6,13 @@ package model
 // anything that could pass a reason in.
 const DeferReasonAfterCrash = "reconciled_after_crash"
 
+// DeferReasonAfterShutdown is what a run requeued by its own executor's clean
+// stop says about itself. Like DeferReasonAfterCrash it lives here because the
+// machine demands the effect and nothing else owns the word. A drained run
+// carries no crash: the executor left on purpose, and counting one would make
+// every ordinary restart look like a failing run.
+const DeferReasonAfterShutdown = "requeued_after_shutdown"
+
 // NextRunState is the run machine, and the only place that decides what a run
 // may do next. It reads nothing but its arguments: no database, no clock, no
 // package level state, so the same three inputs always give the same three
@@ -95,6 +102,18 @@ func NextRunState(cur RunState, ev Event, g Guards) (RunState, []Effect, error) 
 		}
 		return next, effects(act(EffectBumpEpoch), act(EffectIncCrashCount),
 			deferReason(DeferReasonAfterCrash), emit(name)), nil
+
+	case cur == RunRunning && ev == EvShutdownDrain:
+		// The mirror of lease_expired: the owner is still holding the
+		// lease and is handing the run back itself. The epoch still goes
+		// up, so a late writer from this attempt stays fenced out, and
+		// available_at moves to now so the next executor can claim at
+		// once. No crash count: nothing died.
+		if !g.LeaseValid {
+			return cur, nil, GuardError{From: cur, Event: ev, To: RunQueued, Want: ErrStaleLease}
+		}
+		return RunQueued, effects(act(EffectBumpEpoch), act(EffectReleaseLease),
+			act(EffectSetAvailableAt), deferReason(DeferReasonAfterShutdown), emit("run.drained")), nil
 
 	case cur.IsTerminal() && ev == EvOperatorRetry:
 		// 02 T14, the only way out of a terminal state. The epoch is
