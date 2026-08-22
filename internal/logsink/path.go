@@ -217,7 +217,9 @@ func (r Root) Create(rel string) (*os.File, error) {
 	return r.createFile(rel)
 }
 
-// createFile opens path at 0600, creating parent directories at 0700 first. An
+// createFile opens path at 0600, creating parent directories at 0700 first.
+// The handle goes through an os.Root anchored at the log root, so a relative
+// path cannot resolve outside it through a symlink, whatever named it. An
 // existing file keeps its old mode, so the mode is checked after opening and
 // the file is closed again when it is too wide: fail closed, never write into
 // a log another user can read.
@@ -229,7 +231,14 @@ func (r Root) createFile(rel string) (*os.File, error) {
 	if err := ensureDir(r.dir, filepath.Dir(abs)); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(abs, os.O_CREATE|os.O_WRONLY|os.O_APPEND, fileMode)
+	root, err := os.OpenRoot(r.dir)
+	if err != nil {
+		return nil, fmt.Errorf("open the log root %s: %w", r.dir, err)
+	}
+	defer func() { _ = root.Close() }()
+
+	f, err := root.OpenFile(filepath.ToSlash(filepath.Clean(rel)),
+		os.O_CREATE|os.O_WRONLY|os.O_APPEND, fileMode)
 	if err != nil {
 		return nil, fmt.Errorf("open the log file %s: %w", abs, err)
 	}
