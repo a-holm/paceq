@@ -1,0 +1,39 @@
+{
+  "expected": [
+    {
+      "at": "2026-10-23T00:30:00Z",
+      "local": "2026-10-23 02:30:00 +02:00",
+      "skipped": false
+    },
+    {
+      "at": "2026-10-24T00:30:00Z",
+      "local": "2026-10-24 02:30:00 +02:00",
+      "skipped": false
+    },
+    {
+      "at": "2026-10-25T00:30:00Z",
+      "local": "2026-10-25 02:30:00 +02:00",
+      "skipped": false
+    },
+    {
+      "at": "2026-10-25T01:30:00Z",
+      "local": "2026-10-25 02:30:00 +01:00",
+      "skipped": false
+    },
+    {
+      "at": "2026-10-26T01:30:00Z",
+      "local": "2026-10-26 02:30:00 +01:00",
+      "skipped": false
+    }
+  ],
+  "expr": "30 2 * * *",
+  "from_utc": "2026-10-23T00:00:00Z",
+  "generated_by": "croniter 6.2.4 / python 3.12.3 / tzdata 2026c",
+  "id": "oslo-fall-202610-daily-0230-both",
+  "policy": {
+    "fall_back": "both",
+    "spring_forward": "skip"
+  },
+  "to_utc": "2026-10-27T00:00:00Z",
+  "tz": "Europe/Oslo"
+}

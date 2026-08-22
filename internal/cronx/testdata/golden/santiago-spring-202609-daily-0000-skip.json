@@ -1,0 +1,35 @@
+{
+  "expected": [
+    {
+      "at": "2026-09-04T04:00:00Z",
+      "local": "2026-09-04 00:00:00 -04:00",
+      "skipped": false
+    },
+    {
+      "at": "2026-09-05T04:00:00Z",
+      "local": "2026-09-05 00:00:00 -04:00",
+      "skipped": false
+    },
+    {
+      "at": "2026-09-06T04:00:00Z",
+      "local": "-",
+      "skip_reason": "dst_nonexistent",
+      "skipped": true
+    },
+    {
+      "at": "2026-09-07T03:00:00Z",
+      "local": "2026-09-07 00:00:00 -03:00",
+      "skipped": false
+    }
+  ],
+  "expr": "0 0 * * *",
+  "from_utc": "2026-09-04T00:00:00Z",
+  "generated_by": "croniter 6.2.4 / python 3.12.3 / tzdata 2026c",
+  "id": "santiago-spring-202609-daily-0000-skip",
+  "policy": {
+    "fall_back": "first",
+    "spring_forward": "skip"
+  },
+  "to_utc": "2026-09-08T00:00:00Z",
+  "tz": "America/Santiago"
+}
