@@ -520,6 +520,19 @@ func (s *Store) ObserveRunCancel(ctx context.Context, runID, owner, actor string
 	})
 }
 
+// nextRunnableStepSQL is the claim predicate: the lowest index that is
+// pending, past its retry gate, and whose every frozen upstream has
+// succeeded. It is a constant so the query plan test asserts the plan of the
+// exact statement that runs, not of a copy of it.
+const nextRunnableStepSQL = `SELECT s.name FROM steps s
+WHERE s.run_id = ? AND s.state = 'pending'
+	AND (s.next_attempt_at IS NULL OR s.next_attempt_at <= ?)
+	AND NOT EXISTS (
+		SELECT 1 FROM step_deps d JOIN steps up
+			ON up.run_id = d.run_id AND up.name = d.depends_on
+		WHERE d.run_id = s.run_id AND d.step_name = s.name AND up.state <> 'succeeded')
+ORDER BY s.idx LIMIT 1`
+
 // NextRunnableStep names the next step the engine may start: the lowest index
 // that is pending, past its retry gate, and whose every frozen upstream has
 // succeeded. A step waiting on upstream that has not succeeded is skipped
@@ -527,14 +540,8 @@ func (s *Store) ObserveRunCancel(ctx context.Context, runID, owner, actor string
 // whole graph.
 func (s *Store) NextRunnableStep(ctx context.Context, runID string) (string, bool, error) {
 	var name string
-	err := s.r.QueryRowContext(ctx, `SELECT s.name FROM steps s
-WHERE s.run_id = ? AND s.state = 'pending'
-	AND (s.next_attempt_at IS NULL OR s.next_attempt_at <= ?)
-	AND NOT EXISTS (
-		SELECT 1 FROM step_deps d JOIN steps up
-			ON up.run_id = d.run_id AND up.name = d.depends_on
-		WHERE d.run_id = s.run_id AND d.step_name = s.name AND up.state <> 'succeeded')
-ORDER BY s.idx LIMIT 1`, runID, s.clk.Now().UTC().UnixMilli()).Scan(&name)
+	err := s.r.QueryRowContext(ctx, nextRunnableStepSQL, runID,
+		s.clk.Now().UTC().UnixMilli()).Scan(&name)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}
