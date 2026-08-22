@@ -84,7 +84,7 @@ func main() {
 	case "spew":
 		mib, err := strconv.Atoi(arg(args, 0))
 		if err != nil {
-			die("spew: %v", err)
+			die("spew: %v", arg(args, 0))
 		}
 		chunk := make([]byte, 64*1024)
 		for i := 0; i < mib*16; i++ {
@@ -92,6 +92,28 @@ func main() {
 				die("spew: %v", err)
 			}
 		}
+
+	case "fds":
+		// Report the descriptor table: name and readlink target of every
+		// entry under /proc/self/fd. This is how the parent proves what the
+		// job could and could not touch.
+		out := map[string]string{}
+		entries, err := os.ReadDir("/proc/self/fd")
+		if err != nil {
+			die("fds: %v", err)
+		}
+		for _, entry := range entries {
+			target, err := os.Readlink("/proc/self/fd/" + entry.Name())
+			if err != nil {
+				continue
+			}
+			out[entry.Name()] = target
+		}
+		b, err := json.Marshal(out)
+		if err != nil {
+			die("fds: %v", err)
+		}
+		fmt.Println(string(b))
 
 	case "env-dump":
 		env := map[string]string{}
