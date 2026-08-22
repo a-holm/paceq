@@ -101,7 +101,7 @@ func runInit(ctx context.Context, env Env, g *globals, out *ui) error {
 	}
 
 	out.note(1, "opening the database %s", dbPath)
-	schema, err := createState(ctx, stateDir, out)
+	schema, err := createState(ctx, env, stateDir, out)
 	if err != nil {
 		return err
 	}
@@ -182,8 +182,8 @@ func writeInitReport(out *ui, report initReport) error {
 // createState creates the database and brings it up to this build's schema. The
 // store takes the state lock first, so a second paceq is refused here rather
 // than after both have written.
-func createState(ctx context.Context, stateDir string, out *ui) (int, error) {
-	s, err := store.OpenState(ctx, stateDir, store.Options{})
+func createState(ctx context.Context, env Env, stateDir string, out *ui) (int, error) {
+	s, err := store.OpenState(ctx, stateDir, store.Options{Clock: clkOf(env)})
 	if err != nil {
 		return 0, err
 	}

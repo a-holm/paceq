@@ -1,0 +1,538 @@
+package cli
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/rogpeppe/go-internal/diff"
+	"github.com/rogpeppe/go-internal/testscript"
+	"github.com/rogpeppe/go-internal/txtar"
+
+	"github.com/a-holm/paceq/internal/store"
+)
+
+// The commands in this file are the harness the golden scripts run on. Two
+// jobs only: keep what no golden may pin out of the comparison (ids, work
+// paths), and give a script exact, bounded ways to wait for a background
+// paceq process. None of it is product code; it all lives behind _test.go.
+
+// fakeClockDefault is the frozen wall clock every script runs on unless one
+// command overrides it. Chosen once, written down here, so every golden in
+// testdata carries the same stamps.
+const fakeClockDefault = "2026-09-24T09:00:00Z"
+
+// ulidPattern matches the identifiers the store mints: 26 Crockford base32
+// characters starting with a digit. Ordinary words never fit, and a spec
+// hash is 64 characters, not 26.
+var ulidPattern = regexp.MustCompile(`[0-9][0-9ABCDEFGHJKMNPQRSTVWXYZ]{25}`)
+
+// maskVolatile replaces everything a golden must not pin down: the absolute
+// work directory becomes <WORK>, and every ULID becomes <RUN1>, <RUN2>, ...,
+// numbered in first-seen order. The same id always gets the same
+// placeholder, so a document still shows which fields repeat.
+func maskVolatile(workDir string, in []byte) []byte {
+	if workDir != "" {
+		in = bytes.ReplaceAll(in, []byte(workDir), []byte("<WORK>"))
+	}
+	seen := map[string]string{}
+	return ulidPattern.ReplaceAllFunc(in, func(match []byte) []byte {
+		id := string(match)
+		placeholder, ok := seen[id]
+		if !ok {
+			placeholder = fmt.Sprintf("<RUN%d>", len(seen)+1)
+			seen[id] = placeholder
+		}
+		return []byte(placeholder)
+	})
+}
+
+// canonicalJSON renders a document the way the comparison and the diff want
+// it: decoded and re-encoded, so object keys come out sorted no matter how
+// the producer wrote them, indented so a failing diff reads by eye.
+func canonicalJSON(in []byte) ([]byte, error) {
+	var document any
+	if err := json.Unmarshal(in, &document); err != nil {
+		return nil, err
+	}
+	var out bytes.Buffer
+	encoder := json.NewEncoder(&out)
+	encoder.SetEscapeHTML(false)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(document); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
+}
+
+// jsonEqual compares two JSON documents by value. Object key order carries no
+// meaning (the decoder sees a map); array order does, because the run
+// listing's newest-first order is part of the contract.
+func jsonEqual(a, b []byte) (bool, error) {
+	canonicalA, err := canonicalJSON(a)
+	if err != nil {
+		return false, fmt.Errorf("left side is not JSON: %w", err)
+	}
+	canonicalB, err := canonicalJSON(b)
+	if err != nil {
+		return false, fmt.Errorf("right side is not JSON: %w", err)
+	}
+	return bytes.Equal(canonicalA, canonicalB), nil
+}
+
+// setupScriptEnv is the determinism layer every script runs under: a frozen
+// clock the harness reads, ASCII symbols, colour off, and a fixed width for
+// anything that ever grows a width-aware renderer. A script can override a
+// variable for one command by prefixing the line, which is how a later run
+// is given a later timestamp.
+func setupScriptEnv(e *testscript.Env) error {
+	for key, value := range map[string]string{
+		"PULSEQ_FAKE_CLOCK": fakeClockDefault,
+		"LC_ALL":            "C",
+		"NO_COLOR":          "1",
+		"COLUMNS":           "100",
+	} {
+		e.Setenv(key, value)
+	}
+	return nil
+}
+
+// paceqEnv builds the environment for a paceq process this harness spawns
+// itself (the tty rows and exact exit code rows). The script's own
+// environment is not visible here, so the determinism layer is applied
+// again, and the caller's KEY=VALUE overrides go last.
+func paceqEnv(overrides []string) ([]string, error) {
+	drop := map[string]bool{
+		"PULSEQ_FAKE_CLOCK": true, "LC_ALL": true, "NO_COLOR": true,
+		"CLICOLOR_FORCE": true, "COLUMNS": true,
+	}
+	var env []string
+	for _, entry := range os.Environ() {
+		if !drop[entry[:strings.IndexByte(entry, '=')]] {
+			env = append(env, entry)
+		}
+	}
+	env = append(env,
+		"PULSEQ_FAKE_CLOCK="+fakeClockDefault,
+		"LC_ALL=C", "NO_COLOR=1", "COLUMNS=100")
+	for _, override := range overrides {
+		if !strings.Contains(override, "=") {
+			return nil, fmt.Errorf("%q is not a KEY=VALUE override", override)
+		}
+		env = append(env, override)
+	}
+	return env, nil
+}
+
+// spawnPaceq starts the paceq command the same way a script's exec does: as
+// a real process of the binary testscript installed on PATH, with its own
+// pipes and its own exit code. There is no second way into the CLI: the
+// process runs cli.MainEnv, exactly like the shipped binary's main.
+func spawnPaceq(ts *testscript.TestScript, overrides, args []string) *exec.Cmd {
+	bin, err := exec.LookPath("paceq")
+	if err != nil {
+		ts.Fatalf("the paceq command is not on PATH: %v", err)
+	}
+	env, err := paceqEnv(overrides)
+	if err != nil {
+		ts.Fatalf("%v", err)
+	}
+	cmd := exec.Command(bin, args...)
+	cmd.Dir = ts.MkAbs(".")
+	cmd.Env = env
+	return cmd
+}
+
+// cmdWantExit runs one paceq command and demands one exact exit code. The
+// exit code is the loudest half of the CLI contract, so a matrix row never
+// asserts it through a side door: the failure names the code that came back.
+// Standard output and standard error land in the two named files, so the
+// lines after it can assert the words around the failure.
+//
+//	wantexit 5 out.json err.txt run broken-job
+//
+// An argument of the form @FILE is replaced by that file's first line, so a
+// script can hand the CLI an id it learned from an earlier command:
+//
+//	writeid latest.id
+//	wantexit 0 show.json - runs show @latest.id
+func cmdWantExit(ts *testscript.TestScript, neg bool, args []string) {
+	if neg || len(args) < 3 {
+		ts.Fatalf("usage: wantexit CODE STDOUT-FILE STDERR-FILE ARGS...")
+	}
+	code, err := strconv.Atoi(args[0])
+	if err != nil {
+		ts.Fatalf("%q is not an exit code", args[0])
+	}
+	paceqArgs, err := expandFileArgs(ts, args[3:])
+	if err != nil {
+		ts.Fatalf("%v", err)
+	}
+	cmd := spawnPaceq(ts, nil, paceqArgs)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	runErr := cmd.Run()
+	got := 0
+	if runErr != nil {
+		exitErr, ok := runErr.(*exec.ExitError)
+		if !ok {
+			ts.Fatalf("paceq could not be started: %v", runErr)
+		}
+		got = exitErr.ExitCode()
+	}
+	if got != code {
+		ts.Fatalf("%v exited %d, want %d\nstdout:\n%s\nstderr:\n%s",
+			args[3:], got, code, stdout.String(), stderr.String())
+	}
+	if args[1] != "-" {
+		ts.Check(os.WriteFile(ts.MkAbs(args[1]), stdout.Bytes(), 0o644))
+	}
+	if args[2] != "-" {
+		ts.Check(os.WriteFile(ts.MkAbs(args[2]), stderr.Bytes(), 0o644))
+	}
+}
+
+// cmdMaskFile masks ids and work paths in the named files, in place. A
+// golden never carries a raw identifier: it carries the placeholder, so the
+// comparison is about shape and values, not about this run's randomness.
+//
+//	exec paceq runs list -o json
+//	cp stdout actual.json
+//	maskfile actual.json
+func cmdMaskFile(ts *testscript.TestScript, neg bool, args []string) {
+	if neg || len(args) < 1 {
+		ts.Fatalf("usage: maskfile FILE...")
+	}
+	for _, name := range args {
+		data := ts.ReadFile(name)
+		ts.Check(os.WriteFile(ts.MkAbs(name), maskVolatile(workDirOf(ts), []byte(data)), 0o644))
+	}
+}
+
+// workDirOf is the absolute work directory a script runs in, for masking.
+func workDirOf(ts *testscript.TestScript) string {
+	return ts.MkAbs(".")
+}
+
+// expandFileArgs replaces every @FILE argument with that file's first line,
+// trimmed. It is how a script hands an id it read earlier to a later
+// command, without the harness ever inventing the value itself.
+func expandFileArgs(ts *testscript.TestScript, args []string) ([]string, error) {
+	out := make([]string, len(args))
+	for i, arg := range args {
+		if !strings.HasPrefix(arg, "@") {
+			out[i] = arg
+			continue
+		}
+		data := strings.TrimSpace(ts.ReadFile(strings.TrimPrefix(arg, "@")))
+		if data == "" || strings.ContainsAny(data, "\n\r") {
+			return nil, fmt.Errorf("@%s must hold exactly one line, got %q", arg[1:], data)
+		}
+		out[i] = data
+	}
+	return out, nil
+}
+
+// cmdWriteID writes the newest run's id, or a prefix of it, so a script can
+// address that run the way a user would: by typing (part of) the id.
+//
+//	writeid latest.id            # the whole id
+//	writeid -prefix=8 short.id   # any prefix this long names one run here
+//	writeid -prefix=4 both.id    # two runs minted in the same millisecond
+func cmdWriteID(ts *testscript.TestScript, neg bool, args []string) {
+	if neg || len(args) < 1 || len(args) > 2 {
+		ts.Fatalf("usage: writeid [-prefix=N] FILE")
+	}
+	prefix := 0
+	file := args[len(args)-1]
+	for _, flagArg := range args[:len(args)-1] {
+		if !strings.HasPrefix(flagArg, "-prefix=") {
+			ts.Fatalf("%q is not a -prefix=N option", flagArg)
+		}
+		n, err := strconv.Atoi(strings.TrimPrefix(flagArg, "-prefix="))
+		if err != nil || n <= 0 {
+			ts.Fatalf("-prefix needs a positive number, got %q", flagArg)
+		}
+		prefix = n
+	}
+	ctx := context.Background()
+	dbPath := filepath.Join(workDirOf(ts), stateDirName, store.DatabaseFileName)
+	ro, err := store.OpenReadOnly(ctx, dbPath, store.Options{})
+	if err != nil {
+		ts.Fatalf("could not read the state to find a run: %v", err)
+	}
+	defer func() { _ = ro.Close() }()
+	rows, err := ro.ListRuns(ctx, store.RunFilter{Limit: 1})
+	if err != nil {
+		ts.Fatalf("could not list the runs: %v", err)
+	}
+	if len(rows) == 0 {
+		ts.Fatalf("no run exists yet: paceq run <job> makes the first one")
+	}
+	id := rows[0].ID
+	if prefix > 0 {
+		if prefix > len(id) {
+			ts.Fatalf("the id is %d characters, shorter than the %d asked for", len(id), prefix)
+		}
+		id = id[:prefix]
+	}
+	ts.Check(os.WriteFile(ts.MkAbs(file), []byte(id+"\n"), 0o644))
+}
+
+// cmdCmpJSON compares two JSON documents by value and reports a readable
+// diff when they disagree. The right side is usually a golden embedded in
+// the script file itself.
+//
+//	cmpjson actual.json expected.json
+//
+// With -update a mismatch rewrites the golden inside the script instead of
+// failing it, which is the whole regeneration story: one command refreshes
+// every expectation, and git diff shows what moved.
+func cmdCmpJSON(ts *testscript.TestScript, neg bool, args []string) {
+	if neg || len(args) != 2 {
+		ts.Fatalf("usage: cmpjson ACTUAL EXPECTED")
+	}
+	actual := []byte(ts.ReadFile(args[0]))
+	expected := []byte(ts.ReadFile(args[1]))
+	equal, err := jsonEqual(actual, expected)
+	if err != nil {
+		// An unreadable right side with -update is a golden waiting to
+		// be born, so write it instead of failing. A broken LEFT side
+		// is always a bug in the script.
+		if *updateGoldens {
+			canonicalActual, canonErr := canonicalJSON(actual)
+			if canonErr != nil {
+				ts.Fatalf("%s is not JSON: %v", args[0], canonErr)
+			}
+			if err := updateScriptGolden(ts, args[1], canonicalActual); err != nil {
+				ts.Fatalf("could not regenerate %s: %v", args[1], err)
+			}
+			return
+		}
+		ts.Check(err)
+	}
+	if equal {
+		return
+	}
+	canonicalActual, errA := canonicalJSON(actual)
+	canonicalExpected, errB := canonicalJSON(expected)
+	if errA != nil || errB != nil {
+		ts.Fatalf("%s and %s hold different JSON shapes", args[0], args[1])
+	}
+	if *updateGoldens {
+		if err := updateScriptGolden(ts, args[1], canonicalActual); err != nil {
+			ts.Fatalf("could not regenerate %s: %v", args[1], err)
+		}
+		return
+	}
+	var patch []byte
+	// diff.Diff renders a readable unified diff between the canonical
+	// forms, so a broken contract names the field that moved.
+	patch = diff.Diff(args[0], canonicalActual, args[1], canonicalExpected)
+	ts.Fatalf("%s does not match %s:\n%s", args[0], args[1], patch)
+}
+
+// updateScriptGolden rewrites one embedded file section of the running
+// script with new content. A golden that is not embedded lands as a plain
+// file in the work directory instead.
+func updateScriptGolden(ts *testscript.TestScript, name string, content []byte) error {
+	scriptPath := filepath.Join("testdata", "script", ts.Name()+".txtar")
+	data, err := os.ReadFile(scriptPath)
+	if err != nil {
+		return err
+	}
+	archive := txtar.Parse(data)
+	found := false
+	for i := range archive.Files {
+		if archive.Files[i].Name == name {
+			archive.Files[i].Data = append(bytes.TrimRight(content, "\n"), '\n')
+			found = true
+		}
+	}
+	if !found {
+		return fmt.Errorf("no section named %s in %s", name, scriptPath)
+	}
+	return os.WriteFile(scriptPath, txtar.Format(archive), 0o644)
+}
+
+// cmdWaitRunState polls the state database until some run reaches the named
+// state, or the deadline passes. It exists so a script can wait for a
+// background paceq run without sleeping: the poll reads the store the same
+// way paceq status does, every 20 milliseconds, and gives up with an
+// explanation instead of hanging.
+//
+//	waitrunstate running 30s
+func cmdWaitRunState(ts *testscript.TestScript, neg bool, args []string) {
+	if neg || len(args) != 2 {
+		ts.Fatalf("usage: waitrunstate STATE DEADLINE")
+	}
+	deadline, err := time.ParseDuration(args[1])
+	if err != nil || deadline <= 0 {
+		ts.Fatalf("%q is not a positive deadline such as 30s", args[1])
+	}
+	dbPath := filepath.Join(workDirOf(ts), stateDirName, store.DatabaseFileName)
+
+	ctx := context.Background()
+	var ro *store.Store
+	defer func() {
+		if ro != nil {
+			_ = ro.Close()
+		}
+	}()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	giveUp := time.Now().Add(deadline)
+	for {
+		if ro == nil {
+			if opened, openErr := store.OpenReadOnly(ctx, dbPath, store.Options{}); openErr == nil {
+				ro = opened
+			}
+		}
+		if ro != nil {
+			rows, listErr := ro.ListRuns(ctx, store.RunFilter{Limit: 10})
+			if listErr == nil {
+				for _, row := range rows {
+					if row.State == args[0] {
+						return
+					}
+				}
+			}
+		}
+		if !time.Now().Before(giveUp) {
+			ts.Fatalf("no run reached state %q within %s. Is the paceq run still alive, and did the job's steps start?", args[0], args[1])
+		}
+		<-ticker.C
+	}
+}
+
+// holdState is one background holder of the state lock, for the busy rows.
+type holdState struct {
+	close chan struct{}
+	done  chan struct{}
+}
+
+// cmdHoldState takes the state directory lock the way a second paceq
+// process would, and keeps it until releasehold or a two minute guard. The
+// next paceq command the script runs must then answer with the busy exit.
+//
+//	holdstate mine
+//	wantexit 6 - busy_err.txt status
+//	releasehold mine
+func cmdHoldState(ts *testscript.TestScript, neg bool, args []string) {
+	if neg || len(args) != 1 {
+		ts.Fatalf("usage: holdstate NAME")
+	}
+	key := "holdstate/" + ts.Name() + "/" + args[0]
+	if harnessValues[key] != nil {
+		ts.Fatalf("a holder named %s already exists", args[0])
+	}
+	dbPath := filepath.Join(workDirOf(ts), stateDirName, store.DatabaseFileName)
+	h := &holdState{close: make(chan struct{}), done: make(chan struct{})}
+	go func() {
+		defer close(h.done)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		s, err := store.OpenState(ctx, dbPath, store.Options{})
+		if err != nil {
+			ts.Logf("holdstate %s: could not take the lock: %v", args[0], err)
+			return
+		}
+		defer func() { _ = s.Close() }()
+		select {
+		case <-h.close:
+		case <-time.After(2 * time.Minute):
+		}
+	}()
+	harnessValues[key] = h
+	ts.Defer(func() { releaseHolder(ts, args[0]) })
+}
+
+// releaseHolder closes a holder and waits until the lock is let go. It is
+// the body of releasehold and the safety net behind holdstate's Defer.
+func releaseHolder(ts *testscript.TestScript, name string) {
+	key := "holdstate/" + ts.Name() + "/" + name
+	value := harnessValues[key]
+	h, ok := value.(*holdState)
+	if !ok {
+		return
+	}
+	close(h.close)
+	<-h.done
+	delete(harnessValues, key)
+}
+
+// cmdReleaseHold lets go of a lock taken with holdstate, and waits until it
+// is let go, so the next command in the script sees an unlocked directory.
+func cmdReleaseHold(ts *testscript.TestScript, neg bool, args []string) {
+	if neg || len(args) != 1 {
+		ts.Fatalf("usage: releasehold NAME")
+	}
+	if harnessValues["holdstate/"+ts.Name()+"/"+args[0]] == nil {
+		ts.Fatalf("no holder named %s exists", args[0])
+	}
+	releaseHolder(ts, args[0])
+}
+
+// cmdWriteGarbage replaces a file with binary nonsense, for the one row that
+// needs a state database a store cannot even open.
+//
+//	writegarbage .paceq/state.db
+func cmdWriteGarbage(ts *testscript.TestScript, neg bool, args []string) {
+	if neg || len(args) != 1 {
+		ts.Fatalf("usage: writegarbage FILE")
+	}
+	garbage := bytes.Repeat([]byte{0xde, 0xad, 0xbe, 0xef}, 128)
+	ts.Check(os.WriteFile(ts.MkAbs(args[0]), garbage, 0o600))
+}
+
+// cmdPlantRun queues a real run through the store and then appends two run
+// events whose chain does not add up. The second event claims the run went
+// from queued to failed while the first already said queued to running,
+// which is exactly the broken story invariant I15 exists to catch.
+//
+//	plantrun nightly
+//	wantexit 1 - fsck_err.txt fsck
+func cmdPlantRun(ts *testscript.TestScript, neg bool, args []string) {
+	if neg || len(args) != 1 {
+		ts.Fatalf("usage: plantrun JOB")
+	}
+	ctx := context.Background()
+	dbPath := filepath.Join(workDirOf(ts), stateDirName, store.DatabaseFileName)
+	s, err := store.Open(ctx, dbPath, store.Options{})
+	if err != nil {
+		ts.Fatalf("could not open the state to plant a run: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+	queued, err := s.MaterializeManualTrigger(ctx, store.ManualTriggerInput{
+		JobName: args[0],
+		Actor:   "cli:test",
+	})
+	if err != nil {
+		ts.Fatalf("could not queue the run to plant events on: %v", err)
+	}
+	breaks := []store.RunEvent{
+		{RunID: queued.Run.ID, Kind: "run.state", FromState: "queued", ToState: "running", Actor: "cli:test"},
+		{RunID: queued.Run.ID, Kind: "run.state", FromState: "queued", ToState: "failed", Actor: "cli:test"},
+	}
+	for _, event := range breaks {
+		if err := s.AppendRunEvent(ctx, event); err != nil {
+			ts.Fatalf("could not plant the broken event: %v", err)
+		}
+	}
+	ts.Logf("planted a broken event chain on run %s", queued.Run.ID)
+}
+
+// harnessValues is scratch state for commands that must remember something
+// between two lines of one script, such as a lock holder. Scripts run one
+// after the other, and every key carries the script name, so two scripts
+// never see each other's state.
+var harnessValues = map[string]any{}

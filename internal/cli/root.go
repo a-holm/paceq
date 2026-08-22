@@ -33,21 +33,32 @@ type Env struct {
 const stateDirName = ".paceq"
 
 // Main runs the command line and returns the process exit code.
+func Main(ctx context.Context, args []string) int {
+	return MainEnv(ctx, Env{Stdout: os.Stdout, Stderr: os.Stderr, Getenv: os.Getenv}, args)
+}
+
+// MainEnv runs the command line on an environment the caller built, and
+// returns the process exit code. Main is the thin wrapper production uses;
+// a test harness brings its own writers and clock through here, and both
+// paths are the same code from this line on.
 //
 // The umask is the first thing that happens, before any command can create a
 // file (08 section 3.9). Setting it later would leave whatever the first write
 // created at the mode the environment happened to have.
-func Main(ctx context.Context, args []string) int {
+func MainEnv(ctx context.Context, env Env, args []string) int {
 	setUmask()
 
-	dir, err := os.Getwd()
-	if err != nil {
-		// A working directory that cannot be read is not worth refusing over:
-		// every path the commands use is resolved against it, and a relative
-		// one still resolves the same way the process would.
-		dir = "."
+	if env.Dir == "" {
+		dir, err := os.Getwd()
+		if err != nil {
+			// A working directory that cannot be read is not worth
+			// refusing over: every path the commands use is resolved
+			// against it, and a relative one still resolves the same
+			// way the process would.
+			dir = "."
+		}
+		env.Dir = dir
 	}
-	env := Env{Stdout: os.Stdout, Stderr: os.Stderr, Dir: dir, Getenv: os.Getenv}
 	return run(ctx, env, args)
 }
 

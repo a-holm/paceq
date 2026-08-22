@@ -88,7 +88,7 @@ func runRun(ctx context.Context, env Env, g *globals, out *ui, jobName string, f
 	execCtx, hardStop := context.WithCancel(context.WithoutCancel(ctx))
 	defer hardStop()
 
-	s, err := store.OpenState(execCtx, stateDir, store.Options{})
+	s, err := store.OpenState(execCtx, stateDir, store.Options{Clock: clkOf(env)})
 	if err != nil {
 		return err
 	}
