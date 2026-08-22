@@ -155,6 +155,29 @@ func TestApplyOneBrokenFileAmongGoodOnes(t *testing.T) {
 	}
 }
 
+// TestApplyABrokenFileKeepsTheLastGoodVersion: nightly loads fine once, the
+// file is then broken by an edit, and the next apply refuses the edit but
+// leaves version 1 standing with the pointer where it was. A syntax error at
+// 02:00 must not take the night's job down with it.
+func TestApplyABrokenFileKeepsTheLastGoodVersion(t *testing.T) {
+	dir := applyProject(t, map[string]string{"jobs/nightly.yaml": goodJob})
+
+	if got := runCLI(t, dir, nil, "apply"); got.code != ExitOK {
+		t.Fatalf("first apply = %d\n%s%s", got.code, got.stdout, got.stderr)
+	}
+	if err := writeFile(t, dir, "jobs/nightly.yaml", brokenJob); err != nil {
+		t.Fatal(err)
+	}
+
+	got := runCLI(t, dir, nil, "apply")
+	if got.code != ExitValidation {
+		t.Fatalf("second apply = %d, want %d\n%s%s", got.code, ExitValidation, got.stdout, got.stderr)
+	}
+	if got := countVersions(t, dir, "nightly"); got != 1 {
+		t.Errorf("the broken edit left %d versions behind, want the one good one", got)
+	}
+}
+
 // TestApplyWithoutAProjectExitsTwo: apply with nothing to write into and
 // nothing to read from is a wrong command line, not a database failure.
 func TestApplyWithoutAProjectExitsTwo(t *testing.T) {
