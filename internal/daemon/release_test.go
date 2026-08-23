@@ -99,7 +99,7 @@ func TestTheReaperWakeReachesTheDispatcher(t *testing.T) {
 		go func() {
 			_ = reaperLoop(ctx, d, time.Hour, stubSweeper{
 				fn: func() int { sweeps++; return sweeps },
-			})
+			}, 0, nil)
 			close(done)
 		}()
 		synctest.Wait()
