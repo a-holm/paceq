@@ -69,6 +69,33 @@ func newEscalation(kill groupKiller, grace time.Duration, clk clock.Clock) *esca
 	}
 }
 
+// Escalator is the public face of the SIGTERM then SIGKILL sequence against
+// one process group. The sensor evaluator builds on it directly instead of
+// maintaining a second implementation of the grace escalation; the daemon's
+// hard stop reaches its groups because Start registers them through
+// RegisterProcessGroup.
+type Escalator struct{ e *escalation }
+
+// NewEscalator prepares the sequence against one future process group. grace
+// is the tolerated silence between SIGTERM and SIGKILL.
+func NewEscalator(grace time.Duration, clk clock.Clock) *Escalator {
+	return &Escalator{e: newEscalation(nil, grace, clk)}
+}
+
+// Fire sends SIGTERM to the whole group now and arms SIGKILL for it once the
+// grace elapses. It is idempotent and returns the error exec's Cancel hook
+// expects.
+func (x *Escalator) Fire() error { return x.e.fire() }
+
+// SetGroup records which process group the sequence targets. Call it after
+// Start, once the child pid exists.
+func (x *Escalator) SetGroup(pgid int) { x.e.setGroup(pgid) }
+
+// Stop disarms a pending SIGKILL and waits until the escalation goroutine has
+// returned, so a leak probe after a finished attempt finds nothing left
+// behind.
+func (x *Escalator) Stop() { x.e.stop() }
+
 // setGroup records which process group the sequence targets.
 func (e *escalation) setGroup(pgid int) { e.group.Store(int64(pgid)) }
 
