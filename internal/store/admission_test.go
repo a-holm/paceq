@@ -349,6 +349,52 @@ FROM jobs WHERE name = 'build'`, id, now.UnixMilli(), now.UnixMilli(), now.UnixM
 	}
 }
 
+// TestFsckFindsAJobOverItsConcurrencyCeiling plants two running rows on a
+// limit-one job, both holding live leases so I1 stays quiet, and requires the
+// sweep to name the job under I12. The healthy side is every other test here:
+// admission and the claim keep real databases at or under their ceilings.
+func TestFsckFindsAJobOverItsConcurrencyCeiling(t *testing.T) {
+	s := migratedStore(t)
+	admitJob(t, s, "build", 1)
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	expires := now.Add(DefaultRunLeaseTTL).UnixMilli()
+	for _, id := range []string{"01J0I12RUNA", "01J0I12RUNB"} {
+		if _, err := s.w.ExecContext(ctx, `INSERT INTO runs
+(id, job_name, job_version_id, origin, state, available_at,
+ lease_owner, lease_epoch, lease_expires_at, created_at, updated_at)
+SELECT ?, 'build', current_version_id, 'manual', 'running', ?, 'ghost', 1, ?, ?, ?
+FROM jobs WHERE name = 'build'`, id, now.UnixMilli(), expires, now.UnixMilli(), now.UnixMilli()); err != nil {
+			t.Fatalf("plant running row %s: %v", id, err)
+		}
+	}
+
+	violations, err := s.Fsck(ctx)
+	if err != nil {
+		t.Fatalf("fsck: %v", err)
+	}
+	found := false
+	for _, v := range violations {
+		if v.Check == "I12" && v.Subject == "job build" {
+			found = true
+			if !strings.Contains(v.Detail, "2") || !strings.Contains(v.Detail, "ceiling of 1") {
+				t.Errorf("the I12 detail does not name the counts: %q", v.Detail)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("two running runs on a limit-one job swept clean: %v", violations)
+	}
+
+	// The dedicated method answers the same list, which is exactly what the
+	// startup quick subset calls.
+	direct, err := s.ActiveRunViolations(ctx)
+	if err != nil || len(direct) != 1 || direct[0].Check != "I12" {
+		t.Fatalf("ActiveRunViolations answered %v (%v)", direct, err)
+	}
+}
+
 // poisonedConnector fails every connection, so any read that reaches the read
 // pool during MaterializeTick turns into an error instead of a silent answer.
 type poisonedConnector struct{}

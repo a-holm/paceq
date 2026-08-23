@@ -130,3 +130,44 @@ func deferReasonCode() reason.Code {
 func deferReasonModel() string {
 	return model.DeferReasonConcurrency
 }
+
+// activeLimitSQL is the I12 sweep (#68): the running rows of every job
+// counted against its ceiling. The invariant governs what runs; queued
+// backlog beside a full complement of running rows is the ordinary shape of
+// a busy queue and never a violation.
+const activeLimitSQL = `SELECT j.name, j.max_concurrent, COUNT(r.id)
+FROM jobs j LEFT JOIN runs r ON r.job_name = j.name AND r.state = 'running'
+GROUP BY j.name HAVING COUNT(r.id) > j.max_concurrent`
+
+// ActiveRunViolations returns every job whose running rows outnumber its
+// max_concurrent: the I12 invariant of 02 section 4.3. It is part of the
+// full fsck sweep, and it is the check the startup quick subset calls as
+// well once #62's reconciliation lands there - the call site is one line,
+// because this method already reads exactly what that subset needs.
+func (s *Store) ActiveRunViolations(ctx context.Context) ([]Violation, error) {
+	rows, err := s.r.QueryContext(ctx, activeLimitSQL)
+	if err != nil {
+		return nil, fmt.Errorf("fsck I12: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []Violation
+	for rows.Next() {
+		var job string
+		var limit int64
+		var n int64
+		if err := rows.Scan(&job, &limit, &n); err != nil {
+			return nil, fmt.Errorf("fsck I12: %w", err)
+		}
+		out = append(out, Violation{
+			Check:   "I12",
+			Subject: "job " + job,
+			Detail: fmt.Sprintf("%d runs are running against a ceiling of %d",
+				n, limit),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("fsck I12: %w", err)
+	}
+	return out, nil
+}
