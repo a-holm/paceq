@@ -29,7 +29,7 @@ func seedScheduleJob(t *testing.T, s *Store) {
 	if _, _, err := s.UpsertJobVersion(context.Background(), JobVersionInput{
 		JobName:  "nightly",
 		SpecHash: "sha256:seed",
-		SpecJSON: `{"steps":[{"name":"build","run":{"shell":"true"}}]}`,
+		SpecJSON: `{"schema":"paceq.job.v1","name":"nightly","steps":[{"name":"build","run":["true"]}]}`,
 	}); err != nil {
 		t.Fatalf("seed the job: %v", err)
 	}
