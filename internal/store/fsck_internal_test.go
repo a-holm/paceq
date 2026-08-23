@@ -21,10 +21,10 @@ func TestFsckFindsNoViolationOnAHealthyDatabase(t *testing.T) {
 	if err := s.RecordStepOutcome(ctx, runID, "extract", StepOutcome{
 		Event:      "step_succeeded",
 		ReasonCode: "STEP_SUCCEEDED",
-	}); err != nil {
+	}, LeaseRef{Owner: "exec-1", Epoch: 1}); err != nil {
 		t.Fatalf("record the verdict: %v", err)
 	}
-	if _, err := s.FinishRun(ctx, runID, "exec-1", FinishReason{Code: "RUN_SUCCEEDED"}); err != nil {
+	if _, err := s.FinishRun(ctx, runID, LeaseRef{Owner: "exec-1", Epoch: 1}, FinishReason{Code: "RUN_SUCCEEDED"}); err != nil {
 		t.Fatalf("finish the run: %v", err)
 	}
 
@@ -159,10 +159,10 @@ func TestFsckCatchesABrokenEventChain(t *testing.T) {
 	ctx := context.Background()
 	s, runID := plantSeededRun(t)
 
-	if _, err := s.ClaimRun(ctx, runID, LeaseInput{Owner: "exec-1"}); err != nil {
+	if _, _, err := s.ClaimRun(ctx, runID, LeaseInput{Owner: "exec-1"}); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if err := s.StartStep(ctx, runID, "build"); err != nil {
+	if err := s.StartStep(ctx, runID, "build", LeaseRef{Owner: "exec-1", Epoch: 1}); err != nil {
 		t.Fatalf("start build: %v", err)
 	}
 

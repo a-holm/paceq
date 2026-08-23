@@ -118,12 +118,23 @@ type Run struct {
 	Attempt        int
 	MaxAttempts    int
 
-	// LeaseOwner and LeaseEpoch say who is executing the run now. M2 adds
-	// reaping across processes; M1 uses them as fencing values its single
-	// executor checks against its own name.
+	// LeaseOwner and LeaseEpoch say who is executing the run now. The epoch
+	// is the fencing token: it rises on every claim and on every reap, so a
+	// writer whose lease was taken can always be told apart from the current
+	// holder by comparing numbers. Every result write proves its standing by
+	// carrying both.
 	LeaseOwner     string
 	LeaseEpoch     int64
 	LeaseExpiresAt time.Time
+
+	// HeartbeatAt is the last renewal of the lease. It moves in one batched
+	// transaction for every run an owner holds.
+	HeartbeatAt time.Time
+
+	// CrashCount is how many executors have died holding this run's lease.
+	// Crossing the reaper's crash budget ends the run in the poison
+	// quarantine instead of offering it to yet another executor.
+	CrashCount int
 
 	// The cancellation request, durable before anything is killed. Empty
 	// time means nobody asked.
@@ -389,9 +400,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 // the two cannot drift apart.
 const runColumns = `id, job_name, job_version_id, trigger_id, origin, run_key, state,
 	concurrency_key, available_at, defer_reason, scheduled_for, params_json, attempt,
-	max_attempts, lease_owner, lease_epoch, lease_expires_at, cancel_requested_at,
-	cancel_requested_by, cancel_reason, reason_code, reason_text, reason_data, error,
-	created_at, started_at, finished_at, updated_at`
+	max_attempts, lease_owner, lease_epoch, lease_expires_at, heartbeat_at,
+	cancel_requested_at, cancel_requested_by, cancel_reason, reason_code, reason_text,
+	reason_data, error, crash_count, created_at, started_at, finished_at, updated_at`
 
 // GetRun reads one run and its steps. The argument is a whole id or any prefix
 // of one, the way a git object is named: ids are ULIDs, so a prefix is a range
@@ -543,14 +554,15 @@ func scanRuns(rows *sql.Rows) ([]Run, error) {
 			leaseOwner, cancelBy, cancelReason   sql.NullString
 			scheduledFor, startedAt, finishedAt  sql.NullInt64
 			leaseExpiresAt, cancelRequestedAt    sql.NullInt64
+			heartbeatAt                          sql.NullInt64
 			availableAt, createdAt, updatedAt    int64
-			leaseEpoch                           int64
+			leaseEpoch, crashCount               int64
 		)
 		if err := rows.Scan(&run.ID, &run.JobName, &run.JobVersionID, &trigger, &run.Origin,
 			&runKey, &run.State, &concurrency, &availableAt, &deferReason, &scheduledFor, &params,
 			&run.Attempt, &run.MaxAttempts, &leaseOwner, &leaseEpoch, &leaseExpiresAt,
-			&cancelRequestedAt, &cancelBy, &cancelReason, &reasonCode, &reasonText, &reasonData,
-			&failure, &createdAt, &startedAt, &finishedAt, &updatedAt); err != nil {
+			&heartbeatAt, &cancelRequestedAt, &cancelBy, &cancelReason, &reasonCode, &reasonText,
+			&reasonData, &failure, &crashCount, &createdAt, &startedAt, &finishedAt, &updatedAt); err != nil {
 			return nil, err
 		}
 		run.TriggerID = trigger.String
@@ -565,6 +577,8 @@ func scanRuns(rows *sql.Rows) ([]Run, error) {
 		run.LeaseOwner = leaseOwner.String
 		run.LeaseEpoch = leaseEpoch
 		run.LeaseExpiresAt = timeOrZero(leaseExpiresAt)
+		run.HeartbeatAt = timeOrZero(heartbeatAt)
+		run.CrashCount = int(crashCount)
 		if cancelRequestedAt.Valid {
 			run.CancelRequestedAt = time.UnixMilli(cancelRequestedAt.Int64).UTC()
 		}

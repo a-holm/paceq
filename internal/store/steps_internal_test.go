@@ -61,10 +61,10 @@ func aRunningStepInternal(t *testing.T, s *Store) string {
 	if err != nil {
 		t.Fatalf("create the run: %v", err)
 	}
-	if _, err := s.ClaimRun(ctx, run.ID, LeaseInput{Owner: "exec-1"}); err != nil {
+	if _, _, err := s.ClaimRun(ctx, run.ID, LeaseInput{Owner: "exec-1"}); err != nil {
 		t.Fatalf("claim the run: %v", err)
 	}
-	if err := s.StartStep(ctx, run.ID, "extract"); err != nil {
+	if err := s.StartStep(ctx, run.ID, "extract", LeaseRef{Owner: "exec-1", Epoch: 1}); err != nil {
 		t.Fatalf("start the step: %v", err)
 	}
 	return run.ID
@@ -108,7 +108,7 @@ BEGIN SELECT RAISE(ABORT, 'injected failure inside the verdict write'); END`)
 			Truncated: true,
 			ErrorTail: "the tail",
 		},
-	})
+	}, LeaseRef{Owner: "exec-1", Epoch: 1})
 	if err == nil {
 		t.Fatal("the verdict succeeded although its log metadata aborted")
 	}

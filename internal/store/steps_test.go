@@ -21,10 +21,10 @@ func aRunningStep(t *testing.T, s *store.Store) string {
 
 	ctx := context.Background()
 	runID := aMaterializedRun(t, s)
-	if _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: testOwner}); err != nil {
+	if _, _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: testOwner}); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if err := s.StartStep(ctx, runID, "build"); err != nil {
+	if err := s.StartStep(ctx, runID, "build", store.LeaseRef{Owner: testOwner, Epoch: 1}); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	return runID
@@ -37,7 +37,7 @@ func TestStartStepRefusesAStepThatIsNotPending(t *testing.T) {
 	runID := aRunningStep(t, s)
 
 	before := mustGetRun(t, context.Background(), s, runID).Steps[0]
-	err := s.StartStep(context.Background(), runID, "build")
+	err := s.StartStep(context.Background(), runID, "build", store.LeaseRef{Owner: testOwner, Epoch: 1})
 	if !errors.Is(err, store.ErrStepNotPending) {
 		t.Fatalf("second start returned %v, want ErrStepNotPending", err)
 	}
@@ -62,7 +62,7 @@ func TestErrorTailOutlivesTheLogFile(t *testing.T) {
 			Bytes:     99,
 			ErrorTail: "last words of the job",
 		},
-	})
+	}, store.LeaseRef{Owner: testOwner, Epoch: 1})
 	if err != nil {
 		t.Fatalf("record: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestRecordStepOutcomeStoresTheDuration(t *testing.T) {
 		Event:      "step_succeeded",
 		ReasonCode: reason.STEPSucceeded,
 		ExitCode:   ptr(0),
-	}); err != nil {
+	}, store.LeaseRef{Owner: testOwner, Epoch: 1}); err != nil {
 		t.Fatalf("record: %v", err)
 	}
 	step := mustStep(t, ctx, s, runID, "build")

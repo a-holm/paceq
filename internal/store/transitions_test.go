@@ -38,7 +38,7 @@ func TestClaimRunStartsTheRunAndTakesTheLease(t *testing.T) {
 	s, clk := coreStore(t)
 	runID := aMaterializedRun(t, s)
 
-	state, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: testOwner, TTL: time.Minute})
+	state, _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: testOwner, TTL: time.Minute})
 	if err != nil {
 		t.Fatalf("ClaimRun: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestClaimRunOnACancelledRequestCancelsInstead(t *testing.T) {
 		t.Fatalf("RequestCancel: %v", err)
 	}
 
-	state, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: testOwner})
+	state, _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: testOwner})
 	if err != nil {
 		t.Fatalf("ClaimRun: %v", err)
 	}
@@ -103,10 +103,10 @@ func TestClaimRunRefusesASecondClaim(t *testing.T) {
 	s, _ := coreStore(t)
 	runID := aMaterializedRun(t, s)
 
-	if _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: testOwner}); err != nil {
+	if _, _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: testOwner}); err != nil {
 		t.Fatalf("first claim: %v", err)
 	}
-	if _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: "exec-2"}); !errors.Is(err, store.ErrNotClaimable) {
+	if _, _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: "exec-2"}); !errors.Is(err, store.ErrNotClaimable) {
 		t.Errorf("second claim error = %v, want ErrNotClaimable", err)
 	}
 }
@@ -115,11 +115,11 @@ func TestStartStepOpensTheFirstAttempt(t *testing.T) {
 	ctx := context.Background()
 	s, clk := coreStore(t)
 	runID := aMaterializedRun(t, s)
-	if _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: testOwner}); err != nil {
+	if _, _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: testOwner}); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
 
-	err := s.StartStep(ctx, runID, "build")
+	err := s.StartStep(ctx, runID, "build", store.LeaseRef{Owner: testOwner, Epoch: 1})
 	if err != nil {
 		t.Fatalf("StartStep: %v", err)
 	}
@@ -143,10 +143,10 @@ func TestRecordStepOutcomeSuccessStoresTheWholeVerdict(t *testing.T) {
 	ctx := context.Background()
 	s, clk := coreStore(t)
 	runID := aMaterializedRun(t, s)
-	if _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: testOwner}); err != nil {
+	if _, _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: testOwner}); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if err := s.StartStep(ctx, runID, "build"); err != nil {
+	if err := s.StartStep(ctx, runID, "build", store.LeaseRef{Owner: testOwner, Epoch: 1}); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	clk.Advance(2 * time.Second)
@@ -157,7 +157,7 @@ func TestRecordStepOutcomeSuccessStoresTheWholeVerdict(t *testing.T) {
 		ExitCode:   ptr(0),
 		FinishedAt: clk.Now(),
 		LogMeta:    store.LogMeta{RelPath: "/logs/r/s/build.1.ndjson", Bytes: 128},
-	})
+	}, store.LeaseRef{Owner: testOwner, Epoch: 1})
 	if err != nil {
 		t.Fatalf("RecordStepOutcome: %v", err)
 	}
@@ -194,10 +194,10 @@ func TestRecordStepOutcomeFailureKeepsExitCodeSignalAndTail(t *testing.T) {
 	ctx := context.Background()
 	s, clk := coreStore(t)
 	runID := aMaterializedRun(t, s)
-	if _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: testOwner}); err != nil {
+	if _, _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: testOwner}); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if err := s.StartStep(ctx, runID, "build"); err != nil {
+	if err := s.StartStep(ctx, runID, "build", store.LeaseRef{Owner: testOwner, Epoch: 1}); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	clk.Advance(time.Second)
@@ -209,7 +209,7 @@ func TestRecordStepOutcomeFailureKeepsExitCodeSignalAndTail(t *testing.T) {
 		FinishedAt: clk.Now(),
 		LogMeta:    store.LogMeta{Bytes: 4096, Truncated: true, ErrorTail: "last line before the kill"},
 		DetailJSON: `{"timeout_ms":1500}`,
-	})
+	}, store.LeaseRef{Owner: testOwner, Epoch: 1})
 	if err != nil {
 		t.Fatalf("RecordStepOutcome: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestRecordSkipMovesAPendingStepStraightOut(t *testing.T) {
 	ctx := context.Background()
 	s, clk := coreStore(t)
 	runID := aMaterializedRun(t, s)
-	if _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: testOwner}); err != nil {
+	if _, _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: testOwner}); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
 
@@ -247,7 +247,7 @@ func TestRecordSkipMovesAPendingStepStraightOut(t *testing.T) {
 		Event:      "upstream_failed",
 		ReasonCode: reason.STEPSkippedUpstreamFailed,
 		FinishedAt: clk.Now(),
-	})
+	}, store.LeaseRef{Owner: testOwner, Epoch: 1})
 	if err != nil {
 		t.Fatalf("RecordStepOutcome: %v", err)
 	}
@@ -270,7 +270,7 @@ func TestRecordOutcomeRefusalWritesNothing(t *testing.T) {
 	ctx := context.Background()
 	s, _ := coreStore(t)
 	runID := aMaterializedRun(t, s)
-	if _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: testOwner}); err != nil {
+	if _, _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: testOwner}); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
 
@@ -280,7 +280,7 @@ func TestRecordOutcomeRefusalWritesNothing(t *testing.T) {
 	err := s.RecordStepOutcome(ctx, runID, "build", store.StepOutcome{
 		Event:      "step_succeeded",
 		ReasonCode: reason.STEPSucceeded,
-	})
+	}, store.LeaseRef{Owner: testOwner, Epoch: 1})
 	if err == nil {
 		t.Fatal("an illegal transition was accepted")
 	}
@@ -307,10 +307,10 @@ func TestFinishRunAggregatesThroughTheMachine(t *testing.T) {
 			ctx := context.Background()
 			s, clk := coreStore(t)
 			runID := aMaterializedRun(t, s)
-			if _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: testOwner}); err != nil {
+			if _, _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: testOwner}); err != nil {
 				t.Fatalf("claim: %v", err)
 			}
-			if err := s.StartStep(ctx, runID, "build"); err != nil {
+			if err := s.StartStep(ctx, runID, "build", store.LeaseRef{Owner: testOwner, Epoch: 1}); err != nil {
 				t.Fatalf("start: %v", err)
 			}
 			out := store.StepOutcome{Event: "step_succeeded", ReasonCode: reason.STEPSucceeded, ExitCode: ptr(0), FinishedAt: clk.Now()}
@@ -318,12 +318,12 @@ func TestFinishRunAggregatesThroughTheMachine(t *testing.T) {
 			if tc.failStep {
 				out = store.StepOutcome{Event: "step_failed", ReasonCode: reason.STEPFailedNonzeroExit, ExitCode: ptr(7), FinishedAt: clk.Now()}
 			}
-			if err := s.RecordStepOutcome(ctx, runID, "build", out); err != nil {
+			if err := s.RecordStepOutcome(ctx, runID, "build", out, store.LeaseRef{Owner: testOwner, Epoch: 1}); err != nil {
 				t.Fatalf("record: %v", err)
 			}
 			clk.Advance(time.Second)
 
-			state, err := s.FinishRun(ctx, runID, testOwner, store.FinishReason{
+			state, err := s.FinishRun(ctx, runID, store.LeaseRef{Owner: testOwner, Epoch: 1}, store.FinishReason{
 				Code: tc.wantReason, Data: reasonData,
 			})
 			if err != nil {
@@ -354,14 +354,14 @@ func TestFinishRunRefusesWhileAStepIsStillOpen(t *testing.T) {
 	ctx := context.Background()
 	s, _ := coreStore(t)
 	runID := aMaterializedRun(t, s)
-	if _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: testOwner}); err != nil {
+	if _, _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: testOwner}); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if err := s.StartStep(ctx, runID, "build"); err != nil {
+	if err := s.StartStep(ctx, runID, "build", store.LeaseRef{Owner: testOwner, Epoch: 1}); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 
-	if _, err := s.FinishRun(ctx, runID, testOwner, store.FinishReason{Code: reason.RUNSucceeded}); err == nil {
+	if _, err := s.FinishRun(ctx, runID, store.LeaseRef{Owner: testOwner, Epoch: 1}, store.FinishReason{Code: reason.RUNSucceeded}); err == nil {
 		t.Fatal("finished a run whose step was still running; I2 says no")
 	}
 	if run := mustGetRun(t, ctx, s, runID); run.State != "running" {
@@ -373,19 +373,19 @@ func TestFinishRunRefusesAWrongOwner(t *testing.T) {
 	ctx := context.Background()
 	s, _ := coreStore(t)
 	runID := aMaterializedRun(t, s)
-	if _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: testOwner}); err != nil {
+	if _, _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: testOwner}); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if err := s.StartStep(ctx, runID, "build"); err != nil {
+	if err := s.StartStep(ctx, runID, "build", store.LeaseRef{Owner: testOwner, Epoch: 1}); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	if err := s.RecordStepOutcome(ctx, runID, "build", store.StepOutcome{
 		Event: "step_succeeded", ReasonCode: reason.STEPSucceeded, ExitCode: ptr(0),
-	}); err != nil {
+	}, store.LeaseRef{Owner: testOwner, Epoch: 1}); err != nil {
 		t.Fatalf("record: %v", err)
 	}
 
-	if _, err := s.FinishRun(ctx, runID, "exec-9", store.FinishReason{Code: reason.RUNSucceeded}); err == nil {
+	if _, err := s.FinishRun(ctx, runID, store.LeaseRef{Owner: "exec-9", Epoch: 1}, store.FinishReason{Code: reason.RUNSucceeded}); err == nil {
 		t.Fatal("a writer without the lease finished the run")
 	}
 }
@@ -394,10 +394,10 @@ func TestObserveRunCancelCarriesTheRequestersActor(t *testing.T) {
 	ctx := context.Background()
 	s, clk := coreStore(t)
 	runID := aMaterializedRun(t, s)
-	if _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: testOwner}); err != nil {
+	if _, _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: testOwner}); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if err := s.StartStep(ctx, runID, "build"); err != nil {
+	if err := s.StartStep(ctx, runID, "build", store.LeaseRef{Owner: testOwner, Epoch: 1}); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	if _, err := s.RequestCancel(ctx, runID, "cli:1000", "too slow"); err != nil {
@@ -408,10 +408,10 @@ func TestObserveRunCancelCarriesTheRequestersActor(t *testing.T) {
 	// any transaction), then the run.
 	if err := s.RecordStepOutcome(ctx, runID, "build", store.StepOutcome{
 		Event: "cancel_observed", ReasonCode: reason.STEPCancelled, FinishedAt: clk.Now(),
-	}); err != nil {
+	}, store.LeaseRef{Owner: testOwner, Epoch: 1}); err != nil {
 		t.Fatalf("cancel the step: %v", err)
 	}
-	if err := s.ObserveRunCancel(ctx, runID, testOwner, "cli:1000", reason.RUNCancelledManual); err != nil {
+	if err := s.ObserveRunCancel(ctx, runID, store.LeaseRef{Owner: testOwner, Epoch: 1}, "cli:1000", reason.RUNCancelledManual); err != nil {
 		t.Fatalf("ObserveRunCancel: %v", err)
 	}
 
@@ -434,10 +434,10 @@ func TestObserveRunCancelRefusedWithoutARequest(t *testing.T) {
 	ctx := context.Background()
 	s, _ := coreStore(t)
 	runID := aMaterializedRun(t, s)
-	if _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: testOwner}); err != nil {
+	if _, _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: testOwner}); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if err := s.ObserveRunCancel(ctx, runID, testOwner, "cli:1000", reason.RUNCancelledManual); err == nil {
+	if err := s.ObserveRunCancel(ctx, runID, store.LeaseRef{Owner: testOwner, Epoch: 1}, "cli:1000", reason.RUNCancelledManual); err == nil {
 		t.Fatal("cancelled a run nobody asked to cancel")
 	}
 }
@@ -486,24 +486,24 @@ func TestEveryTransitionCarriesExactlyOneEvent(t *testing.T) {
 
 	transitions++ // queued
 	expect()
-	if _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: testOwner}); err != nil {
+	if _, _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: testOwner}); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
 	transitions++ // started
 	expect()
-	if err := s.StartStep(ctx, runID, "build"); err != nil {
+	if err := s.StartStep(ctx, runID, "build", store.LeaseRef{Owner: testOwner, Epoch: 1}); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	transitions++ // step.started
 	expect()
 	if err := s.RecordStepOutcome(ctx, runID, "build", store.StepOutcome{
 		Event: "step_succeeded", ReasonCode: reason.STEPSucceeded, ExitCode: ptr(0), FinishedAt: clk.Now(),
-	}); err != nil {
+	}, store.LeaseRef{Owner: testOwner, Epoch: 1}); err != nil {
 		t.Fatalf("record: %v", err)
 	}
 	transitions++ // step.succeeded
 	expect()
-	if _, err := s.FinishRun(ctx, runID, testOwner, store.FinishReason{Code: reason.RUNSucceeded}); err != nil {
+	if _, err := s.FinishRun(ctx, runID, store.LeaseRef{Owner: testOwner, Epoch: 1}, store.FinishReason{Code: reason.RUNSucceeded}); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
 	transitions++ // run.succeeded
@@ -542,15 +542,15 @@ func TestNextRunnableStepHonoursIndexOrderAndUpstream(t *testing.T) {
 	}
 
 	// Once b succeeds, a becomes runnable and still comes first.
-	if _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: testOwner}); err != nil {
+	if _, _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: testOwner}); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if err := s.StartStep(ctx, runID, "b"); err != nil {
+	if err := s.StartStep(ctx, runID, "b", store.LeaseRef{Owner: testOwner, Epoch: 1}); err != nil {
 		t.Fatalf("start b: %v", err)
 	}
 	if err := s.RecordStepOutcome(ctx, runID, "b", store.StepOutcome{
 		Event: "step_succeeded", ReasonCode: reason.STEPSucceeded, ExitCode: ptr(0),
-	}); err != nil {
+	}, store.LeaseRef{Owner: testOwner, Epoch: 1}); err != nil {
 		t.Fatalf("succeed b: %v", err)
 	}
 	name, ok, err = s.NextRunnableStep(ctx, runID)

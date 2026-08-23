@@ -40,11 +40,11 @@ func seedRun(t *testing.T, s *store.Store, job, versionID string, steps []store.
 	if err != nil {
 		t.Fatalf("create a run of %s: %v", job, err)
 	}
-	if _, err := s.ClaimRun(ctx, run.ID, store.LeaseInput{Owner: "test"}); err != nil {
+	if _, _, err := s.ClaimRun(ctx, run.ID, store.LeaseInput{Owner: "test"}); err != nil {
 		t.Fatalf("claim run %s: %v", run.ID, err)
 	}
 	for i, step := range steps {
-		if err := s.StartStep(ctx, run.ID, step.Name); err != nil {
+		if err := s.StartStep(ctx, run.ID, step.Name, store.LeaseRef{Owner: "test", Epoch: 1}); err != nil {
 			t.Fatalf("start %s of run %s: %v", step.Name, run.ID, err)
 		}
 		out := store.StepOutcome{
@@ -57,7 +57,7 @@ func seedRun(t *testing.T, s *store.Store, job, versionID string, steps []store.
 				ReasonCode: reason.STEPFailedNonzeroExit,
 			}
 		}
-		if err := s.RecordStepOutcome(ctx, run.ID, step.Name, out); err != nil {
+		if err := s.RecordStepOutcome(ctx, run.ID, step.Name, out, store.LeaseRef{Owner: "test", Epoch: 1}); err != nil {
 			t.Fatalf("record %s of run %s: %v", step.Name, run.ID, err)
 		}
 	}
@@ -65,7 +65,7 @@ func seedRun(t *testing.T, s *store.Store, job, versionID string, steps []store.
 	if failFirst {
 		code = reason.RUNFailedStep
 	}
-	if _, err := s.FinishRun(ctx, run.ID, "test", store.FinishReason{Code: code}); err != nil {
+	if _, err := s.FinishRun(ctx, run.ID, store.LeaseRef{Owner: "test", Epoch: 1}, store.FinishReason{Code: code}); err != nil {
 		t.Fatalf("finish run %s: %v", run.ID, err)
 	}
 	return run

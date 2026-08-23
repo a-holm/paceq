@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"errors"
 	"os"
 	"testing"
 	"time"
@@ -40,11 +39,11 @@ func seedDrainRun(t *testing.T, s *Store) string {
 	if err != nil {
 		t.Fatalf("materialise: %v", err)
 	}
-	if _, err := s.ClaimRun(context.Background(), res.Run.ID,
+	if _, _, err := s.ClaimRun(context.Background(), res.Run.ID,
 		LeaseInput{Owner: "exec-drained", TTL: 5 * time.Minute}); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if err := s.StartStep(context.Background(), res.Run.ID, "only"); err != nil {
+	if err := s.StartStep(context.Background(), res.Run.ID, "only", LeaseRef{Owner: "exec-drained", Epoch: 1}); err != nil {
 		t.Fatalf("start step: %v", err)
 	}
 	return res.Run.ID
@@ -67,13 +66,17 @@ func stepRow(t *testing.T, s *Store, runID, name string) Step {
 	return Step{}
 }
 
-func TestInterruptStepForShutdownRestoresTheAttempt(t *testing.T) {
+func TestDrainRunRestoresTheInterruptedAttempt(t *testing.T) {
 	s := openTestStore(t, Options{Clock: clock.NewFake(time.Now())})
 	runID := seedDrainRun(t, s)
 
-	if err := s.InterruptStepForShutdown(context.Background(), runID, "only",
-		reason.RUNInterruptedShutdown); err != nil {
-		t.Fatalf("interrupt: %v", err)
+	handed, err := s.DrainRun(context.Background(), runID,
+		LeaseRef{Owner: "exec-drained", Epoch: 1}, reason.RUNInterruptedShutdown)
+	if err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	if !handed {
+		t.Fatal("DrainRun reported nothing handed back for its own live lease")
 	}
 
 	st := stepRow(t, s, runID, "only")
@@ -91,10 +94,16 @@ func TestInterruptStepForShutdownRestoresTheAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read events: %v", err)
 	}
-	last := events[len(events)-1]
-	if last.Kind != "step.interrupted" {
-		t.Errorf("the last event is %s, want step.interrupted", last.Kind)
+	var interrupted *RunEvent
+	for i := range events {
+		if events[i].Kind == "step.interrupted" {
+			interrupted = &events[i]
+		}
 	}
+	if interrupted == nil {
+		t.Fatalf("no step.interrupted event in %+v", events)
+	}
+	last := interrupted
 	if last.StepName != "only" {
 		t.Errorf("the event names step %q, want only", last.StepName)
 	}
@@ -106,38 +115,46 @@ func TestInterruptStepForShutdownRestoresTheAttempt(t *testing.T) {
 	}
 }
 
-func TestInterruptStepForShutdownRefusesAStepThatIsNotRunning(t *testing.T) {
+func TestDrainRunWritesNothingOnceTheLeaseHasMovedOn(t *testing.T) {
 	s := openTestStore(t, Options{Clock: clock.NewFake(time.Now())})
 	runID := seedDrainRun(t, s)
 
-	err := s.InterruptStepForShutdown(context.Background(), runID, "nope",
-		reason.RUNInterruptedShutdown)
-	if !errors.Is(err, ErrRunNotFound) {
-		t.Errorf("an unknown step gave %v, want ErrRunNotFound", err)
+	// A holder that is not the row's owner gets a quiet no, not an error:
+	// nothing of theirs is out there to hand back.
+	handed, err := s.DrainRun(context.Background(), runID,
+		LeaseRef{Owner: "someone-else", Epoch: 9}, reason.RUNInterruptedShutdown)
+	if err != nil {
+		t.Fatalf("drain under a foreign ref: %v", err)
+	}
+	if handed {
+		t.Fatal("a foreign drain claimed it handed the run back")
 	}
 
-	// The first interrupt is the legal one; the step is pending from then
-	// on, and a second interrupt has no attempt left to restore.
-	if err := s.InterruptStepForShutdown(context.Background(), runID, "only",
-		reason.RUNInterruptedShutdown); err != nil {
-		t.Fatalf("the first interrupt: %v", err)
+	// The real drain lands; a second one has nothing left to give back.
+	if _, err := s.DrainRun(context.Background(), runID,
+		LeaseRef{Owner: "exec-drained", Epoch: 1}, reason.RUNInterruptedShutdown); err != nil {
+		t.Fatalf("the first drain: %v", err)
 	}
-	err = s.InterruptStepForShutdown(context.Background(), runID, "only",
-		reason.RUNInterruptedShutdown)
-	if err == nil {
-		t.Fatal("interrupting a pending step succeeded")
+	handed, err = s.DrainRun(context.Background(), runID,
+		LeaseRef{Owner: "exec-drained", Epoch: 1}, reason.RUNInterruptedShutdown)
+	if err != nil {
+		t.Fatalf("the second drain: %v", err)
+	}
+	if handed {
+		t.Fatal("a second drain claimed it handed something back")
 	}
 	st := stepRow(t, s, runID, "only")
 	if st.Attempt != 0 || st.State != "pending" {
-		t.Errorf("the refusal moved the row: state %s attempt %d", st.State, st.Attempt)
+		t.Errorf("the extra drains moved the row: state %s attempt %d", st.State, st.Attempt)
 	}
 }
 
-func TestRequeueRunAfterDrainHandsTheRunBackWithoutACrash(t *testing.T) {
+func TestDrainRunHandsTheRunBackWithoutACrash(t *testing.T) {
 	s := openTestStore(t, Options{Clock: clock.NewFake(time.Now())})
 	runID := seedDrainRun(t, s)
 
-	if err := s.RequeueRunAfterDrain(context.Background(), runID); err != nil {
+	if _, err := s.DrainRun(context.Background(), runID,
+		LeaseRef{Owner: "exec-drained", Epoch: 1}, reason.RUNInterruptedShutdown); err != nil {
 		t.Fatalf("requeue after drain: %v", err)
 	}
 
@@ -154,6 +171,10 @@ func TestRequeueRunAfterDrainHandsTheRunBackWithoutACrash(t *testing.T) {
 	if detail.Run.LeaseOwner != "" || !detail.Run.LeaseExpiresAt.IsZero() {
 		t.Errorf("the lease survived the drain: owner %q expires %v",
 			detail.Run.LeaseOwner, detail.Run.LeaseExpiresAt)
+	}
+	if detail.Run.LeaseEpoch != 2 {
+		t.Errorf("lease_epoch is %d after the drain, want 2: the drained attempt stays fenced out",
+			detail.Run.LeaseEpoch)
 	}
 	if crashCount(t, s, runID) != 0 {
 		t.Errorf("crash_count is %d, want 0: a clean stop is not a crash", crashCount(t, s, runID))
@@ -180,7 +201,7 @@ func TestRequeueRunAfterDrainHandsTheRunBackWithoutACrash(t *testing.T) {
 	}
 }
 
-func TestRequeueRunAfterDrainRefusesWithoutTheLease(t *testing.T) {
+func TestDrainRunRefusesAnExpiredLease(t *testing.T) {
 	s := openTestStore(t, Options{Clock: clock.NewFake(time.Now())})
 	runID := seedDrainRun(t, s)
 
@@ -188,8 +209,9 @@ func TestRequeueRunAfterDrainRefusesWithoutTheLease(t *testing.T) {
 	// lease_expired path, not to a clean drain.
 	s.clk.(*clock.Fake).Advance(6 * time.Minute)
 
-	if err := s.RequeueRunAfterDrain(context.Background(), runID); err == nil {
-		t.Fatal("a drain requeue succeeded on an expired lease")
+	if _, err := s.DrainRun(context.Background(), runID,
+		LeaseRef{Owner: "exec-drained", Epoch: 1}, reason.RUNInterruptedShutdown); err == nil {
+		t.Fatal("a drain succeeded on an expired lease")
 	}
 	detail, err := s.GetRun(context.Background(), runID)
 	if err != nil {
@@ -204,12 +226,9 @@ func TestDrainSequenceLeavesTheRunClaimable(t *testing.T) {
 	s := openTestStore(t, Options{Clock: clock.NewFake(time.Now())})
 	runID := seedDrainRun(t, s)
 
-	if err := s.InterruptStepForShutdown(context.Background(), runID, "only",
-		reason.RUNInterruptedShutdown); err != nil {
-		t.Fatalf("interrupt: %v", err)
-	}
-	if err := s.RequeueRunAfterDrain(context.Background(), runID); err != nil {
-		t.Fatalf("requeue: %v", err)
+	if _, err := s.DrainRun(context.Background(), runID,
+		LeaseRef{Owner: "exec-drained", Epoch: 1}, reason.RUNInterruptedShutdown); err != nil {
+		t.Fatalf("drain: %v", err)
 	}
 
 	ids, err := s.ClaimableRunIDs(context.Background())
@@ -275,7 +294,7 @@ func TestClaimableRunIDsSkipsRunsThatAreNotDue(t *testing.T) {
 	}
 
 	// A claimed run stops being claimable the way any queue read must see it.
-	if _, err := s.ClaimRun(context.Background(), due, LeaseInput{Owner: "exec-1"}); err != nil {
+	if _, _, err := s.ClaimRun(context.Background(), due, LeaseInput{Owner: "exec-1"}); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
 	ids, err = s.ClaimableRunIDs(context.Background())
