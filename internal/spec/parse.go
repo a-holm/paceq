@@ -175,11 +175,19 @@ type decoder struct {
 	// steps records where each step's name and needs entries were written, so
 	// the checks that need the whole job can still point at a line.
 	stepPos []stepPositions
+	// sensorPos records where each sensor's name was written, so the whole
+	// job check that requires unique sensor names can point at the second one.
+	sensorPos []sensorPositions
 }
 
 type stepPositions struct {
 	name  diag.Position
 	needs []diag.Position
+}
+
+type sensorPositions struct {
+	name    diag.Position
+	workdir diag.Position
 }
 
 // maxDiagnostics is how many problems paceq reports about one job file.

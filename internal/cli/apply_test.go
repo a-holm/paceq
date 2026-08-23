@@ -50,6 +50,40 @@ func writeFile(t *testing.T, dir, name, body string) error {
 	return os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600)
 }
 
+// TestApplyRefusesTwoFilesThatShareOneSensorName is the sensor contract as it
+// reaches an operator: a sensor name is a primary key across every job, so a
+// directory where two files claim the same one cannot apply. The later file is
+// refused and named, while the first still loads.
+func TestApplyRefusesTwoFilesThatShareOneSensorName(t *testing.T) {
+	sensorJob := func(name string) string {
+		return `name: ` + name + `
+steps:
+  - name: build
+    run: ["/bin/true"]
+sensors:
+  - name: dropzone
+    kind: exec
+    run: ["/srv/etl/probe.sh"]
+    interval: 15s
+`
+	}
+	dir := applyProject(t, map[string]string{
+		"jobs/first.yaml":  sensorJob("first"),
+		"jobs/second.yaml": sensorJob("second"),
+	})
+
+	got := runCLI(t, dir, nil, "apply", "-o", "text")
+	if got.code != ExitValidation {
+		t.Fatalf("apply = %d, want %d\nstdout:\n%s\nstderr:\n%s", got.code, ExitValidation, got.stdout, got.stderr)
+	}
+	if !strings.Contains(got.stdout, "dropzone") {
+		t.Errorf("the refusal does not name the sensor:\n%s", got.stdout)
+	}
+	if !strings.Contains(got.stdout, "failed") {
+		t.Errorf("the refusal does not report a failed file:\n%s", got.stdout)
+	}
+}
+
 // TestApplyTwiceLoadsOneVersion is the acceptance criterion that names the
 // command: applying an unchanged catalog a second time writes nothing and says
 // so. The load alias behaves exactly the same.

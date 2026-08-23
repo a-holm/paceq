@@ -345,6 +345,113 @@ var catalogue = map[string]explanation{
 			"stop the other process, or point this command at another state directory: --db /other/path/" + store.DatabaseFileName,
 		},
 	},
+	spec.CodeSensorBadName: {
+		Code:  spec.CodeSensorBadName,
+		Title: "the sensor name is missing or is not a name paceq accepts",
+		Explanation: "A sensor is named so a failure can say which one fired and so apply can materialise " +
+			"it into a row with a primary key. The name obeys the same rule every job, step and " +
+			"schedule name obeys: lower case, no spaces, at most 64 characters.",
+		Next: []string{
+			"give the sensor a name matching the rule, as the message shows",
+			"every sensor in the job needs the name field",
+		},
+	},
+	spec.CodeSensorNameTaken: {
+		Code:  spec.CodeSensorNameTaken,
+		Title: "the sensor name is already in use",
+		Explanation: "A sensor name is the primary key its row lives under across every job, so two " +
+			"sensors cannot share one, whether in the same job or in two different jobs. Two owners " +
+			"of one name cannot both materialise; the later apply would silently move the row.",
+		Next: []string{
+			"the message names the file that already owns the name",
+			"rename the sensor in one of the two files",
+		},
+	},
+	spec.CodeSensorKind: {
+		Code:  spec.CodeSensorKind,
+		Title: "only kind: exec exists",
+		Explanation: "A sensor runs a subprocess that writes JSON to stdout; that is exec, the one kind " +
+			"1.0 accepts. The built in file, http and sql sensor types are the work of M7-03 and arrive " +
+			"in v0.3, so a value that names one today means nothing a v1 runtime can do.",
+		Next: []string{
+			"write kind: exec and put the probe in run",
+			"the built in types arrive in v0.3 (M7-03)",
+		},
+	},
+	spec.CodeSensorRun: {
+		Code:  spec.CodeSensorRun,
+		Title: "sensor run must be a list of arguments",
+		Explanation: "There is no string form of a sensor command: paceq starts the process itself, so " +
+			"nothing is split, quoted or expanded by a shell. run has to be an argv array with at " +
+			"least one element, and no element may be empty.",
+		Next: []string{
+			"give run as a list, one program followed by its arguments",
+			"the first element is the program to start",
+		},
+	},
+	spec.CodeSensorIntervalMin: {
+		Code:  spec.CodeSensorIntervalMin,
+		Title: "the sensor interval is under one second",
+		Explanation: "A sensor is evaluated by one shared runtime, and sub-second polling is a non-goal. " +
+			"The lowest an interval may go is one second, and the field itself is required: a sensor " +
+			"that says nothing is never evaluated.",
+		Next: []string{
+			"set interval to 1s or more, or use a push based source",
+		},
+	},
+	spec.CodeSensorMinInterval: {
+		Code:  spec.CodeSensorMinInterval,
+		Title: "min_interval is above the interval",
+		Explanation: "min_interval is the absolute lower bound between two starts of the same sensor, " +
+			"and interval is the desired frequency. The floor cannot sit above the rhythm that drives " +
+			"it, so min_interval is refused when it exceeds interval.",
+		Next: []string{
+			"lower min_interval or raise interval",
+			"min_interval is the hot-loop guard, interval is how often it should run",
+		},
+	},
+	spec.CodeSensorTimeout: {
+		Code:  spec.CodeSensorTimeout,
+		Title: "the sensor timeout is outside the allowed range",
+		Explanation: "A sensor evaluation is bounded between one second and five minutes. A sensor that " +
+			"needs more than five minutes should chunk its own work through max_triggers_per_tick " +
+			"instead of asking the runtime to wait on it.",
+		Next: []string{
+			"set a timeout in [1s, 5m]",
+			"raise max_triggers_per_tick for a probe that finds a lot at once",
+		},
+	},
+	spec.CodeSensorTriggers: {
+		Code:  spec.CodeSensorTriggers,
+		Title: "max_triggers_per_tick is outside the allowed range",
+		Explanation: "max_triggers_per_tick is how many triggers one evaluation may admit, the chunking " +
+			"knob that keeps a burst from flooding the queue. It sits between 1 and 10000.",
+		Next: []string{
+			"set max_triggers_per_tick to a whole number in [1, 10000]",
+			"it defaults to 100 when omitted",
+		},
+	},
+	spec.CodeSensorWorkdir: {
+		Code:  spec.CodeSensorWorkdir,
+		Title: "the sensor workdir is not an absolute path",
+		Explanation: "Paceq starts the sensor process itself, so a relative workdir has no directory to " +
+			"be relative to, and the directory has to exist when the sensor starts. This is a warning, " +
+			"not a refusal.",
+		Next: []string{
+			"give workdir as an absolute path, such as /srv/etl",
+			"make sure the directory exists on every host that runs the job",
+		},
+	},
+	spec.CodeSensorEnvKey: {
+		Code:  spec.CodeSensorEnvKey,
+		Title: "sensor env uses the reserved PULSEQ_ prefix",
+		Explanation: "Paceq sets every PULSEQ_ variable a sensor process sees, so a definition that " +
+			"claims a name in that space would be silently overwritten. The key is refused here instead.",
+		Next: []string{
+			"rename the env key outside the PULSEQ_ namespace",
+			"PULSEQ_CURSOR and PULSEQ_EPOCH are how paceq talks to a sensor",
+		},
+	},
 }
 
 // seriesDiagnostic and seriesReason label which catalogue a --list entry came

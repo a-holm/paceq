@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/a-holm/paceq/internal/id"
+	"github.com/a-holm/paceq/internal/spec"
 )
 
 // JobVersionInput is one job spec as the loader read it. It carries no id and
@@ -33,6 +34,11 @@ type JobVersionInput struct {
 	// SpecJSON is the canonical spec itself, the intermediate representation a
 	// run is materialised from.
 	SpecJSON string
+
+	// Sensors are the sensor definitions of the job, materialised as rows in
+	// the same transaction that writes the version. Nil or empty means the
+	// job declares no sensors, and any sensor rows it owned are removed.
+	Sensors []spec.Sensor
 }
 
 // JobVersion is one immutable snapshot of a job spec.

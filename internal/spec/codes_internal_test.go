@@ -77,6 +77,21 @@ func TestCodesUseTheSeriesTheyBelongTo(t *testing.T) {
 		CodeUnknownTimezone: true,
 	}
 	warning := map[string]bool{CodeShell: true, CodeInheritEnv: true}
+	// The sensor codes are a dedicated series: the sensor contract is frozen at
+	// v0.1, so its rules get number space of their own (PQ4xxx) rather than
+	// renting numbers in the shared parsing and schema series.
+	sensor := map[string]bool{
+		CodeSensorBadName:     true,
+		CodeSensorNameTaken:   true,
+		CodeSensorKind:        true,
+		CodeSensorRun:         true,
+		CodeSensorIntervalMin: true,
+		CodeSensorMinInterval: true,
+		CodeSensorTimeout:     true,
+		CodeSensorTriggers:    true,
+		CodeSensorWorkdir:     true,
+		CodeSensorEnvKey:      true,
+	}
 
 	for _, code := range Codes() {
 		switch {
@@ -87,6 +102,10 @@ func TestCodesUseTheSeriesTheyBelongTo(t *testing.T) {
 		case semantic[code]:
 			if !strings.HasPrefix(code, "PQ2") {
 				t.Errorf("%s is a semantic rule and should be in the PQ2xxx series", code)
+			}
+		case sensor[code]:
+			if !strings.HasPrefix(code, "PQ4") {
+				t.Errorf("%s is a sensor rule and should be in the PQ4xxx series", code)
 			}
 		default:
 			if !strings.HasPrefix(code, "PQ1") {

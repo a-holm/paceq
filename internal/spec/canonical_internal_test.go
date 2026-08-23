@@ -110,7 +110,7 @@ func TestTheCanonicalFormIsValidJSON(t *testing.T) {
 			Retry: &Retry{Max: 3, Backoff: BackoffFixed, Initial: DefaultInitial, MaxDelay: DefaultMaxDelay, Jitter: JitterNone},
 		}},
 		Schedules: []Schedule{{Name: "nightly", Cron: "0 3 * * *", Timezone: "UTC"}},
-		Sensors:   []Sensor{{Name: "watch", Type: "file", Interval: DefaultInitial}},
+		Sensors:   []Sensor{{Name: "watch", Kind: "exec", Run: []string{"/bin/watch"}, Interval: DefaultInitial}},
 	}
 
 	canonical := Canonical(job)

@@ -24,13 +24,24 @@ type JobApplyResult struct {
 	// here is the idempotent case: the file was already loaded as it stands,
 	// and the database came out of the transaction byte for byte the same.
 	Created bool
+
+	// Sensors is the sensor sync that ran in the same transaction, so a job's
+	// new definition and its sensor rows land and are reported together.
+	Sensors SyncResult
+}
+
+// applySensorWork is the sensor sync settled on for one job before the write
+// transaction opens.
+type applySensorWork struct {
+	plan     []syncPlanItem
+	eventIDs []string
 }
 
 // ApplyJobs records a batch of job specs and leaves every job pointing at the
 // version its spec hashes to. The whole batch is one transaction on purpose:
 // apply either lands complete or not at all, because a half applied catalog is
 // the one state an operator cannot reason about. Any failure rolls every job
-// in the batch back.
+// in the batch back, including the sensor rows each job's spec declares.
 //
 // Idempotency lives in the schema, not in a check: job_versions carries
 // UNIQUE (job_name, spec_hash), the insert comes first, and a conflict means
@@ -46,12 +57,30 @@ func (s *Store) ApplyJobs(ctx context.Context, inputs []JobVersionInput) ([]JobA
 	at := now.UnixMilli()
 
 	ids := make([]string, len(inputs))
+	type planned struct {
+		work applySensorWork
+		res  SyncResult
+	}
+	plans := make([]planned, len(inputs))
 	for i := range inputs {
-		id, err := id.New(now)
+		vid, err := id.New(now)
 		if err != nil {
 			return nil, fmt.Errorf("mint a job version id for %s: %w", inputs[i].JobName, err)
 		}
-		ids[i] = id
+		ids[i] = vid
+
+		existing, err := currentSensorSpecs(ctx, s.r, inputs[i].JobName)
+		if err != nil {
+			return nil, err
+		}
+		plan := buildSensorPlan(inputs[i].JobName, inputs[i].Sensors, existing)
+		eventIDs := make([]string, len(plan))
+		for j := range plan {
+			if eventIDs[j], err = id.New(now); err != nil {
+				return nil, fmt.Errorf("mint a sensor event id for %s: %w", inputs[i].JobName, err)
+			}
+		}
+		plans[i] = planned{applySensorWork{plan: plan, eventIDs: eventIDs}, resultOf(plan)}
 	}
 
 	results := make([]JobApplyResult, 0, len(inputs))
@@ -64,11 +93,18 @@ func (s *Store) ApplyJobs(ctx context.Context, inputs []JobVersionInput) ([]JobA
 			if err != nil {
 				return err
 			}
+			work := plans[i]
+			if len(work.work.plan) > 0 {
+				if err := syncSensorsTx(tx, at, in.JobName, work.work.plan, work.work.eventIDs); err != nil {
+					return err
+				}
+			}
 			results = append(results, JobApplyResult{
 				JobName:   in.JobName,
 				VersionID: version.ID,
 				Version:   version.Version,
 				Created:   created,
+				Sensors:   work.res,
 			})
 		}
 		return nil
@@ -77,4 +113,24 @@ func (s *Store) ApplyJobs(ctx context.Context, inputs []JobVersionInput) ([]JobA
 		return nil, err
 	}
 	return results, nil
+}
+
+// resultOf folds a sensor plan into the SyncResult that reports it.
+func resultOf(plan []syncPlanItem) SyncResult {
+	var res SyncResult
+	var unchanged []string
+	for _, item := range plan {
+		switch item.kind {
+		case lifecycleCreated:
+			res.Created = append(res.Created, item.name)
+		case lifecycleSpecChanged:
+			res.Updated = append(res.Updated, item.name)
+		case lifecycleRemoved:
+			res.Removed = append(res.Removed, item.name)
+		case "":
+			unchanged = append(unchanged, item.name)
+		}
+	}
+	res.Unchanged = unchanged
+	return res
 }

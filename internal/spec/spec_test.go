@@ -199,7 +199,8 @@ schedules:
     timezone: Europe/Oslo
 sensors:
   - name: dropzone
-    type: file
+    kind: exec
+    run: ["/bin/watch"]
     interval: 15s
 `
 	mutations := []struct {
@@ -235,7 +236,8 @@ sensors:
 		{"schedule timezone", "timezone: Europe/Oslo", "timezone: Europe/Stockholm"},
 		{"schedule name", "name: nightly", "name: nightlies"},
 		{"sensor interval", "interval: 15s", "interval: 16s"},
-		{"sensor type", "type: file", "type: http"},
+		{"sensor min interval", "interval: 15s", "interval: 15s\n    min_interval: 5s"},
+		{"sensor run", `["/bin/watch"]`, `["/bin/watch2"]`},
 	}
 
 	seen := map[string]string{hashOfSource(t, base): "the file as written"}

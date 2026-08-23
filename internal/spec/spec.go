@@ -70,6 +70,39 @@ const (
 	JitterNone         = "none"
 )
 
+// The default kind is the only kind. One adapter, a subprocess that writes
+// JSON to stdout (10 section 5, F4b): a second kind is a migration and a new
+// evaluator, never a flag somebody sets by accident. The value is spelled out
+// here so every reader of what sensors accept takes it from one place.
+const DefaultSensorKind = "exec"
+
+// The sensor bounds, all of them public because the messages quote them and
+// the tests assert against the same numbers the code uses.
+const (
+	// SensorIntervalMin is the lowest an interval may go. Sensorers are
+	// evaluated by one shared runtime; sub-second polling is a non-goal
+	// (SCOPE.md section 3.19).
+	SensorIntervalMin = time.Second
+
+	// DefaultSensorTimeout is what a sensor without one gets. The same
+	// default the design chose (03 section 4.5, 02 section 5.5).
+	DefaultSensorTimeout = 30 * time.Second
+
+	// SensorTimeoutMin is the floor every sensor timeout must clear.
+	SensorTimeoutMin = time.Second
+
+	// SensorTimeoutMax is the system ceiling. A sensor that needs more than
+	// this should chunk its own work via max_triggers_per_tick, not ask the
+	// runtime to wait on it (M1-06, the step ceiling, is the same rule).
+	SensorTimeoutMax = 5 * time.Minute
+
+	// DefaultSensorMaxTriggers is the default ceiling on one tick.
+	DefaultSensorMaxTriggers = 100
+
+	// SensorMaxTriggersHi is what max_triggers_per_tick may be raised to.
+	SensorMaxTriggersHi = 10_000
+)
+
 // namePattern is what a job, step, schedule or sensor may be called. Lower case
 // and no spaces, because a name appears on a command line, in a directory name
 // and in a URL, and a name that needs quoting in any of them is a name that
@@ -154,12 +187,53 @@ const (
 // the decode read it from one place.
 const DefaultOverlap = OverlapSkip
 
-// Sensor is an external trigger. It parses and validates here and activates in
-// M3-01, which is also where the type names and their own fields land.
+// Sensor is an external trigger. It parses and validates here and materialises
+// into the sensors table at apply (M3-01). The type names and their own fields
+// land here too; in 1.0 there is exactly one kind, exec.
 type Sensor struct {
-	Name     string
-	Type     string
+	// Name is unique within the job and across every job in the catalog,
+	// because it is the sensor row's primary key.
+	Name string
+
+	// Kind is always "exec" in 1.0. The field is read so a later kind is a
+	// validation error with a message that says which release brings it,
+	// rather than a value that silently means nothing.
+	Kind string
+
+	// Run is argv. There is no string form, so nothing here is ever split,
+	// quoted or expanded by a shell (08 section 3.2).
+	Run []string
+
+	// Workdir is the directory the sensor process starts in. Empty means the
+	// engine's own working directory.
+	Workdir string
+
+	// Env is the environment the sensor process is started with, in addition
+	// to (never replacing) the job's own inherited baseline.
+	Env map[string]string
+
+	// Interval is how often the sensor is evaluated. Minimum one second.
 	Interval time.Duration
+
+	// MinInterval is the absolute lower bound between two starts of the same
+	// sensor, even when a retry makes an immediate re-evaluation legal. It
+	// defaults to one second.
+	MinInterval time.Duration
+
+	// Timeout is the ceiling on one evaluation. Defaults to 30s; the hard
+	// ceiling is SensorTimeoutMax.
+	Timeout time.Duration
+
+	// MaxTriggersPerTick is how many triggers one evaluation may admit. It is
+	// the chunking knob that keeps a burst from flooding the queue.
+	MaxTriggersPerTick int
+
+	// Paused is the initial state on first materialisation. Pausing a sensor
+	// is an operator decision and survives re-apply.
+	Paused bool
+
+	// Description is what the sensor is for, for the people who read the job.
+	Description string
 }
 
 // Hashed is a job and the exact bytes its hash was taken over. The two travel

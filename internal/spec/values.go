@@ -460,6 +460,27 @@ func (d *decoder) crossCheck(job *Job) {
 				needHint(need, job.Steps))
 		}
 	}
+
+	sensorNames := make(map[string]int, len(job.Sensors))
+	for i, sensor := range job.Sensors {
+		if d.stopped {
+			return
+		}
+		if sensor.Name == "" {
+			continue
+		}
+		if first, taken := sensorNames[sensor.Name]; taken {
+			d.error(CodeSensorNameTaken, d.sensorPosition(i),
+				fmt.Sprintf("two sensors in this job are called %q", sensor.Name),
+				fmt.Sprintf("Sensor %d already carries that name, and a sensor name is the row's primary\n", first+1)+
+					"key, so two of them can never both exist. It is also the name a failure says\n"+
+					"which one fired, so two sharing one means a message nobody can tell apart:\n\n"+
+					"    - name: "+sensor.Name+"\n\n"+
+					"Rename one of them.\n")
+			continue
+		}
+		sensorNames[sensor.Name] = i
+	}
 }
 
 func needHint(need string, steps []Step) string {
@@ -480,6 +501,13 @@ func needHint(need string, steps []Step) string {
 func (d *decoder) stepPosition(i int) diag.Position {
 	if i < len(d.stepPos) {
 		return d.stepPos[i].name
+	}
+	return diag.Position{}
+}
+
+func (d *decoder) sensorPosition(i int) diag.Position {
+	if i < len(d.sensorPos) {
+		return d.sensorPos[i].name
 	}
 	return diag.Position{}
 }
