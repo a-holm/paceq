@@ -71,6 +71,12 @@ type Config struct {
 	// Log receives one structured line per decision worth remembering.
 	// Nil means slog.Default().
 	Log *slog.Logger
+
+	// Renew overrides the leadership re-check cadence inside one pass.
+	// Zero means DefaultRenew. Negative forces a lease proof before every
+	// single decision, which is how tests script a mid-pass takeover;
+	// production keeps the role-lease default.
+	Renew time.Duration
 }
 
 // Source implements daemon.ScheduleSource. Construct it with New.
@@ -79,6 +85,11 @@ type Source struct {
 	clk    clock.Clock
 	log    *slog.Logger
 	holder string
+
+	// confirmed is the monotonic mark of the last lease answer this source
+	// has seen; leading() renews once the budget since it passes Renew.
+	confirmed clock.Mono
+	renew     time.Duration
 }
 
 // New wires a scheduler source onto a store.
@@ -97,19 +108,35 @@ func New(cfg Config) (*Source, error) {
 	if clk == nil {
 		clk = clock.System()
 	}
-	return &Source{st: cfg.Store, clk: clk, log: log, holder: cfg.Holder}, nil
+	renew := cfg.Renew
+	if renew == 0 {
+		renew = DefaultRenew // negatives pass through: prove before every decision
+	}
+	return &Source{st: cfg.Store, clk: clk, log: log, holder: cfg.Holder, renew: renew}, nil
 }
 
-// leading renews the role lease and reports whether this loop may keep
-// deciding. It runs before every materialisation, which is what bounds a
-// leadership handover to at most one transaction of overlap.
+// leading reports whether this loop may keep deciding, and proves it to the
+// database at most once per renewal interval. Between renewals the answer is
+// carried, which is exactly the role-lease contract from #42: a renewal
+// every Renew with a DefaultTTL budget of tolerated silence, and a
+// leadership change noticed no later than one transaction after its renewal
+// comes due. A stale pass racing a handover cannot corrupt anything either
+// way: the tick gate refuses foreign fire-times and progress moves forward
+// only.
 func (src *Source) leading(ctx context.Context) bool {
+	if src.renew > 0 && src.clk.Since(src.confirmed) < src.renew {
+		return true
+	}
 	_, ok, err := src.st.AcquireOrRenew(ctx, LeaseName, src.holder, DefaultTTL)
 	if err != nil {
 		src.log.Warn("lease renewal errored mid pass", "err", err.Error())
 		return false
 	}
-	return ok
+	if !ok {
+		return false
+	}
+	src.confirmed = src.clk.Mark()
+	return true
 }
 
 // Tick runs one full pass: admit under the lease, discover, decide,
@@ -129,6 +156,7 @@ func (src *Source) Tick(ctx context.Context) error {
 	if !ok {
 		return nil // another instance leads; its wakes carry the work
 	}
+	src.confirmed = src.clk.Mark()
 	_ = g
 
 	now := src.clk.Now().UTC()

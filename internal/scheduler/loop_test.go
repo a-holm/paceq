@@ -43,7 +43,9 @@ func (s *scriptedStore) AcquireOrRenew(ctx context.Context, name, holder string,
 		return store.LeaseGrant{}, false, s.failAdmission
 	}
 	if len(s.grants) == 0 {
-		return store.LeaseGrant{Name: name, Epoch: 1}, true, nil
+		// Script exhausted: leadership is gone, which is what a mid-pass
+		// takeover looks like to every later renewal.
+		return store.LeaseGrant{}, false, nil
 	}
 	ok := s.grants[0]
 	if len(s.grants) > 1 {
@@ -71,6 +73,17 @@ func (s *scriptedStore) MaterializeTick(ctx context.Context, in store.TickInput)
 func quietLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 func newSource(st scheduler.Store, clk clock.Clock) *scheduler.Source {
 	src, err := scheduler.New(scheduler.Config{Store: st, Clock: clk, Holder: "test", Log: quietLog()})
+	if err != nil {
+		panic(err)
+	}
+	return src
+}
+
+// newSourceRenew builds a source whose in-pass leadership recheck fires on
+// every materialisation, so a scripted store can take leadership away
+// mid pass deterministically.
+func newSourceRenew(st scheduler.Store, clk clock.Clock) *scheduler.Source {
+	src, err := scheduler.New(scheduler.Config{Store: st, Clock: clk, Holder: "test", Log: quietLog(), Renew: -time.Second})
 	if err != nil {
 		panic(err)
 	}
@@ -231,7 +244,7 @@ func TestThePassStopsBetweenTransactionsWhenTheLeaseIsLost(t *testing.T) {
 		NextTickAt: occs[0].At,
 	}}
 
-	if err := newSource(st, clk).Tick(context.Background()); err != nil {
+	if err := newSourceRenew(st, clk).Tick(context.Background()); err != nil {
 		t.Fatalf("the pass errored instead of stopping quietly: %v", err)
 	}
 	if len(st.materialized) < 1 {
