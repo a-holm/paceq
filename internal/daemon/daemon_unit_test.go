@@ -141,7 +141,7 @@ func TestLoopsRunOnTickersAlone(t *testing.T) {
 		defer cancel()
 
 		done := make(chan struct{})
-		go func() { _ = sensorLoop(ctx, d, time.Minute); close(done) }()
+		go func() { _ = sensorLoop(ctx, d, time.Minute, nil); close(done) }()
 
 		bus.Notify(notify.TopicScheduleChanged)
 		synctest.Wait()
