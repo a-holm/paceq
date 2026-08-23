@@ -110,7 +110,12 @@ var descriptors = map[string]string{
 //
 //   - five field cron: "minute hour day-of-month month day-of-week" with
 //     *, lists, ranges, steps and the names jan..dec and sun..sat. Day of
-//     week accepts 0 and 7 as Sunday. Seconds fields and the L, W and #
+//     week accepts 0 and 7 as Sunday. Names work on both sides of a range
+//     ("mon-fri", "jan-mar", any case). A step after a single value walks
+//     from that value to the field ceiling like gronx: "9/2" is
+//     9,11,...,23, and on weekdays "1/2" stops at 6 because 7 folds to
+//     Sunday. A start beyond the field ("90/2") is rejected instead of
+//     gronx's silent never fire. Seconds fields and the L, W and #
 //     extensions are rejected with an explicit error; they are not part of
 //     the documented 1.0 contract.
 //   - descriptors: @hourly, @daily, @midnight, @weekly, @monthly, @yearly,
@@ -221,7 +226,8 @@ func gronxSafeIsValid(expr string) (ok bool) {
 	return gronx.IsValid(expr)
 }
 
-// harnessCheckField rejects the L, W and # extensions by token shape, then leaves
+// harnessCheckField rejects the L, W and # extensions by token shape, checks
+// that every name inside a list or range is a real field name, then leaves
 // deeper validation to the number walk in canonicalFields. Month and weekday
 // names contain the letters l and w (jul, wed), so a bare substring search
 // would reject legal expressions; the shape check does not.
@@ -236,14 +242,24 @@ func harnessCheckField(field string, spec fieldSpec) error {
 		}
 		run := lettersOnly(base)
 		switch run {
-		case "", "l", "w", "lw":
-			if run != "" {
-				return fmt.Errorf("field %d (%s) %q uses %s: last/weekday extensions are not supported in paceq 1.0; spell the schedule out with plain cron fields", spec.pos, spec.name, field, strings.ToUpper(run))
+		case "":
+			continue
+		case "l", "w", "lw":
+			return fmt.Errorf("field %d (%s) %q uses %s: last/weekday extensions are not supported in paceq 1.0; spell the schedule out with plain cron fields", spec.pos, spec.name, field, strings.ToUpper(run))
+		}
+		// Name ranges are legal: validate each side of the dash on its own,
+		// so mon-fri reads as two names instead of one collapsed blob.
+		for _, tok := range strings.Split(base, "-") {
+			if tok == "" {
+				return fmt.Errorf("field %d (%s) range %q cannot be read in %q", spec.pos, spec.name, base, field)
 			}
-		default:
-			if _, ok := spec.names[run]; !ok {
-				return fmt.Errorf("field %d (%s) has unknown name %q in %q: use jan..dec for months, sun..sat for weekdays, or numbers", spec.pos, spec.name, run, field)
+			if _, err := strconv.Atoi(tok); err == nil {
+				continue
 			}
+			if _, ok := spec.names[tok]; ok {
+				continue
+			}
+			return fmt.Errorf("field %d (%s) has unknown name %q in %q: use jan..dec for months, sun..sat for weekdays, or numbers", spec.pos, spec.name, tok, field)
 		}
 	}
 	return nil
@@ -347,7 +363,12 @@ func parseFieldSet(field string, spec fieldSpec) ([]int, error) {
 				if err := add(v); err != nil {
 					return nil, err
 				}
-				continue
+			} else {
+				// A step on a single value walks from that value to the
+				// field ceiling, like the gronx reference: 9/2 fires 9,
+				// 11 ... 23. The weekday ceiling is 6 because 7 folds to
+				// Sunday, so 1/2 gives 1, 3, 5 there too.
+				hi = effMax(spec)
 			}
 		}
 		for v := lo; v <= hi; v += step {
