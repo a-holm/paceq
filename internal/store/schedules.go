@@ -502,6 +502,23 @@ VALUES (?, ?, ?, ?, 'schedule', ?, 'queued', ?, ?, '{}', 0, 1, ?, ?)`,
 	return run, nil
 }
 
+// RunIDByRunKey names the run a registered dedup key points at. The crash
+// harness uses it to find the run behind an already-committed tick decision;
+// explain will use it to answer "which run did this fire-time become".
+func (s *Store) RunIDByRunKey(ctx context.Context, sourceID, runKey string) (string, error) {
+	var runID sql.NullString
+	err := s.r.QueryRowContext(ctx,
+		`SELECT run_id FROM run_keys WHERE source_id = ? AND epoch = ? AND run_key = ?`,
+		sourceID, 0, runKey).Scan(&runID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("find the run behind key %s/%s: %w", sourceID, runKey, ErrNotFound)
+	}
+	if err != nil {
+		return "", fmt.Errorf("find the run behind key %s/%s: %w", sourceID, runKey, err)
+	}
+	return runID.String, nil
+}
+
 // TickView is one recorded schedule tick as a reader wants it: what fired,
 // what it became, and why it did not.
 type TickView struct {

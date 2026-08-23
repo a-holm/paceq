@@ -94,6 +94,25 @@ func converge(t *testing.T, ctx context.Context, s *store.Store, ws *workspace,
 		}
 		finalRunID = res.Run.ID
 
+	case "tick":
+		// The restart recomputes the identical decision from the persisted
+		// cursor. If the crash rolled the transaction back, this call now
+		// creates the chain; if the chain had already committed, the UNIQUE
+		// gate refuses and the original run is looked up by its key.
+		res, err := s.MaterializeTick(ctx, tickScenarioInput(t, ctx, s))
+		if err != nil {
+			t.Fatalf("re-materialise the scheduled tick after the crash: %v", err)
+		}
+		if res.Claimed && res.Run.ID != "" {
+			finalRunID = res.Run.ID
+		} else {
+			id, err := s.RunIDByRunKey(ctx, tickSource(), tickRunKey())
+			if err != nil || id == "" {
+				t.Fatalf("the committed chain left no run behind its key %s: %v", tickRunKey(), err)
+			}
+			finalRunID = id
+		}
+
 	case "execute":
 		state, err := eng.Recover(ctx, runID)
 		if err != nil {
@@ -395,6 +414,18 @@ func TestChildProcess(t *testing.T) {
 	if sc.Kind == "materialize" {
 		// The fault points of a materialisation row are inside the
 		// call above; reaching this line means nothing was armed.
+		return
+	}
+
+	if sc.Kind == "tick" {
+		// The schedule decision whose crash windows this row probes. The
+		// fire-time and run key are fixed constants so the restart's
+		// recomputed decision lands on exactly the same identity.
+		res, err := s.MaterializeTick(ctx, tickScenarioInput(t, ctx, s))
+		if err != nil {
+			t.Fatalf("materialise the scheduled tick: %v", err)
+		}
+		fmt.Printf("PACEQ-RUN %s\n", res.Run.ID)
 		return
 	}
 
