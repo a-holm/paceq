@@ -397,7 +397,7 @@ func (s *Store) FinishRun(ctx context.Context, runID string, ref LeaseRef, fr Fi
 		}
 
 		guards := model.Guards{
-			LeaseValid:       run.LeaseOwner == ref.Owner && run.LeaseEpoch == ref.Epoch &&
+			LeaseValid: run.LeaseOwner == ref.Owner && run.LeaseEpoch == ref.Epoch &&
 				(run.LeaseExpiresAt.IsZero() || run.LeaseExpiresAt.After(now)),
 			AllStepsTerminal: allTerminal,
 			AnyStepFailed:    anyFailed,
@@ -434,8 +434,8 @@ func (s *Store) FinishRun(ctx context.Context, runID string, ref LeaseRef, fr Fi
 			}
 			return nil
 		}, tx, RunEvent{
-			RunID:      runID, At: now, Kind: emitKind(effects),
-			FromState:  string(cur), ToState: string(state),
+			RunID: runID, At: now, Kind: emitKind(effects),
+			FromState: string(cur), ToState: string(state),
 			ReasonCode: string(fr.Code),
 			DetailJSON: mergeEpochDetail(data, ref.Epoch),
 		}); err != nil {
@@ -516,8 +516,8 @@ func (s *Store) ObserveRunCancel(ctx context.Context, runID string, ref LeaseRef
 			}
 			return nil
 		}, tx, RunEvent{
-			RunID:      runID, At: now, Kind: emitKind(effects),
-			FromState:  string(cur), ToState: string(state),
+			RunID: runID, At: now, Kind: emitKind(effects),
+			FromState: string(cur), ToState: string(state),
 			ReasonCode: string(code),
 			Actor:      actor,
 			DetailJSON: epochDetail(ref.Epoch),
@@ -865,8 +865,8 @@ func (s *Store) RequeueCrashedRun(ctx context.Context, runID string) error {
 			}
 			return nil
 		}, tx, RunEvent{
-			RunID:      runID, At: now, Kind: emitKind(effects),
-			FromState:  string(cur), ToState: string(state),
+			RunID: runID, At: now, Kind: emitKind(effects),
+			FromState: string(cur), ToState: string(state),
 			DetailJSON: mergeEpochDetail(`{"defer_reason":"`+model.DeferReasonAfterCrash+`"}`, run.LeaseEpoch+1),
 		})
 	})
@@ -933,8 +933,8 @@ func (s *Store) DrainRun(ctx context.Context, runID string, ref LeaseRef, code r
 					string(code), now.UnixMilli(), runID, step.Name)
 				return err
 			}, tx, RunEvent{
-				RunID:      runID, StepName: step.Name, At: now, Kind: emitKind(effects),
-				FromState:  string(curStep), ToState: string(state),
+				RunID: runID, StepName: step.Name, At: now, Kind: emitKind(effects),
+				FromState: string(curStep), ToState: string(state),
 				ReasonCode: string(code),
 				DetailJSON: `{"why":"daemon_stop"}`,
 			}); err != nil {
@@ -973,8 +973,8 @@ func (s *Store) DrainRun(ctx context.Context, runID string, ref LeaseRef, code r
 			}
 			return nil
 		}, tx, RunEvent{
-			RunID:      runID, At: now, Kind: emitKind(effects),
-			FromState:  string(cur), ToState: string(state),
+			RunID: runID, At: now, Kind: emitKind(effects),
+			FromState: string(cur), ToState: string(state),
 			DetailJSON: mergeEpochDetail(`{"defer_reason":"`+model.DeferReasonAfterShutdown+`"}`, run.LeaseEpoch+1),
 		}); err != nil {
 			return err

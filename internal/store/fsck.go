@@ -269,7 +269,7 @@ ORDER BY run_id, id`)
 	epochsByRun := map[string][]int64{}
 	for rows.Next() {
 		var (
-			runID string
+			runID  string
 			detail string
 		)
 		if err := rows.Scan(&runID, &detail); err != nil {

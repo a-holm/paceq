@@ -425,12 +425,12 @@ type ReapOptions struct {
 
 // ReapedRun is one run the reaper took, with where it went.
 type ReapedRun struct {
-	ID          string
-	State       string
-	ReasonCode  string
-	CrashCount  int
-	Attempt     int
-	LeaseEpoch  int64
+	ID         string
+	State      string
+	ReasonCode string
+	CrashCount int
+	Attempt    int
+	LeaseEpoch int64
 }
 
 // reapCandidatesSQL names the running rows whose lease died past the skew

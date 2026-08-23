@@ -116,14 +116,14 @@ func TestClaimRunsSkipsWhatIsNotDueAndClosesCancelledQueuedRuns(t *testing.T) {
 	// One run held for the future, one with a cancel request waiting, one due.
 	version := aCanonicalJob(t, s, "nightly", singleStepSpec)
 	future, err := s.CreateRunWithSteps(ctx, store.NewRun{
-		JobName:        "nightly",
-		JobVersionID:   version.ID,
-		Origin:         "manual",
-		Actor:          "test",
-		AvailableAt:    clk.Now().Add(time.Hour),
-		DeferReason:    "held for the test",
-		MaxAttempts:    1,
-		Steps:          []store.NewStep{{Name: "build"}},
+		JobName:      "nightly",
+		JobVersionID: version.ID,
+		Origin:       "manual",
+		Actor:        "test",
+		AvailableAt:  clk.Now().Add(time.Hour),
+		DeferReason:  "held for the test",
+		MaxAttempts:  1,
+		Steps:        []store.NewStep{{Name: "build"}},
 	})
 	if err != nil {
 		t.Fatalf("materialise the future run: %v", err)
