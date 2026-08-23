@@ -82,10 +82,23 @@ func opening(db doctor.DB, err error) doctor.Opener {
 // test changes one, so each test states only what it is about.
 func options(open doctor.Opener) doctor.Options {
 	return doctor.Options{
-		Open:  open,
-		Zones: func(string) (*time.Location, error) { return time.UTC, nil },
-		Local: "Europe/Oslo",
-		Free:  func(string) (uint64, error) { return 40 << 30, nil },
+		Open:   open,
+		Zones:  func(string) (*time.Location, error) { return time.UTC, nil },
+		Status: sandboxedStatus(),
+		Local:  "Europe/Oslo",
+		Free:   func(string) (uint64, error) { return 40 << 30, nil },
+	}
+}
+
+// sandboxedStatus is a process running under the hardened systemd unit: the
+// state doctor approves of on a machine that sandboxes the daemon.
+func sandboxedStatus() doctor.StatusReader {
+	return func() (doctor.ProcessStatus, error) {
+		return doctor.ProcessStatus{
+			NoNewPrivs: 1,
+			Seccomp:    2,
+			CapEff:     "0000000000000000",
+		}, nil
 	}
 }
 
@@ -465,6 +478,62 @@ func TestTimeZoneWithoutTzdataWarns(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(found.Next, " "), "tzdata") {
 		t.Errorf("next steps %v do not say what is missing", found.Next)
+	}
+}
+
+// unrestricted is a process running with no sandbox at all: NoNewPrivs off and
+// no seccomp filter, which is what a paceq started without the hardened systemd
+// unit looks like. Doctor must warn about it and say how to fix it, not report
+// the sandbox as OK.
+func unrestricted() doctor.StatusReader {
+	return func() (doctor.ProcessStatus, error) {
+		return doctor.ProcessStatus{
+			NoNewPrivs: 0,
+			Seccomp:    0,
+			CapEff:     "0000000000000000",
+		}, nil
+	}
+}
+
+// TestUnrestrictedSandboxWarnsAndNamesTheRemedy pins the doctor sandbox check
+// to the behaviour an operator actually needs: running without the hardened
+// unit is an attention-level problem with a named fix, never an OK. The mutant
+// this test kills is the one that would let an unrestricted run report OK.
+func TestUnrestrictedSandboxWarnsAndNamesTheRemedy(t *testing.T) {
+	dir := stateDir(t)
+	opt := options(opening(healthy(dir), nil))
+	opt.Status = unrestricted()
+
+	report := doctor.Run(context.Background(), dir, opt)
+
+	found := find(t, report, "sandbox")
+	if found.Level != doctor.Warn && found.Level != doctor.Fail {
+		t.Fatalf("an unrestricted sandbox reported %s, want %s: %s",
+			found.Level, doctor.Warn, found.Detail)
+	}
+	next := strings.Join(found.Next, " ")
+	if !strings.Contains(found.Detail, "hardened") &&
+		!strings.Contains(next, "install-service") {
+		t.Fatalf("the warning does not name the remedy (hardened unit, paceq install-service):\n%s\nsee: %v",
+			found.Detail, found.Next)
+	}
+	if !strings.Contains(next, "install-service") {
+		t.Errorf("the next step does not say install-service: %v", found.Next)
+	}
+}
+
+// TestHardenedSandboxStaysOK pins the healthy side: a process under the
+// hardened unit (NoNewPrivs on, seccomp filter) passes, so doctor does not
+// nag a correctly deployed daemon.
+func TestHardenedSandboxStaysOK(t *testing.T) {
+	dir := stateDir(t)
+
+	report := doctor.Run(context.Background(), dir, options(opening(healthy(dir), nil)))
+
+	found := find(t, report, "sandbox")
+	if found.Level != doctor.OK {
+		t.Errorf("a hardened daemon reported sandbox %s, want %s: %s",
+			found.Level, doctor.OK, found.Detail)
 	}
 }
 

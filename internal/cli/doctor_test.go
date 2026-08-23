@@ -10,14 +10,17 @@ import (
 )
 
 // TestInitThenDoctorIsClean is the end to end promise of M0: what init creates,
-// doctor approves of.
+// doctor approves of. It plants a hardened sandbox status so the promise holds
+// on a development machine that runs the sandboxless unit: the checks it
+// approves of are the ones about the state init created, not the machine's own
+// sandbox config.
 func TestInitThenDoctorIsClean(t *testing.T) {
 	dir := t.TempDir()
 	if code := runCLI(t, dir, nil, "init").code; code != ExitOK {
 		t.Fatalf("paceq init = %d, want %d", code, ExitOK)
 	}
 
-	got := runCLI(t, dir, nil, "doctor")
+	got := runCLIWithStatus(t, dir, sandboxedCLIStatus(), "doctor")
 
 	if got.code != ExitOK {
 		t.Fatalf("paceq doctor = %d, want %d\n%s%s", got.code, ExitOK, got.stdout, got.stderr)

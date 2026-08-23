@@ -50,7 +50,7 @@ func runDoctor(ctx context.Context, env Env, g *globals, out *ui) error {
 
 	out.note(1, "checking %s", stateDir)
 	report := doctor.Report{Findings: []doctor.Finding{buildFinding()}}
-	report.Findings = append(report.Findings, doctor.Run(ctx, stateDir, doctor.Options{}).Findings...)
+	report.Findings = append(report.Findings, doctor.Run(ctx, stateDir, doctor.Options{Status: env.Status}).Findings...)
 	for _, finding := range report.Findings {
 		out.note(2, "%s: %s", finding.Title, finding.Level)
 	}

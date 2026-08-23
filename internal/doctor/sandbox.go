@@ -39,19 +39,27 @@ func ReadProcessStatus() (ProcessStatus, error) {
 	return ps, nil
 }
 
+// StatusReader is the edge a report reads the process sandbox from. The real
+// one reads /proc/self/status; a test plants a status so doctor answers on a
+// machine that sandboxes nothing.
+type StatusReader func() (ProcessStatus, error)
+
 // CheckSandbox reports the effective systemd sandbox from /proc/self/status.
-// It returns a warning when the process is not running under the expected
-// restrictions, so an operator deploying without the hardned unit gets a
-// heads-up from doctor before anything goes wrong.
-func CheckSandbox() Finding {
+// It warns when the process is not running under the expected restrictions, so
+// an operator that deployed without the hardened unit gets a heads-up from
+// doctor before anything goes wrong, together with the command that fixes it.
+func CheckSandbox(reader StatusReader) Finding {
 	const title = "sandbox"
-	ps, err := ReadProcessStatus()
+	if reader == nil {
+		reader = ReadProcessStatus
+	}
+	ps, err := reader()
 	if err != nil {
 		return Finding{
 			Level:  Warn,
 			Title:  title,
 			Detail: "could not read /proc/self/status: " + err.Error(),
-			Next:   []string{"doctor needs /proc to inspect the sandbox — run it on a Linux host, not in a restricted container without /proc"},
+			Next:   []string{"doctor needs /proc to inspect the sandbox: run it on a Linux host, not in a restricted container without /proc"},
 		}
 	}
 
@@ -65,14 +73,14 @@ func CheckSandbox() Finding {
 
 	if len(parts) > 0 {
 		detail := strings.Join(parts, "; ") +
-			": not running under the hardned systemd unit. " +
-			"Use paceq install-service to set it up."
+			": not running under the hardened systemd unit. " +
+			"Run paceq under the hardened unit to get NoNewPrivs and the seccomp filter back."
 		return Finding{
-			Level:  OK,
+			Level:  Warn,
 			Title:  title,
 			Detail: detail,
 			Next: []string{
-				"install and enable the paceq systemd unit: paceq install-service",
+				"run paceq under the hardened systemd unit: paceq install-service, then systemctl enable --now paceq",
 				"or use the relaxed variant for jobs that need broad filesystem access",
 			},
 		}
