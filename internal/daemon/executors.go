@@ -23,6 +23,13 @@ type executorPool struct {
 	log   *slog.Logger
 	slots chan struct{}
 	wg    sync.WaitGroup
+
+	// afterRun runs once per finished execution, success or failure (#68).
+	// Serve wires the notify bus into it: a run going terminal frees its
+	// concurrency slot, and whatever the slot freed, a deferred run waits
+	// for exactly this wake. The ticker covers it if the wake never comes,
+	// which makes this an optimisation like every other use of the bus.
+	afterRun func()
 }
 
 // runDriver is what the pool needs of the engine. The interface keeps the
@@ -97,6 +104,11 @@ func (p *executorPool) execute(ctx context.Context, runID string) {
 	if err := p.handBackWhenOwed(context.WithoutCancel(ctx), runID); err != nil {
 		p.log.Error("could not hand the run back during the drain",
 			"run", runID, "error", err)
+	}
+	// The run has left the pool one way or another: finished, failed,
+	// cancelled, or handed back. Whatever waited for its slot may start.
+	if p.afterRun != nil {
+		p.afterRun()
 	}
 }
 

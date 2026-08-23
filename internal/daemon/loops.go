@@ -105,6 +105,13 @@ func reaperLoop(ctx context.Context, d loops, every time.Duration, sweeper reapS
 		}
 		lastReconciled = d.clk.Mark()
 		haveReconciled = true
+
+		// Every reap frees a slot or requeues a run; both are facts the
+		// dispatcher should hear about now rather than at its next tick
+		// (#68).
+		if len(reaped) > 0 {
+			d.bus.Notify(notify.TopicRunQueued)
+		}
 		return nil
 	})
 }
