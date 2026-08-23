@@ -556,6 +556,57 @@ func TestAFrozenWorkerCannotOverwriteItsSuccessor(t *testing.T) {
 	}
 }
 
+// TestAStaleTokenFromTheSameOwnerIsRefusedToo pins why the fence is the
+// epoch and not the owner name: a requeued run can be claimed again by the
+// very same identity, a restart under one holder name, and then the old
+// attempt's writes carry the right owner and the wrong token. The epoch is
+// the only thing that stands between them.
+func TestAStaleTokenFromTheSameOwnerIsRefusedToo(t *testing.T) {
+	ctx := context.Background()
+	s, clk := coreStore(t)
+	runID := aRetryableQueuedRun(t, s)
+
+	first, err := s.ClaimRuns(ctx, store.ClaimSpec{Owner: "worker", TTL: 30 * time.Second})
+	if err != nil {
+		t.Fatalf("the first claim failed: %v", err)
+	}
+	if len(first) != 1 || first[0].LeaseEpoch != 1 {
+		t.Fatalf("the first claim is %+v, want epoch 1", first)
+	}
+	stale := ref("worker", 1)
+	if err := s.StartStep(ctx, runID, "build", stale); err != nil {
+		t.Fatalf("start the step: %v", err)
+	}
+
+	// A clean stop hands the run back and raises the token; the same owner
+	// claims it again, which raises it once more.
+	if handed, err := s.DrainRun(ctx, runID, stale, reason.RUNInterruptedShutdown); err != nil || !handed {
+		t.Fatalf("drain = (%v, %v), want handed", handed, err)
+	}
+	clk.Advance(store.DefaultRequeueBackoff)
+	if state, _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: "worker"}); err != nil || state != "running" {
+		t.Fatalf("the second claim = (%q, %v), want running", state, err)
+	}
+	if now := mustGetRun(t, ctx, s, runID).Run.LeaseEpoch; now != 3 {
+		t.Fatalf("the token is %d after drain plus reclaim, want 3", now)
+	}
+
+	// The old attempt wakes and tries to finish with its own, no longer
+	// valid token. The owner name matches; only the epoch can refuse it.
+	verdict, err := s.FinishRun(ctx, runID, stale, store.FinishReason{Code: reason.RUNSucceeded})
+	if !errors.Is(err, store.ErrLeaseLost) {
+		t.Fatalf("stale same-owner FinishRun error = %v, want ErrLeaseLost", err)
+	}
+	if verdict != "" {
+		t.Errorf("the stale finish reported state %q, want none", verdict)
+	}
+	detail := mustGetRun(t, ctx, s, runID)
+	if detail.Run.State != string(model.RunRunning) || detail.Run.ReasonCode != "" {
+		t.Errorf("after the stale write the run is %s/%q, want running with no verdict",
+			detail.Run.State, detail.Run.ReasonCode)
+	}
+}
+
 func TestAWriteFromTheSystemNeedsADeadLease(t *testing.T) {
 	ctx := context.Background()
 	s, clk := coreStore(t)
