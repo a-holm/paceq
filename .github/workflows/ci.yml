@@ -72,6 +72,12 @@ jobs:
       - name: build
         run: make build
 
+      # Issue #47 acceptance: the binary must find Europe/Oslo inside a FROM
+      # scratch image without /usr/share/zoneinfo and compute the next tick
+      # from the embedded tzdata. Needs docker, which ubuntu runners have.
+      - name: scratch container resolves Europe/Oslo
+        run: make test-scratch
+
   # Gold standard fixtures are expectations, not code. A commit that edits one
   # must carry a FIXTURE-CHANGE: line with a reason (plan 04 section 8 point
   # 2). This needs history, so it runs in its own full checkout job instead of

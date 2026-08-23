@@ -38,7 +38,7 @@ export GOFLAGS += -buildvcs=false
 CROSS_TARGETS := linux/amd64 linux/arm64 darwin/arm64
 
 .PHONY: all build test gate bench fuzz fmt fmt-check vet staticcheck lint gosec govulncheck \
-	tidy-check cross ci fixture-change hooks clean
+	tidy-check cross test-scratch ci fixture-change hooks clean
 
 all: build
 
@@ -116,6 +116,26 @@ cross:
 		scripts/cross-build.sh "$${target%/*}" "$${target#*/}" || exit 1; \
 	done
 
+# Scratch container proof for the tzdata embed (issue #47): inside FROM
+# scratch there is no /usr/share/zoneinfo, no shell and no network, so the
+# binary must find Europe/Oslo through its embedded tzdata and compute the
+# next tick for a documented schedule. Skips loudly where docker is missing
+# so a local `make ci` stays useful on dockerless machines; CI always has it.
+test-scratch:
+	@if ! command -v docker >/dev/null 2>&1; then \
+		echo "SKIP test-scratch: docker not available"; \
+		exit 0; \
+	fi
+	@mkdir -p bin/scratch
+	$(GO) build -trimpath -o bin/scratch/paceq-scratch ./test/scratch
+	docker build -q -t paceq-scratch-proof -f test/scratch/Dockerfile .
+	@out=$$(docker run --rm --network none paceq-scratch-proof); \
+	if [ "$$out" != "2026-01-01T01:00:00Z" ]; then \
+		echo "test-scratch: next tick = $$out, want 2026-01-01T01:00:00Z"; \
+		exit 1; \
+	fi; \
+	echo "test-scratch: Europe/Oslo resolves inside FROM scratch, next tick $$out"
+
 # Gold standard fixtures are expectations, not code: a commit that edits one
 # must carry a FIXTURE-CHANGE: line with the reason (plan 04 section 8 point
 # 2). The same check runs as a GitHub Actions job on every pull request. It is
@@ -124,7 +144,7 @@ cross:
 fixture-change:
 	scripts/check-fixture-change.sh origin/main HEAD
 
-ci: fmt-check vet staticcheck gosec govulncheck tidy-check test gate fuzz build cross
+ci: fmt-check vet staticcheck gosec govulncheck tidy-check test gate fuzz build test-scratch cross
 
 hooks:
 	git config core.hooksPath .githooks
