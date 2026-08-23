@@ -1,6 +1,13 @@
 package crash
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/a-holm/paceq/internal/store"
+)
 
 // Scenario is one row of the crash matrix. Adding a row is one struct
 // literal; the harness code does not change (issue #75: M2 through M4 extend
@@ -79,9 +86,64 @@ const (
 	afterLogFinish   = "M1:step:after_log_finish"
 	requeueCrashedPt = "M1:transition:after_update:requeue_crashed"
 	unknownPoint     = "M1:nowhere:at_all"
+
+	tickBeforeInsert = "M2:tick:before_insert"
+	tickAfterTick    = "M2:tick:after_tick_before_run"
+	tickAfterRun     = "M2:tick:after_run_before_progress"
+	tickAfterCommit  = "M2:tick:after_commit"
 )
 
 func succeeded() []string { return []string{"succeeded"} }
+
+// The schedule decision behind the tick rows: one fixed fire-time and its
+// deterministic run key, identical on both sides of a kill.
+const tickScheduleFireAt = "2026-06-01T09:00:00Z"
+
+var tickFireAtValue time.Time
+
+func tickFireAt() time.Time {
+	if tickFireAtValue.IsZero() {
+		t, err := time.Parse(time.RFC3339, tickScheduleFireAt)
+		if err != nil {
+			panic(err)
+		}
+		tickFireAtValue = t.UTC()
+	}
+	return tickFireAtValue
+}
+
+func tickSource() string { return jobName + "/default" }
+
+func tickRunKey() string {
+	return tickSource() + ":" + tickFireAt().Format(time.RFC3339)
+}
+
+// tickScenarioInput seeds the schedule the decision belongs to and returns
+// the decided evaluation, so child and restart hand each other the exact
+// same input.
+func tickScenarioInput(t *testing.T, ctx context.Context, s *store.Store) store.TickInput {
+	t.Helper()
+	row, err := s.UpsertSchedule(ctx, store.ScheduleInput{
+		JobName:    jobName,
+		Name:       "default",
+		Kind:       "cron",
+		Expr:       "0 9 * * *",
+		Timezone:   "UTC",
+		NextTickAt: tickFireAt(),
+	})
+	if err != nil {
+		t.Fatalf("seed the schedule: %v", err)
+	}
+	return store.TickInput{
+		Schedule:       row,
+		ScheduledFor:   tickFireAt(),
+		Outcome:        store.OutcomeTriggered,
+		RunKey:         tickRunKey(),
+		NextTickAt:     tickFireAt().Add(time.Hour),
+		UpdateProgress: true,
+		Actor:          "crash-harness",
+	}
+}
 
 // scenarios is the matrix. Every fault point the harness can reach has a row.
 var scenarios = []Scenario{
@@ -99,6 +161,31 @@ var scenarios = []Scenario{
 	},
 	{
 		Name: "materialize_after_run", KillAt: afterRun, Kind: "materialize",
+		MinEffects: 1, MaxEffects: 1,
+	},
+
+	// The schedule tick chain (#56): three points inside the tick
+	// transaction and the instant after its commit. A kill inside the
+	// transaction rolls the whole fire-time back, so nothing was ever
+	// owed; the restart's identical decision creates exactly one tick,
+	// one trigger and one run, and the job runs once. The after-commit
+	// kill leaves the chain whole on disk, and the restart's identical
+	// decision must hit the UNIQUE gate and deduplicate: still exactly
+	// one of everything. This is AC3.
+	{
+		Name: "tick_before_insert", KillAt: tickBeforeInsert, Kind: "tick",
+		MinEffects: 1, MaxEffects: 1,
+	},
+	{
+		Name: "tick_after_tick_before_run", KillAt: tickAfterTick, Kind: "tick",
+		MinEffects: 1, MaxEffects: 1,
+	},
+	{
+		Name: "tick_after_run_before_progress", KillAt: tickAfterRun, Kind: "tick",
+		MinEffects: 1, MaxEffects: 1,
+	},
+	{
+		Name: "tick_after_commit", KillAt: tickAfterCommit, Kind: "tick",
 		MinEffects: 1, MaxEffects: 1,
 	},
 

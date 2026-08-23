@@ -41,6 +41,7 @@ var (
 	TICKSkippedOverlap         = tickCode("SKIPPED_OVERLAP")
 	TICKSkippedConcurrency     = tickCode("SKIPPED_CONCURRENCY")
 	TICKSkippedCatchupDisabled = tickCode("SKIPPED_CATCHUP_DISABLED")
+	TICKSkippedCatchupLastOnly = tickCode("SKIPPED_CATCHUP_LAST_ONLY")
 	TICKSkippedCatchupWindow   = tickCode("SKIPPED_CATCHUP_WINDOW")
 	TICKSkippedDSTNonexistent  = tickCode("SKIPPED_DST_NONEXISTENT")
 	TICKSkippedDSTDuplicate    = tickCode("SKIPPED_DST_DUPLICATE")
@@ -144,6 +145,20 @@ func newCatalog() map[Code]Entry {
 			Remedy: []string{
 				"set catchup to last or all on the schedule if late runs are wanted",
 				"a long outage with catchup off shows up here as a block of skipped ticks",
+			},
+			Terminal: true,
+		},
+		{
+			Code:  TICKSkippedCatchupLastOnly,
+			Level: LevelTick,
+			Short: "older due ticks were discarded, catchup is last",
+			Explanation: "Several ticks came due while nothing could run them, and the schedule has " +
+				"catchup set to last, so only the most recent moment was kept and the older ones " +
+				"were thrown away. One missed stretch becomes one fresh run instead of a burst " +
+				"playing catch-up, and this row is where the discarded moments are recorded.",
+			Remedy: []string{
+				"set catchup to all on the schedule if the missed moments should all run",
+				"a long outage with catchup on last shows up here as one run plus a block of these rows",
 			},
 			Terminal: true,
 		},
