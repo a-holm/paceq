@@ -14,9 +14,15 @@ grep 'run: \[' jobs/hello.yaml
 # The state directory is kept out of version control.
 grep '^\.paceq/$' .gitignore
 
-# What init created, doctor approves of.
+# What init created, doctor approves of. On a host without the hardened
+# systemd unit (every development machine and CI runner, and this one) the
+# sandbox finding warns and says how to fix it; nothing init created is a
+# failure.
 exec paceq doctor
-stdout '"status":"ok"'
+stdout '"status":"warn"'
+stdout '"level":"warn","title":"sandbox"'
+stdout 'paceq install-service'
+! stdout '"level":"fail"'
 
 # A second init refuses, and says how to start over.
 ! exec paceq init

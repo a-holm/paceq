@@ -12,6 +12,7 @@ import (
 	"github.com/a-holm/paceq/internal/leases"
 	"github.com/a-holm/paceq/internal/logsink"
 	"github.com/a-holm/paceq/internal/notify"
+	"github.com/a-holm/paceq/internal/obs/sdnotify"
 	"github.com/a-holm/paceq/internal/reconcile"
 	"github.com/a-holm/paceq/internal/scheduler"
 	"github.com/a-holm/paceq/internal/store"
@@ -26,6 +27,7 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 		return errors.New("serve: no state directory was named")
 	}
 	log := cfg.logger()
+	_ = sdnotify.Status("opening database")
 
 	st, err := store.OpenState(ctx, cfg.StateDir, store.Options{Clock: clk})
 	if err != nil {
@@ -33,6 +35,7 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 	}
 	faults.Point("M2:serve:after_flock")
 
+	_ = sdnotify.Status("running migrations")
 	if err := st.Migrate(ctx); err != nil {
 		_ = st.Close()
 		return fmt.Errorf("serve: %w", err)
@@ -90,6 +93,7 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 	// orphaned process groups, runs still marked running, ticks never
 	// finished - and the outages row that explains the downtime gap. Nothing
 	// else in this process is running yet, so there is nobody to race.
+	_ = sdnotify.Status("reconciling")
 	if err := reconcile.OnStartup(ctx, st, reconcile.Options{
 		Clock:            clk,
 		Log:              log,
@@ -103,8 +107,9 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 		return fmt.Errorf("serve: %w", err)
 	}
 
+	heart := NewHeart(clk)
 	statuses := newStatuses(func() time.Time { return clk.Now() })
-	d := loops{clk: clk, bus: bus, status: statuses, log: log}
+	d := loops{clk: clk, bus: bus, status: statuses, log: log, heart: heart}
 
 	// The scheduler owns the schedule decisions under its fenced role lease;
 	// the loop below only wakes it and marks the health surface.
@@ -202,6 +207,19 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 		"notify_bus", !cfg.DisableNotifyBus,
 		"socket", cfg.SocketPath != "",
 	)
+
+	// The systemd readiness signal goes out after migration AND reconciliation
+	// are both done, so systemctl start returns only when the daemon is ready.
+	_ = sdnotify.Ready("")
+
+	// The watchdog goroutine pings systemd at half the WatchdogSec interval.
+	// It reads the Heart, which is beaten by the scheduler loop on every real
+	// tick, so a slow backup never causes a watchdog timeout restart loop.
+	dogTimeout := watchdogUSecFromEnv()
+	if dogTimeout > 0 {
+		sdnotifier := sdnotifyDog{}
+		go watchdogLoop(context.WithoutCancel(ctx), clk, heart, watchdogPingInterval(dogTimeout), sdnotifier)
+	}
 
 	if cfg.Signals != nil {
 		go watchHardStop(cfg.Signals, log, cfg.OnHardStop)

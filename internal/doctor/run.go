@@ -40,6 +40,10 @@ type Options struct {
 	Open  Opener
 	Zones ZoneLoader
 	Free  FreeSpace
+	// Status reads the process sandbox. Nil reads /proc/self/status.
+	// A test plants a status so doctor answers independently of the machine it
+	// runs on.
+	Status StatusReader
 	// Local is the time zone name to report. Empty means the process one.
 	Local string
 }
@@ -92,6 +96,8 @@ func Run(ctx context.Context, dir string, opt Options) Report {
 	r.add(dirFinding)
 	r.add(checkDiskSpace(nearestExisting(dir), opt.Free))
 
+	r.add(CheckSandbox(opt.Status))
+
 	switch dirState {
 	case stateMissing:
 		// Nothing else can be answered, and every answer would repeat the one
@@ -124,6 +130,9 @@ func (o Options) withDefaults() Options {
 	}
 	if o.Free == nil {
 		o.Free = freeSpace
+	}
+	if o.Status == nil {
+		o.Status = ReadProcessStatus
 	}
 	if o.Local == "" {
 		o.Local = localZone()

@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/a-holm/paceq/internal/clock"
+	"github.com/a-holm/paceq/internal/doctor"
 	"github.com/a-holm/paceq/internal/store"
 )
 
@@ -27,6 +28,10 @@ type Env struct {
 	// Clk is the clock commands run on. Nil means clock.System. A test
 	// brings its own so a follow loop ticks when the test says so.
 	Clk clock.Clock
+	// Status reads the process sandbox for doctor. Nil reads the real
+	// /proc/self/status. A test plants a status so the report answers on a
+	// machine that sandboxes nothing.
+	Status doctor.StatusReader
 }
 
 // stateDirName is the state directory paceq creates inside a project.
@@ -146,6 +151,7 @@ func newRoot(env Env) *cobra.Command {
 		newErrorCmd(env, &g),
 		newLogsCmd(env, &g),
 		newLsCmd(env, &g),
+		newInstallServiceCmd(env, &g),
 	)
 	return root
 }

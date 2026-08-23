@@ -1,0 +1,52 @@
+[Unit]
+Description=paceq orchestrator
+Documentation=https://github.com/a-holm/paceq
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+ExecStart=/usr/bin/paceq serve
+Restart=always
+RestartSec=2s
+WatchdogSec=30s
+TimeoutStartSec=120s
+TimeoutStopSec=120s
+KillSignal=SIGTERM
+KillMode=mixed
+
+User=paceq
+Group=paceq
+StateDirectory=paceq
+StateDirectoryMode=0700
+RuntimeDirectory=paceq
+RuntimeDirectoryMode=0710
+ConfigurationDirectory=paceq
+UMask=0077
+Environment=PACEQ_LOG_FORMAT=json
+
+# Hardening. INHERITED by job processes.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=no
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+# Jobs inherit this sandbox.
+# ProtectSystem=strict makes the filesystem read-only except StateDirectory.
+# A job writing to /srv, /opt, or /var/lib/<other> will fail with EROFS/EACCES.
+# Run: paceq doctor to see the effective sandbox.
+# Add writable paths: ReadWritePaths=/srv/data /var/log/my-jobs
+# Or use the relaxed variant: /usr/share/paceq/paceq.service.relaxed
+
+[Install]
+WantedBy=multi-user.target

@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/a-holm/paceq/internal/doctor"
 )
 
 // result is one command run: what it wrote where, and what the shell would see.
@@ -42,6 +44,31 @@ func runCLIContext(t *testing.T, ctx context.Context, dir string, environ map[st
 // variable set on the developer's machine cannot change a result.
 func lookup(environ map[string]string) func(string) string {
 	return func(name string) string { return environ[name] }
+}
+
+// runCLIWithStatus runs the command line with a planted process sandbox status,
+// so doctor answers independently of the machine the test runs on.
+func runCLIWithStatus(t *testing.T, dir string, status doctor.StatusReader, args ...string) result {
+	t.Helper()
+
+	var stdout, stderr bytes.Buffer
+	env := Env{
+		Stdout: &stdout,
+		Stderr: &stderr,
+		Dir:    dir,
+		Getenv: lookup(nil),
+		Status: status,
+	}
+	code := run(context.Background(), env, args)
+	return result{code: code, stdout: stdout.String(), stderr: stderr.String()}
+}
+
+// sandboxedCLIStatus is a process under the hardened systemd unit, the sandbox
+// doctor approves of.
+func sandboxedCLIStatus() doctor.StatusReader {
+	return func() (doctor.ProcessStatus, error) {
+		return doctor.ProcessStatus{NoNewPrivs: 1, Seccomp: 2, CapEff: "0000000000000000"}, nil
+	}
 }
 
 func (r result) json(t *testing.T) map[string]any {
