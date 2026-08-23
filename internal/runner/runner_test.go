@@ -172,6 +172,67 @@ func scanProcFor(t *testing.T, marker string) []string {
 	return found
 }
 
+// TestOnStartNamesTheChildProcess covers the hook the engine persists the
+// attempt's process baseline through (issue #62): it fires exactly once, after
+// the spawn succeeds and before Run returns, with the child's own pid. That
+// pid leads its own process group, so it is also the pgid the orphan sweep
+// would signal.
+func TestOnStartNamesTheChildProcess(t *testing.T) {
+	var mu sync.Mutex
+	var pids []int
+
+	spec := baseSpec(t, fakecmd(t), "exit", "0")
+	spec.OnStart = func(pid int) {
+		mu.Lock()
+		defer mu.Unlock()
+		pids = append(pids, pid)
+	}
+
+	res, err := runBounded(t, time.Minute, context.Background(), spec)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(pids) != 1 {
+		t.Fatalf("OnStart fired %d times (%v), want exactly once", len(pids), pids)
+	}
+	if pids[0] <= 0 {
+		t.Fatalf("OnStart named pid %d, want a real pid", pids[0])
+	}
+	if res.Pgid != pids[0] {
+		t.Errorf("OnStart named pid %d but the result carries group %d", pids[0], res.Pgid)
+	}
+}
+
+// TestOnStartStaysQuietWhenTheSpawnFails keeps the baseline honest: a pid on
+// file for a process that never existed would make the sweep trust a number
+// nothing backs.
+func TestOnStartStaysQuietWhenTheSpawnFails(t *testing.T) {
+	var mu sync.Mutex
+	var pids []int
+
+	spec := baseSpec(t, "/nonexistent/paceq-nowhere", "exit", "0")
+	spec.OnStart = func(pid int) {
+		mu.Lock()
+		defer mu.Unlock()
+		pids = append(pids, pid)
+	}
+
+	res, err := runBounded(t, time.Minute, context.Background(), spec)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res.Outcome != SpawnFailed {
+		t.Fatalf("outcome is %v, want SpawnFailed", res.Outcome)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(pids) != 0 {
+		t.Errorf("OnStart fired for a spawn that failed: %v", pids)
+	}
+}
+
 func TestRunExitZeroIsSucceeded(t *testing.T) {
 	res, err := runBounded(t, time.Minute, context.Background(), baseSpec(t, "/bin/true"))
 	if err != nil {

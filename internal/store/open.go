@@ -92,6 +92,10 @@ type Store struct {
 	// it is atomic rather than a plain bool.
 	bootChanged atomic.Bool
 
+	// bootOverride pins the boot id for tests (OverrideBootIDForTest): a
+	// machine restart cannot be staged against /proc, but its effect can.
+	bootOverride atomic.Pointer[string]
+
 	// onCommit runs after every successful write transaction commit. It is
 	// nil in production; only package tests set it, to count real commits
 	// where the batch heartbeat proof needs them.
@@ -276,19 +280,7 @@ func syncReadback(sync string) string {
 // the pragmas: _txlock=immediate makes every writer transaction BEGIN
 // IMMEDIATE, which is what avoids the lock upgrade that busy_timeout cannot
 // retry; mode=ro opens the reader read-only.
-//
-// The path is part of a URI-style DSN, so ? and # would be read as the start
-// of the query or the fragment and silently truncate the filename. Both are
-// percent-escaped here; a project directory called something like jobs#2 or
-// a test tempdir with a # suffix must open exactly like any other. A leading
-// colon is left alone deliberately: that is an in-memory DSN, which the
-// startup verification then refuses rather than silently materialising as a
-// file called ":memory:".
 func dsn(path, first string, specs []pragmaSpec) string {
-	safe := path
-	if !strings.HasPrefix(path, ":") {
-		safe = strings.NewReplacer("?", "%3f", "#", "%23").Replace(path)
-	}
 	params := make([]string, 0, len(specs)+1)
 	params = append(params, first)
 	for _, spec := range specs {
@@ -297,5 +289,5 @@ func dsn(path, first string, specs []pragmaSpec) string {
 		}
 		params = append(params, "_pragma="+spec.name+"("+spec.arg+")")
 	}
-	return "file:" + safe + "?" + strings.Join(params, "&")
+	return "file:" + path + "?" + strings.Join(params, "&")
 }

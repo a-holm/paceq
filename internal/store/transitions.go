@@ -118,6 +118,43 @@ FROM runs WHERE id = ?`, runID).Scan(&at, &by, &ignored)
 	return at.Valid, by.String, nil
 }
 
+// RecordAttemptProcess stamps which live process is carrying one running
+// step: its pid and the kernel's start ticks for that pid, read at spawn
+// time. The engine writes it through OnStart the instant a spawn succeeds, so
+// the evidence is on file before any verdict could exist, and startup
+// reconciliation can later prove a surviving process is (or is not) the child
+// it was told about.
+//
+// The write is fenced like every other holder's write: only the executor
+// that owns the run's lease may name processes for it, so a replaced
+// executor cannot relabel someone else's process as one of ours.
+func (s *Store) RecordAttemptProcess(ctx context.Context, runID, step string, ref LeaseRef, pid int, startTicks int64) error {
+	if !ref.held() {
+		return fmt.Errorf("baseline step %s of run %s: no holder was named", step, runID)
+	}
+	now := s.clk.Now().UTC()
+	err := s.withTx(ctx, func(tx *sql.Tx) error {
+		if err := checkLeaseTx(tx, runID, ref, now); err != nil {
+			return err
+		}
+		result, err := tx.Exec(`UPDATE steps SET pid = ?, pid_start_ticks = ?
+WHERE run_id = ? AND name = ?`, pid, startTicks, runID, step)
+		if err != nil {
+			return err
+		}
+		if changed, err := result.RowsAffected(); err != nil {
+			return err
+		} else if changed == 0 {
+			return fmt.Errorf("baseline step %s of run %s: no such step", step, runID)
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("record the process of step %s of run %s: %w", step, runID, err)
+	}
+	return nil
+}
+
 // StartStep opens the first attempt of a pending step: running, attempt up by
 // one, started_at stamped, its event in the same transaction. The run has to
 // be running and still held by the writer at the writer's fencing token: a

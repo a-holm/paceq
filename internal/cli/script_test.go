@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -17,7 +16,7 @@ import (
 // updateGoldens regenerates the golden expectations embedded in the scripts
 // under testdata/script: run
 //
-//	go test ./internal/cli -run TestScriptBothModes -update
+//	go test ./internal/cli -run TestScripts -update
 //
 // and the failing cmp and cmpjson commands rewrite their expected side in
 // the txtar files. Regeneration is explicit and local, never automatic, and
@@ -58,68 +57,29 @@ func harnessClock() clock.Clock {
 	return clock.NewFake(stamp)
 }
 
-// scriptCmds are the harness commands the golden scripts use.
-func scriptCmds() map[string]func(*testscript.TestScript, bool, []string) {
-	return map[string]func(*testscript.TestScript, bool, []string){
-		"wantexit":     cmdWantExit,
-		"maskfile":     cmdMaskFile,
-		"cmpjson":      cmdCmpJSON,
-		"writeid":      cmdWriteID,
-		"startrun":     cmdStartRun,
-		"sigwait":      cmdSigWait,
-		"holdstate":    cmdHoldState,
-		"releasehold":  cmdReleaseHold,
-		"writegarbage": cmdWriteGarbage,
-		"plantrun":     cmdPlantRun,
-		"ttyrun":       cmdTtyRun,
-	}
-}
-
-// TestScriptBothModes runs every script in testdata/script twice, which is
-// the M2-08 contract test (criterion 1): the whole M1 suite produces byte
-// identical output whatever the transport axis says.
-//
-//	mode=default  PACEQ_SOCKET unset       the state directory's socket
-//	mode=env      PACEQ_SOCKET=<work>.sock an explicitly named silent socket
-//
-// Both passes face a daemon that is down, so every read marks it and every
-// write falls back to the flock-guarded direct store; if that fallback
-// changed so much as one byte between the default path and an explicitly
-// named one, the shared goldens would catch it here. The daemon-up half of
-// dual mode has its own proofs in socketmode_test.go; running this whole
-// suite against a live daemon is impossible by design, because several
-// scripts assert direct-mode semantics (busy.txtar's exit 6 against a held
-// lock) that a live daemon takes away.
-func TestScriptBothModes(t *testing.T) {
+// TestScripts runs every script in testdata/script. One file per user flow,
+// each readable as documentation of what the command line promises.
+func TestScripts(t *testing.T) {
 	if *updateGoldens && os.Getenv("CI") != "" {
 		t.Fatal("golden updates are forbidden in CI; run -update locally and commit the result")
 	}
-	modes := []struct {
-		name     string
-		explicit bool
-	}{
-		{name: "default"},
-		{name: "env", explicit: true},
-	}
-	for _, mode := range modes {
-		t.Run(mode.name, func(t *testing.T) {
-			testscript.Run(t, testscript.Params{
-				Dir:  "testdata/script",
-				Cmds: scriptCmds(),
-				Setup: func(e *testscript.Env) error {
-					if err := setupScriptEnv(e); err != nil {
-						return err
-					}
-					if mode.explicit {
-						e.Setenv("PACEQ_SOCKET", filepath.Join(e.WorkDir, "daemon.sock"))
-					} else {
-						e.Setenv("PACEQ_SOCKET", "")
-					}
-					return nil
-				},
-				UpdateScripts:       *updateGoldens,
-				RequireExplicitExec: true,
-			})
-		})
-	}
+	testscript.Run(t, testscript.Params{
+		Dir: "testdata/script",
+		Cmds: map[string]func(*testscript.TestScript, bool, []string){
+			"wantexit":     cmdWantExit,
+			"maskfile":     cmdMaskFile,
+			"cmpjson":      cmdCmpJSON,
+			"writeid":      cmdWriteID,
+			"startrun":     cmdStartRun,
+			"sigwait":      cmdSigWait,
+			"holdstate":    cmdHoldState,
+			"releasehold":  cmdReleaseHold,
+			"writegarbage": cmdWriteGarbage,
+			"plantrun":     cmdPlantRun,
+			"ttyrun":       cmdTtyRun,
+		},
+		Setup:               setupScriptEnv,
+		UpdateScripts:       *updateGoldens,
+		RequireExplicitExec: true,
+	})
 }

@@ -22,6 +22,7 @@ Codes stored in the ticks table, one row per evaluation that was due.
 | Code | Meaning | Ends the object | reason_data keys |
 |---|---|---|---|
 | `TICK_ERROR_CONFIG` | the configuration behind the tick is invalid | yes | - |
+| `TICK_ERROR_DAEMON_CRASHED` | the daemon died with this tick unfinished | yes | - |
 | `TICK_ERROR_SENSOR_FAILED` | the sensor failed or panicked | yes | `exit_code` |
 | `TICK_ERROR_SENSOR_OUTPUT` | the sensor wrote invalid or oversized output | yes | `bytes`, `limit` |
 | `TICK_ERROR_SENSOR_TIMEOUT` | the sensor overshot its evaluation deadline | yes | `timeout_ms` |
@@ -107,6 +108,20 @@ applied; something it depends on has changed since.
 What to do next:
 - validate the definition again: paceq validate
 - check whether the job it references was renamed or removed
+
+### TICK_ERROR_DAEMON_CRASHED
+
+the daemon died with this tick unfinished. [tick level, ends the object]
+
+The tick was being evaluated when its daemon died: the row still says
+running, no trigger will ever come of it, and nothing else could have
+written the verdict. Startup reconciliation (#62) closes it as an error with
+this code so the history shows a stopped evaluation instead of a tick frozen
+mid flight.
+
+What to do next:
+- read the outages row covering this moment for why the daemon was gone
+- a cluster of these at one timestamp is one crash, not repeated failures
 
 ### TICK_ERROR_SENSOR_FAILED
 

@@ -241,6 +241,9 @@ last_seen_at, stopped_at, stop_reason
 // tests that reproduce a restart, and a /proc read costs nothing next to the
 // transaction it precedes.
 func (s *Store) bootIdentity() string {
+	if pinned := s.bootOverride.Load(); pinned != nil {
+		return *pinned
+	}
 	value, err := s.bootID()
 	if err != nil {
 		s.bootWarn.Do(func() {

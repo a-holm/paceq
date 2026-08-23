@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -193,6 +194,33 @@ func (f *engineFixture) mustFinish(t *testing.T, runID string) string {
 		t.Fatalf("execute run %s: %v", runID, err)
 	}
 	return state
+}
+
+// TestExecuteRunPersistsTheProcessBaseline pins the engine's half of the
+// orphan sweep's evidence (issue #62): a spawned step leaves its pid and the
+// kernel's start ticks on file, so a later restart can tell that process from
+// a recycled pid carrying the same number.
+func TestExecuteRunPersistsTheProcessBaseline(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("start ticks are a /proc feature")
+	}
+
+	f := newFixture(t)
+	runID := f.aQueuedRun(t, []string{"work"}, []string{"exit 0"}, nil, 30_000)
+
+	f.mustFinish(t, runID)
+
+	known, err := f.Store.KnownAttempts(context.Background())
+	if err != nil {
+		t.Fatalf("list known attempts: %v", err)
+	}
+	if len(known) != 1 || known[0].RunID != runID || known[0].Step != "work" {
+		t.Fatalf("known attempts %+v, want the baseline of step work of run %s", known, runID)
+	}
+	if known[0].PID <= 0 || known[0].StartTicks <= 0 {
+		t.Errorf("baseline is pid %d ticks %d, want a real process identity",
+			known[0].PID, known[0].StartTicks)
+	}
 }
 
 func TestExecuteRunCarriesThreeStepsToEndToEnd(t *testing.T) {

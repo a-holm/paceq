@@ -48,18 +48,15 @@ steps:
   }
 }
 -- list_golden.json --
-{
-  "daemon_up": false,
-  "runs": [
-    {
-      "created_at": "2026-09-24T09:00:00Z",
-      "finished_at": "2026-09-24T09:00:00Z",
-      "id": "<RUN1>",
-      "job": "nice",
-      "origin": "manual",
-      "reason_code": "RUN_SUCCEEDED",
-      "started_at": "2026-09-24T09:00:00Z",
-      "state": "succeeded"
-    }
-  ]
-}
+[
+  {
+    "created_at": "2026-09-24T09:00:00Z",
+    "finished_at": "2026-09-24T09:00:00Z",
+    "id": "<RUN1>",
+    "job": "nice",
+    "origin": "manual",
+    "reason_code": "RUN_SUCCEEDED",
+    "started_at": "2026-09-24T09:00:00Z",
+    "state": "succeeded"
+  }
+]

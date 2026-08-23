@@ -73,11 +73,6 @@ func runStatus(ctx context.Context, env Env, g *globals, out *ui, args []string)
 		for _, row := range rows {
 			doc = append(doc, newStatusRow(row))
 		}
-		setting := resolveSocket(g, env, stateDir)
-		down := noteDaemon(setting, env, out)
-		if probed := !setting.off && setting.path != ""; probed {
-			return out.json(statusEnvelope{DaemonUp: daemonField(down, probed), Jobs: doc})
-		}
 		return out.json(doc)
 	}
 
@@ -128,14 +123,6 @@ type statusRow struct {
 	DurationMS int64  `json:"duration_ms,omitempty"`
 	StepsTotal int    `json:"steps_total,omitempty"`
 	StepsDone  int    `json:"steps_done,omitempty"`
-}
-
-// statusEnvelope wraps the per job listing when a socket was explicitly
-// named, so a script can see at a glance whether the numbers came from a
-// live daemon or from whatever the last one left behind.
-type statusEnvelope struct {
-	DaemonUp *bool       `json:"daemon_up,omitempty"`
-	Jobs     []statusRow `json:"jobs"`
 }
 
 func newStatusRow(row store.JobRunSummary) statusRow {

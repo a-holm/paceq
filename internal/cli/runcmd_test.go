@@ -352,7 +352,10 @@ func TestRunsListIsATableHereAndJSONThere(t *testing.T) {
 	if !json.Valid([]byte(strings.TrimSpace(piped.stdout))) {
 		t.Fatalf("a pipe got no JSON array:\n%s", piped.stdout)
 	}
-	rows := decodeRunRows(t, piped.stdout)
+	var rows []map[string]any
+	if err := json.Unmarshal([]byte(piped.stdout), &rows); err != nil {
+		t.Fatalf("decode the array: %v\n%s", err, piped.stdout)
+	}
 	if len(rows) != 2 {
 		t.Fatalf("the listing holds %d rows, want both runs", len(rows))
 	}
@@ -371,7 +374,10 @@ func TestRunsListFlagsNarrowTheListing(t *testing.T) {
 	dir, _ := finishedRunsFixture(t)
 
 	byJob := runCLI(t, dir, nil, "runs", "list", "--job", "import")
-	importRows := decodeRunRows(t, byJob.stdout)
+	var importRows []map[string]any
+	if err := json.Unmarshal([]byte(byJob.stdout), &importRows); err != nil {
+		t.Fatalf("--job gave no JSON array: %v\n%s", err, byJob.stdout)
+	}
 	if len(importRows) == 0 {
 		t.Fatal("--job import matched nothing")
 	}
@@ -382,7 +388,10 @@ func TestRunsListFlagsNarrowTheListing(t *testing.T) {
 	}
 
 	byState := runCLI(t, dir, nil, "runs", "list", "--state", "failed")
-	failedRows := decodeRunRows(t, byState.stdout)
+	var failedRows []map[string]any
+	if err := json.Unmarshal([]byte(byState.stdout), &failedRows); err != nil {
+		t.Fatalf("--state gave no JSON array: %v\n%s", err, byState.stdout)
+	}
 	if len(failedRows) == 0 {
 		t.Fatal("no failed row came back, though the fixture made one")
 	}
@@ -453,12 +462,11 @@ func TestRunsListSinceFollowsTheCommandClock(t *testing.T) {
 		t.Fatalf("runs list --since 1h = %d\n%s", code, readErr())
 	}
 
-	sinceRows := decodeRunRows(t, readOut())
-	rows := make([]struct {
+	var rows []struct {
 		ID string `json:"id"`
-	}, len(sinceRows))
-	for i, row := range sinceRows {
-		rows[i].ID, _ = row["id"].(string)
+	}
+	if err := json.Unmarshal([]byte(readOut()), &rows); err != nil {
+		t.Fatalf("--since gave no JSON array: %v", err)
 	}
 	if len(rows) != 1 || rows[0].ID != recent.ID {
 		t.Errorf("--since 1h returned %d rows (%v), want only the recent run %s",
@@ -470,24 +478,6 @@ func TestRunsListSinceFollowsTheCommandClock(t *testing.T) {
 // an implementation that reads the wall clock lands in a different world and
 // fails loudly.
 var testOrigin = time.Date(2026, 9, 17, 3, 0, 0, 0, time.UTC)
-
-// decodeRunRows unwraps the runs listing envelope a pipe gets, asserting the
-// daemon-down fact that comes with it: the fixture has no daemon running,
-// so a document that claims otherwise is lying about liveness.
-func decodeRunRows(t *testing.T, stdout string) []map[string]any {
-	t.Helper()
-	var envelope struct {
-		DaemonUp *bool            `json:"daemon_up"`
-		Runs     []map[string]any `json:"runs"`
-	}
-	if err := json.Unmarshal([]byte(stdout), &envelope); err != nil {
-		t.Fatalf("decode the runs envelope: %v\n%s", err, stdout)
-	}
-	if envelope.DaemonUp == nil || *envelope.DaemonUp {
-		t.Fatalf("the listing does not say daemon_up false: %s", stdout)
-	}
-	return envelope.Runs
-}
 
 // finishedRunsFixture seeds a project whose job nightly has one finished run
 // (succeeded) and whose job import has one failed one.

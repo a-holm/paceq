@@ -53,6 +53,7 @@ var (
 	TICKMissedDaemonDown       = tickCode("MISSED_DAEMON_DOWN")
 	TICKMissedLeaseLost        = tickCode("MISSED_LEASE_LOST")
 	TICKMissedClockJump        = tickCode("MISSED_CLOCK_JUMP")
+	TICKErrorDaemonCrashed     = tickCode("ERROR_DAEMON_CRASHED")
 
 	TRIGGERAccepted           = triggerCode("ACCEPTED")
 	TRIGGERDedupedRunKey      = triggerCode("DEDUPED_RUN_KEY")
@@ -267,6 +268,20 @@ func newCatalog() map[Code]Entry {
 			Remedy: []string{
 				"validate the definition again: paceq validate",
 				"check whether the job it references was renamed or removed",
+			},
+			Terminal: true,
+		},
+		{
+			Code:  TICKErrorDaemonCrashed,
+			Level: LevelTick,
+			Short: "the daemon died with this tick unfinished",
+			Explanation: "The tick was being evaluated when its daemon died: the row still says " +
+				"running, no trigger will ever come of it, and nothing else could have written " +
+				"the verdict. Startup reconciliation (#62) closes it as an error with this code " +
+				"so the history shows a stopped evaluation instead of a tick frozen mid flight.",
+			Remedy: []string{
+				"read the outages row covering this moment for why the daemon was gone",
+				"a cluster of these at one timestamp is one crash, not repeated failures",
 			},
 			Terminal: true,
 		},

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"time"
 
 	"github.com/a-holm/paceq/internal/faults"
@@ -361,6 +362,23 @@ func (e *Engine) runStep(ctx context.Context, d *drive, name string, h *heldRun)
 		Clock:      e.Clock,
 		Stdout:     crashOnFirstWrite(sink.Writer(logsink.StreamStdout), "M1:step:under_exec"),
 		Stderr:     sink.Writer(logsink.StreamStderr),
+		// The process baseline is the orphan sweep's evidence (issue #62):
+		// pid plus /proc start ticks on file the moment the spawn succeeds.
+		// It must survive this call's own cancellation, so it writes under a
+		// context that outlives watchCtx, and it never fails the step: an
+		// unrecorded pid only makes the sweep refuse to touch that process.
+		OnStart: func(pid int) {
+			ticks, ok := store.ReadProcessStartTicks(pid)
+			if !ok {
+				slog.Warn("could not read the start ticks of a spawned step; the orphan sweep will not be able to verify it",
+					"run", run.ID, "step", name, "pid", pid)
+				return
+			}
+			if err := e.Store.RecordAttemptProcess(context.WithoutCancel(watchCtx), run.ID, name, d.ref, pid, ticks); err != nil {
+				slog.Warn("could not record the process baseline of a spawned step",
+					"run", run.ID, "step", name, "pid", pid, "error", err)
+			}
+		},
 		Ctx: runner.RunContext{
 			RunID:   run.ID,
 			Job:     run.JobName,
