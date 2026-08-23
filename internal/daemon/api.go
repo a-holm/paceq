@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/a-holm/paceq/internal/store"
 )
 
 // The health endpoints (06 section 7.1), served over a unix socket when
@@ -17,7 +19,7 @@ import (
 // on a locked database turns one bad moment into a restart loop. M2-08 puts
 // the real protocol on this listener; the socket and the status surface it
 // will read are already here.
-func startHealthEndpoint(cfg Config, st *statuses, log *slog.Logger) (stop func(context.Context)) {
+func startHealthEndpoint(cfg Config, st *statuses, log *slog.Logger, store *store.Store) (stop func(context.Context)) {
 	if cfg.SocketPath == "" {
 		return nil
 	}
@@ -57,6 +59,19 @@ func startHealthEndpoint(cfg Config, st *statuses, log *slog.Logger) (stop func(
 			"version": cfg.Version,
 		})
 	})
+	// API routes for the CLI's write commands: registered only when
+	// the caller passes a store.
+	if store != nil {
+		mux.HandleFunc("POST /v1/schedules/{ref...}/pause", func(w http.ResponseWriter, r *http.Request) {
+			handlePauseSchedule(w, r, store)
+		})
+		mux.HandleFunc("POST /v1/schedules/{ref...}/resume", func(w http.ResponseWriter, r *http.Request) {
+			handleResumeSchedule(w, r, store)
+		})
+		mux.HandleFunc("POST /v1/runs/{id}/cancel", func(w http.ResponseWriter, r *http.Request) {
+			handleCancelRun(w, r, store)
+		})
+	}
 
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	served := make(chan struct{})

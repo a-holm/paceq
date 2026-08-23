@@ -43,8 +43,10 @@ Available Commands:
   help        Help about any command
   init        Create a project: a config, an example job and a state database
   logs        Show the log files of one run
+  ls          List jobs with their last and next run
   run         Run a job now, in this process, and wait for it
   runs        Inspect run history
+  schedules   Inspect and control schedules
   serve       Run the daemon: schedules, dispatch and execution in one process
   status      Show the latest outcome of every job
   validate    Check job files and say exactly what is wrong with them
