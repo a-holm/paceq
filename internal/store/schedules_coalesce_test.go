@@ -123,48 +123,31 @@ func TestCoalescingNeverTouchesRunsOrDifferentReasons(t *testing.T) {
 		t.Fatalf("second disabled skip: %v", err)
 	}
 	clk.Advance(time.Minute)
-	// A third disabled skip at T5 DOES absorb into the T4 row.
-	if _, err := s.MaterializeTick(ctx, skipInput(sched, base.Add(5*time.Minute),
+
+	// A skipped row that somehow carries triggers (a foreign writer, a
+	// future sensor bug) must never absorb anything: the childless
+	// predicate is load bearing even when outcomes look identical.
+	if _, err := s.w.ExecContext(ctx,
+		`UPDATE ticks SET trigger_count = 3 WHERE source_name = ? AND outcome = 'skipped'`,
+		sched.JobName+"/"+sched.Name); err != nil {
+		t.Fatalf("plant the trigger count: %v", err)
+	}
+	if _, err := s.MaterializeTick(ctx, skipInput(sched, base.Add(45*time.Minute),
 		reason.TICKSkippedCatchupDisabled)); err != nil {
-		t.Fatalf("third disabled skip: %v", err)
+		t.Fatalf("skip against a fertile latest row: %v", err)
 	}
 
-	rows := make(map[string]int)
-	func() {
-		r, err := s.r.QueryContext(ctx,
-			`SELECT reason_code, repeat_count FROM ticks WHERE source_name = ? ORDER BY started_at`,
-			sched.JobName+"/"+sched.Name)
-		if err != nil {
-			t.Fatalf("read the tick rows: %v", err)
-		}
-		defer func() { _ = r.Close() }()
-		for r.Next() {
-			var code *string
-			var n int
-			if err := r.Scan(&code, &n); err != nil {
-				t.Fatalf("scan a tick row: %v", err)
-			}
-			key := "<null>"
-			if code != nil {
-				key = *code
-			}
-			rows[key] = n
-		}
-	}()
-
-	want := map[string]int{
-		"TICK_SKIPPED_CATCHUP_DISABLED": 2, // one row absorbing two skips
-		"TICK_SKIPPED_PAUSED":           1,
-		"<null>":                        1, // each triggered row carries repeat_count 1
+	// The fertile row refused to absorb: a fresh row exists beside it.
+	var rows2 int
+	if err := s.r.QueryRowContext(ctx, `SELECT count(*) FROM ticks WHERE source_name = ?`,
+		sched.JobName+"/"+sched.Name).Scan(&rows2); err != nil || rows2 != 6 {
+		t.Fatalf("%d tick rows after the fertile-row probe, want 6 (2 triggers, paused, 3 disabled) (%v)", rows2, err)
 	}
-	if len(rows) != len(want) {
-		t.Fatalf("tick rows by reason are %v, want exactly %v (a skip absorbed into a run or a foreign row)", rows, want)
-	}
-	for code, n := range want {
-		got, ok := rows[code]
-		if !ok || got != n {
-			t.Errorf("reason %s has %d rows, want %d", code, got, n)
-		}
+	var freshRepeat int
+	if err := s.r.QueryRowContext(ctx,
+		`SELECT max(repeat_count) FROM ticks WHERE source_name=? AND outcome='skipped' AND reason_code='TICK_SKIPPED_CATCHUP_DISABLED'`,
+		sched.JobName+"/"+sched.Name).Scan(&freshRepeat); err != nil || freshRepeat > 1 {
+		t.Fatalf("a skip was absorbed into a row carrying triggers (repeat_count %d, %v)", freshRepeat, err)
 	}
 	var runs int
 	if err := s.r.QueryRowContext(ctx, `SELECT count(*) FROM runs`).Scan(&runs); err != nil || runs != 2 {
