@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"time"
 
 	"github.com/a-holm/paceq/internal/clock"
@@ -15,16 +16,21 @@ import (
 
 // The scheduler loop turns due schedules into runs. It wakes whenever the
 // daemon asks (notify bus plus a safety ticker, both owned by daemon.loop),
-// and each wake is one Tick: one discovery query, then one decision per due
-// schedule, then one transaction per fire-time.
+// and each wake is one Tick: one discovery query, then a pure plan per due
+// schedule, then one transaction per fire-time written strictly oldest
+// fire-time first across the whole batch.
 //
 // Leadership: every wake first takes or renews the fenced "scheduler" role
 // lease, and the pass re-checks it between transactions. Losing the lease
 // therefore stops the pass exactly at a transaction boundary, leaving no
-// partially written state behind. A rival leader running the same discovery
-// against the same database recomputes the same fire-times from the same
-// cursors, and the UNIQUE gate on (source_kind, source_name, scheduled_for)
-// arbitrates, so even a lost race costs nothing but silence.
+// partially written state behind. Because the batch is written in fire-time
+// order, that boundary is also a chronological cut: every fire-time older
+// than the newest materialised one is already materialised or explicitly
+// recorded, and anything younger still owes itself to a cursor this pass
+// never moved. A rival leader running the same discovery against the same
+// database recomputes the same fire-times from the same cursors, and the
+// UNIQUE gate on (source_kind, source_name, scheduled_for) arbitrates, so
+// even a lost race costs nothing but silence.
 
 // LeaseName is the role this loop leads under.
 const LeaseName = "scheduler"
@@ -166,30 +172,70 @@ func (src *Source) Tick(ctx context.Context) error {
 		return nil
 	}
 
+	// Plan everything before writing anything. Every evaluation of the
+	// whole batch lands in one list sorted by fire-time, so whatever point
+	// a stop reaches, every fire-time older than the newest materialised
+	// one has been materialised or explicitly recorded per policy. What is
+	// left still sits behind its own schedule's untouched cursor, and the
+	// next pass replans it under the same policy.
+	var plans []store.TickInput
 	for _, sched := range due {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		src.processSchedule(ctx, sched, now)
+		plans = append(plans, src.planSchedule(sched, now)...)
+	}
+	sort.SliceStable(plans, func(i, j int) bool {
+		return plans[i].ScheduledFor.Compare(plans[j].ScheduledFor) < 0
+	})
+
+	// One immediate transaction per fire-time, oldest first. A schedule
+	// whose transaction errored stops for the rest of the pass: writing a
+	// later fire-time of the same schedule would push its cursor past work
+	// that never landed. Other schedules keep going; their cursors stand
+	// independent of the failure.
+	blocked := make(map[string]bool)
+	for _, in := range plans {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if blocked[in.Schedule.ID] {
+			continue
+		}
+		if !src.leading(ctx) {
+			// Leadership changed hands mid pass. Stop here: the winner
+			// recomputes the same remaining window from the same cursor.
+			return nil
+		}
+		res, err := src.st.MaterializeTick(ctx, in)
+		if err != nil {
+			blocked[in.Schedule.ID] = true
+			src.log.Error("a tick transaction failed",
+				"schedule", in.Schedule.JobName+"/"+in.Schedule.Name,
+				"scheduled_for", in.ScheduledFor.Format(time.RFC3339), "err", err.Error())
+			continue
+		}
+		_ = res // Claimed=false means someone owned the fire-time already: silence is correct.
 	}
 	return nil
 }
 
-// processSchedule evaluates one due schedule end to end. Every failure inside
-// is either recorded as a TICK_ERROR_CONFIG row or logged; neither escapes,
-// so one broken definition cannot stall the others sharing the wake.
-func (src *Source) processSchedule(ctx context.Context, sched store.ScheduleRow, now time.Time) {
-	sourceName := sched.JobName + "/" + sched.Name
-
+// planSchedule evaluates one due schedule into the list of transactions it
+// owes this wake. Planning is pure computation: nothing is written here. The
+// caller merges every schedule's plan and sorts them into one strict
+// fire-time order before the first write, so a stop anywhere in the batch
+// cannot leave an older fire-time unsaid under a moved cursor. Every failure
+// inside becomes a recorded TICK_ERROR_CONFIG input or a log line; none of
+// them escapes, so one broken definition cannot stall the others sharing the
+// wake.
+func (src *Source) planSchedule(sched store.ScheduleRow, now time.Time) []store.TickInput {
 	parsed, err := cronx.Parse(sched.Expr)
 	if err != nil {
-		src.configError(ctx, sched, now, fmt.Sprintf("bad expression %q: %v", sched.Expr, err))
-		return
+		return []store.TickInput{src.configInput(sched, now, fmt.Sprintf("bad expression %q: %v", sched.Expr, err))}
 	}
 	tz, err := cronx.LoadZone(sched.Timezone)
 	if err != nil {
-		src.configError(ctx, sched, now, fmt.Sprintf("unknown timezone %q: %v", sched.Timezone, err))
-		return
+		return []store.TickInput{src.configInput(sched, now, fmt.Sprintf("unknown timezone %q: %v", sched.Timezone, err))}
 	}
 
 	pol := policyOf(sched)
@@ -208,14 +254,13 @@ func (src *Source) processSchedule(ctx context.Context, sched store.ScheduleRow,
 	if err != nil && len(occs) == 0 {
 		// The expression can never land again (an impossible day-month pair,
 		// say): that is configuration rot, not an empty minute.
-		src.configError(ctx, sched, now, fmt.Sprintf("the expression has no occurrences left: %v", err))
-		return
+		return []store.TickInput{src.configInput(sched, now, fmt.Sprintf("the expression has no occurrences left: %v", err))}
 	}
 	if len(occs) == 0 {
 		// Nothing owed after all: another leader moved faster. Writing
 		// nothing here is the whole point of the tick definition; there is
 		// no such thing as TICK_SKIPPED_NOT_DUE.
-		return
+		return nil
 	}
 
 	var evaluations []store.TickInput
@@ -228,7 +273,7 @@ func (src *Source) processSchedule(ctx context.Context, sched store.ScheduleRow,
 		case o.Skipped:
 			// cronx knows a skip shape this build does not map; record it as
 			// config rather than inventing a meaning for it.
-			src.configError(ctx, sched, now, fmt.Sprintf("unmapped skip reason %q at %v", o.SkipReason, o.At))
+			evaluations = append(evaluations, src.configInput(sched, now, fmt.Sprintf("unmapped skip reason %q at %v", o.SkipReason, o.At)))
 		}
 	}
 	attempts, skips := applyCatchup(realOccurrences(occs), sched.Catchup,
@@ -240,23 +285,10 @@ func (src *Source) processSchedule(ctx context.Context, sched store.ScheduleRow,
 		evaluations = append(evaluations, src.attemptDecision(sched, parsed, tz, pol, o))
 	}
 
-	for _, in := range evaluations {
-		if err := ctx.Err(); err != nil {
-			return
-		}
-		if !src.leading(ctx) {
-			// Leadership changed hands mid pass. Stop here: the winner
-			// recomputes the same remaining window from the same cursor.
-			return
-		}
-		res, err := src.st.MaterializeTick(ctx, in)
-		if err != nil {
-			src.log.Error("a tick transaction failed",
-				"schedule", sourceName, "scheduled_for", in.ScheduledFor.Format(time.RFC3339), "err", err.Error())
-			continue
-		}
-		_ = res // Claimed=false means someone owned the fire-time already: silence is correct.
-	}
+	sort.SliceStable(evaluations, func(i, j int) bool {
+		return evaluations[i].ScheduledFor.Compare(evaluations[j].ScheduledFor) < 0
+	})
+	return evaluations
 }
 
 // attemptDecision builds one triggered evaluation with its deterministic run
@@ -300,18 +332,21 @@ func (src *Source) skipDecision(sched store.ScheduleRow, o cronx.Occurrence,
 	return in
 }
 
-// configError records that a schedule's definition could not be interpreted.
+// configInput records that a schedule's definition could not be interpreted.
 // The row is keyed at the instant that made the schedule due, and the cursor
 // stays put: the schedule remains visibly due, repeats hit the idempotency
 // gate instead of growing history, and fixing the definition resumes exactly
-// where the backlog began.
-func (src *Source) configError(ctx context.Context, sched store.ScheduleRow, now time.Time, text string) {
+// where the backlog began. The input joins the batch's fire-time order like
+// every other decision; the log line fires when the decision is made.
+func (src *Source) configInput(sched store.ScheduleRow, now time.Time, text string) store.TickInput {
+	src.log.Error("a schedule could not be evaluated",
+		"schedule", sched.JobName+"/"+sched.Name, "reason", text)
 	due := sched.NextTickAt
 	if due.IsZero() {
 		due = now
 	}
 	sweep := now.Add(configSweepDelay)
-	in := store.TickInput{
+	return store.TickInput{
 		Schedule:     sched,
 		ScheduledFor: due,
 		Outcome:      store.OutcomeError,
@@ -320,13 +355,6 @@ func (src *Source) configError(ctx context.Context, sched store.ScheduleRow, now
 		NextTickAt:   sweep,
 		Actor:        "scheduler",
 	}
-	if _, err := src.st.MaterializeTick(ctx, in); err != nil {
-		src.log.Error("recording the config error failed",
-			"schedule", sched.JobName+"/"+sched.Name, "err", err.Error())
-		return
-	}
-	src.log.Error("a schedule could not be evaluated",
-		"schedule", sched.JobName+"/"+sched.Name, "reason", text)
 }
 
 // parsedOf re-parses for the skip path; the pass already proved these parse,
