@@ -8,20 +8,28 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 )
 
 // Issue #65 turns two written rules into two mechanical ones.
-
+//
 // stateUpdatePattern matches the writes that move a run or a step between
-// states. Every one of them has to live in internal/store/transitions.go,
-// beside the machine calls that decide them, so no caller can change what a
-// run or a step is without walking through the transition layer.
+// states. Every one of them has to live beside the machine calls that decide
+// them, so no caller can change what a run or a step is without walking
+// through the transition layer. Two files carry that duty: transitions.go,
+// which owns the state machine's own moves, and runlease.go (#60), which owns
+// the lease moves the machine is fed through (claim, renewal, reap, drain).
+// Both route their decisions through internal/model; neither takes callers'
+// words for a new state. A third file matching the pattern is a defect.
 var stateUpdatePattern = regexp.MustCompile(`UPDATE\s+(runs|steps)\b`)
 
-// transitionsFile is the only file in the module allowed to match it.
-const transitionsFile = "internal/store/transitions.go"
+// transitionFiles are the only files in the module allowed to match it.
+var transitionFiles = map[string]bool{
+	"internal/store/transitions.go": true,
+	"internal/store/runlease.go":    true,
+}
 
 func TestStateUpdatesStayInTheTransitionLayer(t *testing.T) {
 	root := repoRoot(t)
@@ -46,19 +54,30 @@ func TestStateUpdatesStayInTheTransitionLayer(t *testing.T) {
 		if len(matched) == 0 {
 			return nil
 		}
-		if rel == transitionsFile {
+		if transitionFiles[rel] {
 			return nil
 		}
 		for _, at := range matched {
 			line := 1 + strings.Count(src[:at[0]], "\n")
-			t.Errorf("%s:%d: a run or step state update outside %s",
-				rel, line, transitionsFile)
+			t.Errorf("%s:%d: a run or step state update outside the transition layer %v",
+				rel, line, fileNames(transitionFiles))
 		}
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("walk the module: %v", err)
 	}
+}
+
+// fileNames renders an allowlist for error messages, so a failure says where
+// the write belongs instead of only that it is wrong.
+func fileNames(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for name := range m {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // TestEngineCannotRunAProcessInsideATransaction holds the cardinal rule by

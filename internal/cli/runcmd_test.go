@@ -503,10 +503,11 @@ func finishedRunsFixture(t *testing.T) (dir, newestRun string) {
 	if err != nil {
 		t.Fatalf("create the good run: %v", err)
 	}
-	if _, err := s.ClaimRun(ctx, okRun.ID, store.LeaseInput{Owner: "test"}); err != nil {
+	if _, _, err := s.ClaimRun(ctx, okRun.ID, store.LeaseInput{Owner: "test"}); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if err := s.StartStep(ctx, okRun.ID, "extract"); err != nil {
+	ref := store.LeaseRef{Owner: "test", Epoch: 1}
+	if err := s.StartStep(ctx, okRun.ID, "extract", ref); err != nil {
 		t.Fatalf("start extract: %v", err)
 	}
 	zero := 0
@@ -514,10 +515,10 @@ func finishedRunsFixture(t *testing.T) (dir, newestRun string) {
 		Event:      "step_succeeded",
 		ReasonCode: reason.STEPSucceeded,
 		ExitCode:   &zero,
-	}); err != nil {
+	}, ref); err != nil {
 		t.Fatalf("finish extract: %v", err)
 	}
-	if _, err := s.FinishRun(ctx, okRun.ID, "test",
+	if _, err := s.FinishRun(ctx, okRun.ID, ref,
 		store.FinishReason{Code: reason.RUNSucceeded}); err != nil {
 		t.Fatalf("finish the good run: %v", err)
 	}
@@ -539,10 +540,11 @@ func finishedRunsFixture(t *testing.T) (dir, newestRun string) {
 	if err != nil {
 		t.Fatalf("create the bad run: %v", err)
 	}
-	if _, err := s.ClaimRun(ctx, badRun.ID, store.LeaseInput{Owner: "test"}); err != nil {
+	if _, _, err := s.ClaimRun(ctx, badRun.ID, store.LeaseInput{Owner: "test"}); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if err := s.StartStep(ctx, badRun.ID, "load"); err != nil {
+	badRef := store.LeaseRef{Owner: "test", Epoch: 1}
+	if err := s.StartStep(ctx, badRun.ID, "load", badRef); err != nil {
 		t.Fatalf("start load: %v", err)
 	}
 	one := 1
@@ -550,10 +552,10 @@ func finishedRunsFixture(t *testing.T) (dir, newestRun string) {
 		Event:      "step_failed",
 		ReasonCode: reason.STEPFailedNonzeroExit,
 		ExitCode:   &one,
-	}); err != nil {
+	}, badRef); err != nil {
 		t.Fatalf("fail load: %v", err)
 	}
-	if _, err := s.FinishRun(ctx, badRun.ID, "test",
+	if _, err := s.FinishRun(ctx, badRun.ID, badRef,
 		store.FinishReason{Code: reason.RUNFailedStep}); err != nil {
 		t.Fatalf("finish the bad run: %v", err)
 	}

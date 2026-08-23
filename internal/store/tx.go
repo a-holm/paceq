@@ -104,6 +104,9 @@ func (s *Store) withTxOnce(ctx context.Context, fn func(*sql.Tx) error) error {
 	if err := tx.Commit(); err != nil {
 		return joinContextErr(ctx, fmt.Errorf("commit write transaction: %w", err))
 	}
+	if s.onCommit != nil {
+		s.onCommit()
+	}
 	return nil
 }
 

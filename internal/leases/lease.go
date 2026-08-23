@@ -169,27 +169,18 @@ func RunAsLeader(ctx context.Context, st Store, opt Options, body func(ctx conte
 	ticker := clk.NewTicker(renew)
 	defer ticker.Stop()
 
+	// The loop acts first and waits second: a fresh instance takes an
+	// unowned lease the moment it starts instead of idling out a whole
+	// renew interval, and every later decision still waits its turn on the
+	// ticker. The cadence from the second round on is unchanged.
+	//
+	// The acquisition goes through the bookkeeping context, not the caller's:
+	// becoming leader is a decision write like a loss row, and a daemon that
+	// stops within milliseconds of starting must still take the lease once,
+	// run its body far enough to announce itself, and release. Otherwise the
+	// first tick races the shutdown and leadership silently never happens.
 	for {
-		select {
-		case <-ctx.Done():
-			stopBody()
-			// No loss row here: a clean shutdown is not a loss to a rival.
-			// The deleted row plus the next holder's ACQUIRED event tell the
-			// story without borrowing a code whose meaning is "someone else
-			// owns a live lease".
-			released, err := st.ReleaseLease(book, opt.Name, opt.Holder)
-			switch {
-			case err != nil:
-				log.Warn("lease release failed on shutdown", "lease", opt.Name,
-					"holder", opt.Holder, "err", err.Error())
-			case released:
-				log.Info("released the lease on shutdown", "lease", opt.Name, "holder", opt.Holder)
-			}
-			return ctx.Err()
-		case <-ticker.C:
-		}
-
-		g, ok, err := st.AcquireOrRenew(ctx, opt.Name, opt.Holder, ttl)
+		g, ok, err := st.AcquireOrRenew(book, opt.Name, opt.Holder, ttl)
 		switch {
 		case err != nil:
 			log.Warn("lease renewal errored", "lease", opt.Name, "epoch", epoch,
@@ -220,6 +211,25 @@ func RunAsLeader(ctx context.Context, st Store, opt Options, body func(ctx conte
 				lose("fencing token moved")
 			}
 			become(g)
+		}
+
+		select {
+		case <-ctx.Done():
+			stopBody()
+			// No loss row here: a clean shutdown is not a loss to a rival.
+			// The deleted row plus the next holder's ACQUIRED event tell the
+			// story without borrowing a code whose meaning is "someone else
+			// owns a live lease".
+			released, err := st.ReleaseLease(book, opt.Name, opt.Holder)
+			switch {
+			case err != nil:
+				log.Warn("lease release failed on shutdown", "lease", opt.Name,
+					"holder", opt.Holder, "err", err.Error())
+			case released:
+				log.Info("released the lease on shutdown", "lease", opt.Name, "holder", opt.Holder)
+			}
+			return ctx.Err()
+		case <-ticker.C:
 		}
 	}
 }

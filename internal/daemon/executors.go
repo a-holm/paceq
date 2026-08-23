@@ -8,8 +8,6 @@ import (
 	"time"
 
 	"github.com/a-holm/paceq/internal/clock"
-	"github.com/a-holm/paceq/internal/engine"
-	"github.com/a-holm/paceq/internal/model"
 	"github.com/a-holm/paceq/internal/reason"
 	"github.com/a-holm/paceq/internal/store"
 )
@@ -19,8 +17,8 @@ import (
 // goroutines each driving engine.ExecuteRun, which is the same code the run
 // command uses in its own process.
 type executorPool struct {
-	st    drainStore
 	eng   runDriver
+	drain leaseDrainer
 	clk   clock.Clock
 	log   *slog.Logger
 	slots chan struct{}
@@ -34,19 +32,21 @@ type runDriver interface {
 	ExecuteRun(ctx context.Context, runID string) (string, error)
 }
 
-// drainStore names what handing a run back needs from the store: read the
-// row, put a running step back, requeue the run. Narrow enough to fake in
-// tests, wide enough for the whole handback.
-type drainStore interface {
-	GetRun(ctx context.Context, runID string) (store.RunDetail, error)
-	InterruptStepForShutdown(ctx context.Context, runID, name string, code reason.Code) error
-	RequeueRunAfterDrain(ctx context.Context, runID string) error
+// leaseDrainer names what a clean handback needs from the engine and the
+// store. The engine supplies the fencing token it believes it holds; the
+// store checks that belief against the row inside its own transaction, so a
+// frozen daemon thawing mid drain can never disturb whatever took its place.
+type leaseDrainer interface {
+	HeldLease(runID string) (store.LeaseRef, bool)
+	DrainRun(ctx context.Context, runID string, ref store.LeaseRef, code reason.Code) (bool, error)
 }
 
-func newExecutorPool(st *store.Store, eng *engine.Engine, log *slog.Logger, workers int) *executorPool {
+// newExecutorPool wires the pool. The engine fills both seams: it is the run
+// driver and the lease drainer.
+func newExecutorPool(eng runDriver, drain leaseDrainer, log *slog.Logger, workers int) *executorPool {
 	return &executorPool{
-		st:    st,
 		eng:   eng,
+		drain: drain,
 		clk:   clock.System(),
 		log:   log,
 		slots: make(chan struct{}, workers),
@@ -82,11 +82,12 @@ func (p *executorPool) execute(ctx context.Context, runID string) {
 	if _, err := p.eng.ExecuteRun(ctx, runID); err != nil {
 		// The expected shape here is the drain itself: the kill
 		// answered a dead context, and the verdict write answers to
-		// the same dead context and loses. That is why the handback
-		// below exists, so it stays quiet. Any other error means the
-		// engine gave up on its own and someone should hear why.
-		if errors.Is(err, context.Canceled) {
-			p.log.Debug("the executor stopped on a cancelled context",
+		// the same dead context and loses. A lost lease reads the same
+		// way and stays quiet too; the discard event already tells the
+		// story. Any other error means the engine gave up on its own
+		// and someone should hear why.
+		if errors.Is(err, context.Canceled) || errors.Is(err, store.ErrLeaseLost) {
+			p.log.Debug("the executor stopped without a verdict",
 				"run", runID, "error", err)
 		} else {
 			p.log.Warn("the executor stopped with an error",
@@ -105,11 +106,11 @@ func (p *executorPool) execute(ctx context.Context, runID string) {
 // ride out a transient without letting a wedged writer hold the stop open.
 const handBackAttempts = 3
 
-// handBackWhenOwed hands the run back when, and only when, the row says the
-// claim is still standing. It returns nil once the row is out of "running":
-// finished runs stay finished, queued runs were never ours, and a run another
-// attempt already handed back needs nothing. An error means the row may still
-// say running after every try, which the caller reports loudly.
+// handBackWhenOwed hands the run back when, and only when, the engine still
+// believes it holds the lease and the row agrees. It returns nil once nothing
+// more is owed: finished runs stay finished, runs another holder took were
+// never ours to give back. An error means the row may still say running after
+// every try, which the caller reports loudly.
 func (p *executorPool) handBackWhenOwed(ctx context.Context, runID string) error {
 	var lastErr error
 	for attempt := 0; attempt < handBackAttempts; attempt++ {
@@ -121,50 +122,23 @@ func (p *executorPool) handBackWhenOwed(ctx context.Context, runID string) error
 			timer := p.clk.NewTimer(time.Duration(attempt) * 5 * time.Millisecond)
 			<-timer.C
 		}
-		detail, err := p.st.GetRun(ctx, runID)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		state, err := model.ParseRunState(detail.Run.State)
-		if err != nil {
-			return err
-		}
-		if state != model.RunRunning {
+		ref, held := p.drain.HeldLease(runID)
+		if !held {
 			return nil
 		}
-		if err := p.releaseForDrain(ctx, runID); err != nil {
+		handed, err := p.drain.DrainRun(ctx, runID, ref, reason.RUNInterruptedShutdown)
+		if err != nil {
 			lastErr = err
 			continue
+		}
+		if !handed {
+			// The row moved under us between the run ending and this
+			// call: nothing of ours is standing any more.
+			return nil
 		}
 		return nil
 	}
 	return lastErr
-}
-
-// releaseForDrain interrupts every step still running and requeues the run.
-// The two writes go through the machines, in this order: steps first, so the
-// intermediate state is an ordinary between-steps pause, then the run.
-func (p *executorPool) releaseForDrain(ctx context.Context, runID string) error {
-	detail, err := p.st.GetRun(ctx, runID)
-	if err != nil {
-		return err
-	}
-	if detail.Run.State != string(model.RunRunning) {
-		// The executor never got to claim it, or the run already
-		// ended; there is nothing of ours to hand back.
-		return nil
-	}
-	for _, step := range detail.Steps {
-		if model.StepState(step.State) != model.StepRunning {
-			continue
-		}
-		if err := p.st.InterruptStepForShutdown(ctx, runID, step.Name,
-			reason.RUNInterruptedShutdown); err != nil {
-			return err
-		}
-	}
-	return p.st.RequeueRunAfterDrain(ctx, runID)
 }
 
 // drained returns a channel closed when every submitted run has finished,

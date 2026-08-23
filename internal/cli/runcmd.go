@@ -143,6 +143,13 @@ func runRun(ctx context.Context, env Env, g *globals, out *ui, jobName string, f
 		Clock:   clkOf(env),
 		Owner:   actor,
 	}
+	// A foreground run renews its lease from its own goroutine: a long step
+	// must never cost the executor its claim just because the renewal could
+	// not run inside the work (11 R3).
+	hbCtx, stopRenewals := context.WithCancel(execCtx)
+	defer stopRenewals()
+	go func() { _ = executor.RunLeaseRenewals(hbCtx) }()
+
 	state, err := executor.ExecuteRun(execCtx, queued.Run.ID)
 	close(finished)
 	if err != nil {

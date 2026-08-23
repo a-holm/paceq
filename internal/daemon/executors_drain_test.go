@@ -22,54 +22,64 @@ import (
 // once while the handback is landing. In both, the row, not the error, is
 // what decides whether work is owed.
 
-// stubEngine drives nothing and reports what it is told. It stands in for an
-// engine that returned mid-flight, which is exactly what the real one does
-// when the drain cut its context between the kill and the verdict write.
+// stubEngine drives nothing and holds exactly one believed lease. It stands
+// in for an engine that returned mid-flight, which is exactly what the real
+// one does when the drain cut its context between the kill and the verdict
+// write: the keeper still has the entry until release runs, and the handback
+// is what clears it from the row.
 type stubEngine struct {
-	err error
+	ref  store.LeaseRef
+	held bool
+	err  error
+
+	// st forwards the handback to the real store when set.
+	st *store.Store
+
+	drains int
 }
 
-func (s stubEngine) ExecuteRun(context.Context, string) (string, error) {
+func (s *stubEngine) ExecuteRun(context.Context, string) (string, error) {
 	return "", s.err
 }
 
-// countingStore forwards to a real store and counts the handback calls, so a
-// test can prove both that a retry happened and that a finished run was not
-// touched at all.
-type countingStore struct {
-	*store.Store
-	getRuns   int
-	interrupt int
-	requeues  int
-
-	failFirstGetRun int
+func (s *stubEngine) HeldLease(string) (store.LeaseRef, bool) {
+	return s.ref, s.held
 }
 
-func (c *countingStore) GetRun(ctx context.Context, runID string) (store.RunDetail, error) {
-	c.getRuns++
-	if c.failFirstGetRun > 0 {
-		c.failFirstGetRun--
-		return store.RunDetail{}, errors.New("injected transient read failure")
+func (s *stubEngine) DrainRun(ctx context.Context, runID string, ref store.LeaseRef, code reason.Code) (bool, error) {
+	s.drains++
+	if s.err != nil && s.drains == 1 {
+		return false, s.err
 	}
-	return c.Store.GetRun(ctx, runID)
+	if s.st != nil {
+		return s.st.DrainRun(ctx, runID, ref, code)
+	}
+	return false, nil
 }
 
-func (c *countingStore) InterruptStepForShutdown(ctx context.Context, runID, name string, code reason.Code) error {
-	c.interrupt++
-	return c.Store.InterruptStepForShutdown(ctx, runID, name, code)
+// storeDrainer forwards every handback to a real store under one fixed,
+// believed token. It stands in for an engine whose keeper still holds the
+// entry, without dragging a whole engine into the test.
+type storeDrainer struct {
+	st   *store.Store
+	ref  store.LeaseRef
+	held bool
 }
 
-func (c *countingStore) RequeueRunAfterDrain(ctx context.Context, runID string) error {
-	c.requeues++
-	return c.Store.RequeueRunAfterDrain(ctx, runID)
+func (d storeDrainer) HeldLease(string) (store.LeaseRef, bool) {
+	return d.ref, d.held
 }
 
-func newPoolFor(t *testing.T, eng runDriver, st drainStore) *executorPool {
+func (d storeDrainer) DrainRun(ctx context.Context, runID string, ref store.LeaseRef, code reason.Code) (bool, error) {
+	return d.st.DrainRun(ctx, runID, ref, code)
+}
+
+func newPoolFor(t *testing.T, eng runDriver, drainer leaseDrainer) *executorPool {
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	return &executorPool{
-		st:    st,
 		eng:   eng,
+		drain: drainer,
 		clk:   clock.System(),
 		log:   log,
 		slots: make(chan struct{}, 1),
@@ -80,15 +90,17 @@ func newPoolFor(t *testing.T, eng runDriver, st drainStore) *executorPool {
 // of the loaded suite: the executor died after claiming and starting the step
 // but before any verdict, leaving attempt 1 and an empty reason on a running
 // row. Whatever the engine reported and whatever the goroutine's context
-// says, the row still says running, so the handback is owed. The background
-// context is deliberate: the old code skipped the handback whenever its own
-// context survived, which is how the row got stranded.
+// says, the row still says running and the token still says ours, so the
+// handback is owed. The background context is deliberate: the old code
+// skipped the handback whenever its own context survived, which is how the
+// row got stranded.
 func TestThePoolHandsBackARunItsEngineAbandonedMidFlight(t *testing.T) {
 	clk := clock.NewFake(time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC))
 	st := openServeStore(t, clk)
 	runID := seedClaimedRunningRun(t, st)
 
-	p := newPoolFor(t, stubEngine{err: errors.New("record the verdict: context canceled")}, st)
+	drainer := &stubEngine{ref: store.LeaseRef{Owner: "serve:test", Epoch: 1}, held: true, st: st}
+	p := newPoolFor(t, &stubEngine{err: errors.New("record the verdict: context canceled")}, drainer)
 	p.execute(context.Background(), runID)
 
 	detail, err := st.GetRun(context.Background(), runID)
@@ -101,6 +113,10 @@ func TestThePoolHandsBackARunItsEngineAbandonedMidFlight(t *testing.T) {
 	}
 	if detail.Run.DeferReason != model.DeferReasonAfterShutdown {
 		t.Errorf("defer_reason is %q, want %q", detail.Run.DeferReason, model.DeferReasonAfterShutdown)
+	}
+	if detail.Run.LeaseEpoch != 2 {
+		t.Errorf("lease_epoch is %d, want 2: the drained attempt stays fenced out",
+			detail.Run.LeaseEpoch)
 	}
 	if len(detail.Steps) != 1 {
 		t.Fatalf("%d steps came back, want 1", len(detail.Steps))
@@ -122,13 +138,19 @@ func TestAHandoverThatStumblesOnceStillLands(t *testing.T) {
 	st := openServeStore(t, clk)
 	runID := seedClaimedRunningRun(t, st)
 
-	cs := &countingStore{Store: st, failFirstGetRun: 1}
-	p := newPoolFor(t, stubEngine{}, cs)
+	drainer := &stubEngine{
+		ref:  store.LeaseRef{Owner: "serve:test", Epoch: 1},
+		held: true,
+		err:  errors.New("injected transient write failure"),
+		st:   st,
+	}
+	p := newPoolFor(t, &stubEngine{}, drainer)
 	if err := p.handBackWhenOwed(context.Background(), runID); err != nil {
 		t.Fatalf("the handback gave up: %v", err)
 	}
-	if cs.getRuns < 2 {
-		t.Errorf("%d reads, want at least 2: the first failed and the second must happen", cs.getRuns)
+	if drainer.drains < 2 {
+		t.Errorf("%d drains, want at least 2: the first failed and the second must happen",
+			drainer.drains)
 	}
 
 	detail, err := st.GetRun(context.Background(), runID)
@@ -142,7 +164,7 @@ func TestAHandoverThatStumblesOnceStillLands(t *testing.T) {
 }
 
 // TestAFinishedRunIsNeverTouchedByTheHandbackCheck is the other edge of the
-// promise: a run that is not running owes nothing, and the check must not
+// promise: an engine that holds nothing owes nothing, and the check must not
 // write a single row to say so.
 func TestAFinishedRunIsNeverTouchedByTheHandbackCheck(t *testing.T) {
 	clk := clock.NewFake(time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC))
@@ -160,14 +182,13 @@ func TestAFinishedRunIsNeverTouchedByTheHandbackCheck(t *testing.T) {
 		t.Fatalf("materialise: %v", err)
 	}
 
-	cs := &countingStore{Store: st}
-	p := newPoolFor(t, stubEngine{}, cs)
+	drainer := &stubEngine{}
+	p := newPoolFor(t, &stubEngine{}, drainer)
 	if err := p.handBackWhenOwed(ctx, res.Run.ID); err != nil {
-		t.Fatalf("a queued run owes nothing, got %v", err)
+		t.Fatalf("a run we do not hold owes nothing, got %v", err)
 	}
-	if cs.interrupt != 0 || cs.requeues != 0 {
-		t.Errorf("the check wrote rows for a run it did not owe: interrupt=%d requeue=%d",
-			cs.interrupt, cs.requeues)
+	if drainer.drains != 0 {
+		t.Errorf("the check drained %d times for a lease it never held", drainer.drains)
 	}
 	detail, err := st.GetRun(ctx, res.Run.ID)
 	if err != nil {
@@ -175,6 +196,39 @@ func TestAFinishedRunIsNeverTouchedByTheHandbackCheck(t *testing.T) {
 	}
 	if detail.Run.State != string(model.RunQueued) {
 		t.Errorf("the unclaimed run moved to %s", detail.Run.State)
+	}
+}
+
+// TestAStaleBeliefDrainsNothing pins the fence on the drain path itself: a
+// daemon that froze, lost its run to the reaper and thawed mid stop believes
+// it still holds the lease, but the row disagrees inside the handback
+// transaction, so nothing of the old attempt lands.
+func TestAStaleBeliefDrainsNothing(t *testing.T) {
+	clk := clock.NewFake(time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC))
+	st := openServeStore(t, clk)
+	runID := seedClaimedRunningRun(t, st)
+
+	// The reaper takes the run while our belief still names us as holder.
+	clk.Advance(10 * time.Minute)
+	reaped, err := st.ReapExpiredRuns(context.Background(), store.ReapOptions{})
+	if err != nil {
+		t.Fatalf("reap: %v", err)
+	}
+	if len(reaped) != 1 {
+		t.Fatalf("reaped %+v, want the run", reaped)
+	}
+
+	drainer := &stubEngine{ref: store.LeaseRef{Owner: "serve:test", Epoch: 1}, held: true, st: st}
+	p := newPoolFor(t, &stubEngine{}, drainer)
+	if err := p.handBackWhenOwed(context.Background(), runID); err != nil {
+		t.Fatalf("a stale handback must be quiet, got %v", err)
+	}
+	detail, err := st.GetRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if detail.Run.State != string(model.RunQueued) || detail.Run.LeaseEpoch != 2 {
+		t.Errorf("the stale drain moved the reaper's work: %+v", detail.Run)
 	}
 }
 
@@ -202,6 +256,9 @@ func requireDrainEvents(t *testing.T, st *store.Store, runID string) {
 	}
 }
 
-// The pool keeps taking the real engine through its interface; this compile
-// time check pins that the production wiring never drifts away from it.
-var _ runDriver = (*engine.Engine)(nil)
+// The pool keeps taking the real engine through its interfaces; these compile
+// time checks pin that the production wiring never drifts away from them.
+var (
+	_ runDriver    = (*engine.Engine)(nil)
+	_ leaseDrainer = (*engine.Engine)(nil)
+)

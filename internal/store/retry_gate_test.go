@@ -41,10 +41,10 @@ func TestARetryPlanParksTheStepPastNextAttemptAt(t *testing.T) {
 	ctx := context.Background()
 	s, clk := coreStore(t)
 	runID := aRetryingRun(t, s)
-	if _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: testOwner}); err != nil {
+	if _, _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: testOwner}); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if err := s.StartStep(ctx, runID, "build"); err != nil {
+	if err := s.StartStep(ctx, runID, "build", store.LeaseRef{Owner: testOwner, Epoch: 1}); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	clk.Advance(time.Second)
@@ -61,7 +61,7 @@ func TestARetryPlanParksTheStepPastNextAttemptAt(t *testing.T) {
 			DetailJSON: `{"attempt":1,"backoff_ms":2000,"next_attempt_at":` +
 				i64(due.UnixMilli()) + `,"transient":true}`,
 		},
-	})
+	}, store.LeaseRef{Owner: testOwner, Epoch: 1})
 	if err != nil {
 		t.Fatalf("RecordStepOutcome: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestARetryPlanParksTheStepPastNextAttemptAt(t *testing.T) {
 		t.Errorf("past due: NextRetryWait = (%s, %v) err(%v), want zero and waiting", wait, waiting, err)
 	}
 
-	if err := s.StartStep(ctx, runID, "build"); err != nil {
+	if err := s.StartStep(ctx, runID, "build", store.LeaseRef{Owner: testOwner, Epoch: 1}); err != nil {
 		t.Fatalf("restart: %v", err)
 	}
 	step = mustStep(t, ctx, s, runID, "build")
@@ -139,10 +139,10 @@ func TestWithoutAPlanTheRetryIsImmediatelyRunnable(t *testing.T) {
 	ctx := context.Background()
 	s, clk := coreStore(t)
 	runID := aRetryingRun(t, s)
-	if _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: testOwner}); err != nil {
+	if _, _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: testOwner}); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if err := s.StartStep(ctx, runID, "build"); err != nil {
+	if err := s.StartStep(ctx, runID, "build", store.LeaseRef{Owner: testOwner, Epoch: 1}); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 
@@ -150,7 +150,7 @@ func TestWithoutAPlanTheRetryIsImmediatelyRunnable(t *testing.T) {
 		Event:      "step_failed",
 		ReasonCode: reason.STEPFailedNonzeroExit,
 		FinishedAt: clk.Now(),
-	})
+	}, store.LeaseRef{Owner: testOwner, Epoch: 1})
 	if err != nil {
 		t.Fatalf("RecordStepOutcome: %v", err)
 	}

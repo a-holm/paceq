@@ -49,12 +49,51 @@ type Engine struct {
 
 	LeaseTTL time.Duration
 
+	// RenewInterval is how often held leases renew, in one batched
+	// transaction for all of them. Zero means a third of the ttl, which is
+	// the ratio that tolerates two lost renewals before ownership is even in
+	// question.
+	RenewInterval time.Duration
+
+	// ClockSkewAllowance is how long past the expiry the reaper waits before
+	// it takes a run from its holder. Zero means the store's default.
+	ClockSkewAllowance time.Duration
+
+	// RequeueBackoff is how long a reaped run waits before it is due again.
+	// Zero means the store's default.
+	RequeueBackoff time.Duration
+
+	// MaxCrashCount is the poison quarantine line: a run that has outlived
+	// this many executors fails on the next reap instead of requeueing.
+	// Zero means the store's default of five.
+	MaxCrashCount int
+
 	// Rnd is the source full-jitter draws from. Nil means one seeded
 	// from system entropy on first use. Tests inject a seeded source so
 	// backoff sequences replay exactly.
 	Rnd *rand.Rand
 
 	rndOnce sync.Once
+
+	// mu and held are the lease keeper: every claim this process holds, with
+	// the fencing token it was granted. The renewal goroutine reads them; an
+	// executor registers on claim and forgets on exit.
+	mu   sync.Mutex
+	held map[string]*heldRun
+}
+
+func (e *Engine) ttl() time.Duration {
+	if e.LeaseTTL > 0 {
+		return e.LeaseTTL
+	}
+	return store.DefaultRunLeaseTTL
+}
+
+func (e *Engine) renewEvery() time.Duration {
+	if e.RenewInterval > 0 {
+		return e.RenewInterval
+	}
+	return e.ttl() / 3
 }
 
 // rnd returns the injected jitter source, creating the default one on first

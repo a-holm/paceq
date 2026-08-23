@@ -29,8 +29,8 @@ func TestConfigDefaultsCarryTheSketch(t *testing.T) {
 	if got := c.workerCount(); got != runtime.NumCPU() {
 		t.Errorf("default worker count is %d, want one per CPU (%d)", got, runtime.NumCPU())
 	}
-	if got := c.leaseTTL(); got != store.DefaultLeaseTTL {
-		t.Errorf("default lease ttl is %s, want the store default (%s)", got, store.DefaultLeaseTTL)
+	if got := c.leaseTTL(); got != store.DefaultRunLeaseTTL {
+		t.Errorf("default lease ttl is %s, want sixty seconds (%s)", got, store.DefaultRunLeaseTTL)
 	}
 
 	// Every explicit value wins over its default, so an operator flag can

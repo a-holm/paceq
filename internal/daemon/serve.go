@@ -9,6 +9,7 @@ import (
 	"github.com/a-holm/paceq/internal/clock"
 	"github.com/a-holm/paceq/internal/engine"
 	"github.com/a-holm/paceq/internal/faults"
+	"github.com/a-holm/paceq/internal/leases"
 	"github.com/a-holm/paceq/internal/logsink"
 	"github.com/a-holm/paceq/internal/model"
 	"github.com/a-holm/paceq/internal/notify"
@@ -66,7 +67,8 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 	// must be able to let the intake die first while process groups are
 	// still draining, which is the whole two phase idea.
 	execCtx, stopExec := context.WithCancel(context.WithoutCancel(ctx))
-	pool := newExecutorPool(st, newEngine(cfg, st, clk), log, cfg.workerCount())
+	eng := newEngine(cfg, st, clk)
+	pool := newExecutorPool(eng, eng, log, cfg.workerCount())
 
 	grp := newGroup(ctx)
 	intakeCtx, stopIntake := context.WithCancel(grp.ctx)
@@ -100,8 +102,25 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 			return pool.submit(execCtx, runID)
 		})
 	})
+	// The renewal goroutine lives with the group, not with the intake: the
+	// executors need their leases renewed during the drain, right up until
+	// the last process group comes down.
 	launch(grp.ctx, nil, func(c context.Context) error {
-		return reaperLoop(c, d, tickEvery)
+		return eng.RunLeaseRenewals(c)
+	})
+	launch(grp.ctx, nil, func(c context.Context) error {
+		// One reaper at a time, decided by the role lease; whoever loses
+		// leadership has its sweep cancelled underneath it. The loop body is
+		// the ordinary loop shape, so the log carries its start line like
+		// every other loop's.
+		return leases.RunAsLeader(c, st, leases.Options{
+			Name:   "reaper",
+			Holder: cfg.owner(),
+			Clock:  clk,
+			Log:    log,
+		}, func(body context.Context, _ int64) error {
+			return reaperLoop(body, d, cfg.reapEvery(), eng)
+		})
 	})
 	launch(grp.ctx, nil, func(c context.Context) error {
 		return janitorLoop(c, d, tickEvery)

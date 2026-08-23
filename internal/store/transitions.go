@@ -31,11 +31,6 @@ var (
 	ErrStepNotPending = errors.New("the step is not pending")
 )
 
-// DefaultLeaseTTL is the lease a claim takes when the caller names none. M1
-// has one executor per state directory and no reaper, so the expiry is a
-// fencing formality; M2 makes it a real deadline.
-const DefaultLeaseTTL = 5 * time.Minute
-
 // LeaseInput says who claims a run and for how long.
 type LeaseInput struct {
 	// Owner is the executor's name. Every later write to this run has to
@@ -43,7 +38,7 @@ type LeaseInput struct {
 	// not a decoration.
 	Owner string
 
-	// TTL is how long the claim lasts. Zero means DefaultLeaseTTL.
+	// TTL is how long the claim lasts. Zero means DefaultRunLeaseTTL.
 	TTL time.Duration
 }
 
@@ -56,94 +51,6 @@ type CancelRequest struct {
 	CancelReason      string
 }
 
-// ClaimRun takes a queued run for execution. The machine decides which way
-// the claim goes: a run whose cancellation was requested before it ever
-// started is cancelled instead of started, which is the cheapest cancellation
-// in the system, because there is no process group to kill.
-//
-// A run that is not queued, not yet available or already claimed is
-// ErrNotClaimable. The claim stamps started_at, takes the lease and writes
-// the run.started event in the transaction that moves the state.
-func (s *Store) ClaimRun(ctx context.Context, runID string, in LeaseInput) (string, error) {
-	if in.TTL <= 0 {
-		in.TTL = DefaultLeaseTTL
-	}
-	now := s.clk.Now().UTC()
-	next := ""
-
-	err := s.withTx(ctx, func(tx *sql.Tx) error {
-		run, err := readRunTx(tx, runID)
-		if err != nil {
-			return err
-		}
-		cur, err := model.ParseRunState(run.State)
-		if err != nil {
-			return err
-		}
-
-		guards := model.Guards{
-			Now:             now.UnixMilli(),
-			AvailableAt:     run.AvailableAt.UnixMilli(),
-			CancelRequested: !run.CancelRequestedAt.IsZero(),
-		}
-		if guards.CancelRequested {
-			// The request is durable and names a person; the run
-			// never started, so CANCELLED_MANUAL is the whole story.
-			guards.ReasonCode = string(reason.RUNCancelledManual)
-		}
-
-		state, effects, err := model.NextRunState(cur, model.EvClaim, guards)
-		if err != nil {
-			return fmt.Errorf("claim run %s: %w", runID, errors.Join(err, ErrNotClaimable))
-		}
-
-		kind := emitKind(effects)
-		switch state {
-		case model.RunRunning:
-			expires := now.Add(in.TTL)
-			next = string(state)
-			return finishTransition(tx, "claim", func() error {
-				_, err := tx.Exec(`UPDATE runs SET state = 'running',
-					lease_owner = ?, lease_epoch = lease_epoch + 1, lease_expires_at = ?,
-					started_at = ?, updated_at = ?
-				WHERE id = ? AND state = 'queued'`,
-					in.Owner, expires.UnixMilli(), now.UnixMilli(), now.UnixMilli(), runID)
-				return err
-			}, tx, RunEvent{
-				RunID: runID, At: now, Kind: kind,
-				FromState: string(cur), ToState: string(state),
-				Actor: in.Owner,
-			})
-		case model.RunCancelled:
-			// The steps never ran; they leave pending the same way any
-			// step leaves pending when its run ends without it, so the
-			// run cannot go terminal over open steps.
-			if err := skipPendingStepsTx(tx, runID, now, string(reason.STEPCancelled)); err != nil {
-				return err
-			}
-			next = string(state)
-			return finishTransition(tx, "claim_cancel", func() error {
-				_, err := tx.Exec(`UPDATE runs SET state = 'cancelled',
-					finished_at = ?, reason_code = ?, updated_at = ?
-				WHERE id = ? AND state = 'queued'`,
-					now.UnixMilli(), string(reason.RUNCancelledManual), now.UnixMilli(), runID)
-				return err
-			}, tx, RunEvent{
-				RunID: runID, At: now, Kind: kind,
-				FromState: string(cur), ToState: string(state),
-				ReasonCode: string(reason.RUNCancelledManual),
-				Actor:      run.CancelRequestedBy,
-			})
-		default:
-			return fmt.Errorf("claim run %s: the machine sent a run to %s", runID, state)
-		}
-	})
-	if err != nil {
-		return "", err
-	}
-	return next, nil
-}
-
 // RequestCancel records that somebody wants the run stopped, durably and
 // before anything is killed. The first request stands: a second one changes
 // nothing, so two people asking at once cannot disagree about who asked or
@@ -154,6 +61,9 @@ func (s *Store) RequestCancel(ctx context.Context, runID, by, why string) (Cance
 	var out CancelRequest
 
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
+		// nolint:fencing: a cancellation request belongs to whoever asks,
+		// not to whoever holds the lease; the flag is monotonic and the
+		// holder is the one who acts on it.
 		result, err := tx.Exec(`UPDATE runs SET
 			cancel_requested_at = COALESCE(cancel_requested_at, ?),
 			cancel_requested_by = COALESCE(cancel_requested_by, ?),
@@ -210,12 +120,19 @@ FROM runs WHERE id = ?`, runID).Scan(&at, &by, &ignored)
 
 // StartStep opens the first attempt of a pending step: running, attempt up by
 // one, started_at stamped, its event in the same transaction. The run has to
-// be running: a step may not move while its run is queued, whatever the step
-// machine alone would allow.
-func (s *Store) StartStep(ctx context.Context, runID, name string) error {
+// be running and still held by the writer at the writer's fencing token: a
+// step may not move while its run is queued, whatever the step machine alone
+// would allow, and it may not move under a lease the writer has lost.
+func (s *Store) StartStep(ctx context.Context, runID, name string, ref LeaseRef) error {
+	if !ref.held() {
+		return fmt.Errorf("start step %s of run %s: no holder was named", name, runID)
+	}
 	now := s.clk.Now().UTC()
 
 	return s.withTx(ctx, func(tx *sql.Tx) error {
+		if err := checkLeaseTx(tx, runID, ref, now); err != nil {
+			return fmt.Errorf("start step %s of run %s: %w", name, runID, err)
+		}
 		run, err := readRunTx(tx, runID)
 		if err != nil {
 			return err
@@ -329,10 +246,15 @@ type StepOutcome struct {
 // at next_attempt_at when the caller attached a RetryPlan, runnable again at
 // once when it did not. The claim gate, not this method, decides when the
 // next attempt may start.
-func (s *Store) RecordStepOutcome(ctx context.Context, runID, name string, out StepOutcome) error {
+//
+// The ref is the fence. A holder writes only while its token still matches;
+// recovery passes the zero ref, which is refused against any live lease. A
+// writer that lost the lease gets ErrLeaseLost and nothing on the row moves.
+func (s *Store) RecordStepOutcome(ctx context.Context, runID, name string, out StepOutcome, ref LeaseRef) error {
+	now := s.clk.Now().UTC()
 	finishedAt := out.FinishedAt
 	if finishedAt.IsZero() {
-		finishedAt = s.clk.Now().UTC()
+		finishedAt = now
 	}
 	detail := out.DetailJSON
 	if detail == "" {
@@ -340,6 +262,9 @@ func (s *Store) RecordStepOutcome(ctx context.Context, runID, name string, out S
 	}
 
 	return s.withTx(ctx, func(tx *sql.Tx) error {
+		if err := checkLeaseTx(tx, runID, ref, now); err != nil {
+			return fmt.Errorf("record %s on step %s of run %s: %w", out.Event, name, runID, err)
+		}
 		step, err := readStepTx(tx, runID, name)
 		if err != nil {
 			return err
@@ -430,13 +355,23 @@ type FinishReason struct {
 // from the machine's guards, which read the step rows inside the same
 // transaction, so the verdict can never disagree with the steps it describes:
 // any failed step fails the run, and a run with a step still open is refused
-// outright. The lease is released here; the owner that lost it cannot finish
-// anything.
-func (s *Store) FinishRun(ctx context.Context, runID, owner string, fr FinishReason) (string, error) {
+// outright. The lease is released here.
+//
+// The verdict is a CAS on the fence: the UPDATE carries owner and epoch, and
+// zero rows affected means the lease was taken over while this writer worked.
+// The refusal comes back as ErrLeaseLost and nothing at all is written: worst
+// case is duplicate work, never duplicate state.
+func (s *Store) FinishRun(ctx context.Context, runID string, ref LeaseRef, fr FinishReason) (string, error) {
+	if !ref.held() {
+		return "", fmt.Errorf("finish run %s: no holder was named", runID)
+	}
 	now := s.clk.Now().UTC()
 	next := ""
 
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
+		if err := checkLeaseTx(tx, runID, ref, now); err != nil {
+			return fmt.Errorf("finish run %s: %w", runID, err)
+		}
 		run, err := readRunTx(tx, runID)
 		if err != nil {
 			return err
@@ -465,7 +400,8 @@ func (s *Store) FinishRun(ctx context.Context, runID, owner string, fr FinishRea
 		}
 
 		guards := model.Guards{
-			LeaseValid:       run.LeaseOwner == owner && (run.LeaseExpiresAt.IsZero() || run.LeaseExpiresAt.After(now)),
+			LeaseValid: run.LeaseOwner == ref.Owner && run.LeaseEpoch == ref.Epoch &&
+				(run.LeaseExpiresAt.IsZero() || run.LeaseExpiresAt.After(now)),
 			AllStepsTerminal: allTerminal,
 			AnyStepFailed:    anyFailed,
 			ReasonCode:       string(fr.Code),
@@ -482,19 +418,29 @@ func (s *Store) FinishRun(ctx context.Context, runID, owner string, fr FinishRea
 			data = "{}"
 		}
 		if err := finishTransition(tx, "finish_run", func() error {
-			_, err := tx.Exec(`UPDATE runs SET state = ?, reason_code = ?, reason_data = ?,
+			result, err := tx.Exec(`UPDATE runs SET state = ?, reason_code = ?, reason_data = ?,
 				finished_at = ?, duration_ms = CASE WHEN started_at IS NULL THEN NULL
 					ELSE ? - started_at END,
 				lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
-			WHERE id = ? AND state = ?`,
+				WHERE id = ? AND state = ? AND lease_owner = ? AND lease_epoch = ?`,
 				string(state), string(fr.Code), data, now.UnixMilli(), now.UnixMilli(),
-				now.UnixMilli(), runID, string(cur))
-			return err
+				now.UnixMilli(), runID, string(cur), ref.Owner, ref.Epoch)
+			if err != nil {
+				return err
+			}
+			written, err := result.RowsAffected()
+			if err != nil {
+				return err
+			}
+			if written == 0 {
+				return fmt.Errorf("finish run %s: %w", runID, ErrLeaseLost)
+			}
+			return nil
 		}, tx, RunEvent{
 			RunID: runID, At: now, Kind: emitKind(effects),
 			FromState: string(cur), ToState: string(state),
 			ReasonCode: string(fr.Code),
-			DetailJSON: data,
+			DetailJSON: mergeEpochDetail(data, ref.Epoch),
 		}); err != nil {
 			return err
 		}
@@ -513,10 +459,17 @@ func (s *Store) FinishRun(ctx context.Context, runID, owner string, fr FinishRea
 // here), the steps that were running are cancelled by their own events, and
 // this closes whatever pending steps remain and then the run itself.
 //
+// The caller must still hold the lease at its token; the write is a CAS like
+// every other result write, so a holder that lost the run while killing the
+// process group cannot cancel over whatever the new owner is doing.
+//
 // It refuses when nobody asked: a run nobody asked to cancel is never
 // cancelled, whatever the caller claims. The event names the person who made
 // the request, not the executor that observed it.
-func (s *Store) ObserveRunCancel(ctx context.Context, runID, owner, actor string, code reason.Code) error {
+func (s *Store) ObserveRunCancel(ctx context.Context, runID string, ref LeaseRef, actor string, code reason.Code) error {
+	if !ref.held() {
+		return fmt.Errorf("observe the cancellation of run %s: no holder was named", runID)
+	}
 	now := s.clk.Now().UTC()
 
 	return s.withTx(ctx, func(tx *sql.Tx) error {
@@ -527,13 +480,16 @@ func (s *Store) ObserveRunCancel(ctx context.Context, runID, owner, actor string
 		if run.CancelRequestedAt.IsZero() {
 			return fmt.Errorf("observe the cancellation of run %s: nobody requested one", runID)
 		}
+		if err := checkLeaseTx(tx, runID, ref, now); err != nil {
+			return fmt.Errorf("observe the cancellation of run %s: %w", runID, err)
+		}
 		cur, err := model.ParseRunState(run.State)
 		if err != nil {
 			return err
 		}
 
 		guards := model.Guards{
-			LeaseValid: run.LeaseOwner == owner && (run.LeaseExpiresAt.IsZero() || run.LeaseExpiresAt.After(now)),
+			LeaseValid: true,
 			ReasonCode: string(code),
 		}
 		state, effects, err := model.NextRunState(cur, model.EvCancelObserved, guards)
@@ -545,17 +501,29 @@ func (s *Store) ObserveRunCancel(ctx context.Context, runID, owner, actor string
 			return err
 		}
 		return finishTransition(tx, "observe_cancel", func() error {
-			_, err := tx.Exec(`UPDATE runs SET state = 'cancelled',
+			result, err := tx.Exec(`UPDATE runs SET state = 'cancelled',
 				finished_at = ?, reason_code = ?, reason_data = ?,
 				lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
-			WHERE id = ? AND state = ?`,
-				now.UnixMilli(), string(code), "{}", now.UnixMilli(), runID, string(cur))
-			return err
+			WHERE id = ? AND state = ? AND lease_owner = ? AND lease_epoch = ?`,
+				now.UnixMilli(), string(code), "{}", now.UnixMilli(),
+				runID, string(cur), ref.Owner, ref.Epoch)
+			if err != nil {
+				return err
+			}
+			written, err := result.RowsAffected()
+			if err != nil {
+				return err
+			}
+			if written == 0 {
+				return fmt.Errorf("observe the cancellation of run %s: %w", runID, ErrLeaseLost)
+			}
+			return nil
 		}, tx, RunEvent{
 			RunID: runID, At: now, Kind: emitKind(effects),
 			FromState: string(cur), ToState: string(state),
 			ReasonCode: string(code),
 			Actor:      actor,
+			DetailJSON: epochDetail(ref.Epoch),
 		})
 	})
 }
@@ -672,6 +640,9 @@ func skipPendingStepsTx(tx *sql.Tx, runID string, now time.Time, code string) er
 			return fmt.Errorf("skip step %s of run %s: %w", name, runID, err)
 		}
 		if err := finishTransition(tx, "skip_pending", func() error {
+			// nolint:fencing: the caller's transaction already checked the
+			// holder's token, or the run is queued and has no lease to check;
+			// steps carry no token of their own.
 			_, err := tx.Exec(`UPDATE steps SET state = 'skipped', finished_at = ?,
 				reason_code = ?, reason_data = '{}'
 			WHERE run_id = ? AND name = ? AND state = 'pending'`,
@@ -726,15 +697,16 @@ func readRunTx(tx *sql.Tx, runID string) (Run, error) {
 		leaseOwner, cancelBy, cancelWhy      sql.NullString
 		scheduledFor, startedAt, finishedAt  sql.NullInt64
 		leaseExpiresAt, cancelRequestedAt    sql.NullInt64
+		heartbeatAt                          sql.NullInt64
 		availableAt, createdAt, updatedAt    int64
-		leaseEpoch                           int64
+		leaseEpoch, crashCount               int64
 	)
 	err := tx.QueryRow(`SELECT `+runColumns+` FROM runs WHERE id = ?`, runID).Scan(
 		&run.ID, &run.JobName, &run.JobVersionID, &trigger, &run.Origin,
 		&runKey, &run.State, &concurrency, &availableAt, &deferReason, &scheduledFor, &params,
 		&run.Attempt, &run.MaxAttempts, &leaseOwner, &leaseEpoch, &leaseExpiresAt,
-		&cancelRequestedAt, &cancelBy, &cancelWhy, &reasonCode, &reasonText, &reasonData,
-		&failure, &createdAt, &startedAt, &finishedAt, &updatedAt)
+		&heartbeatAt, &cancelRequestedAt, &cancelBy, &cancelWhy, &reasonCode, &reasonText,
+		&reasonData, &failure, &crashCount, &createdAt, &startedAt, &finishedAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Run{}, fmt.Errorf("look up run %q: %w", runID, ErrRunNotFound)
 	}
@@ -753,6 +725,8 @@ func readRunTx(tx *sql.Tx, runID string) (Run, error) {
 	run.LeaseOwner = leaseOwner.String
 	run.LeaseEpoch = leaseEpoch
 	run.LeaseExpiresAt = timeOrZero(leaseExpiresAt)
+	run.HeartbeatAt = timeOrZero(heartbeatAt)
+	run.CrashCount = int(crashCount)
 	if cancelRequestedAt.Valid {
 		run.CancelRequestedAt = time.UnixMilli(cancelRequestedAt.Int64).UTC()
 	}
@@ -870,94 +844,114 @@ func (s *Store) RequeueCrashedRun(ctx context.Context, runID string) error {
 			return fmt.Errorf("requeue run %s: %w", runID, err)
 		}
 		if state != model.RunQueued {
-			// M1 carries no poison budget, so the machine always
-			// requeues here. A refusal to believe that is a bug,
+			// M1 carries no poison budget here; startup recovery requeues
+			// whatever it converges on, and the running reaper owns the
+			// quarantine decision. A refusal to believe that is a bug,
 			// not a state.
 			return fmt.Errorf("requeue run %s: the machine sent a running run to %s", runID, state)
 		}
 
 		return finishTransition(tx, "requeue_crashed", func() error {
-			_, err := tx.Exec(`UPDATE runs SET state = 'queued',
+			result, err := tx.Exec(`UPDATE runs SET state = 'queued',
 				lease_owner = NULL, lease_expires_at = NULL,
 				lease_epoch = lease_epoch + 1, crash_count = crash_count + 1,
 				defer_reason = ?, available_at = ?, updated_at = ?
-			WHERE id = ? AND state = 'running'`,
-				model.DeferReasonAfterCrash, now.UnixMilli(), now.UnixMilli(), runID)
-			return err
+				WHERE id = ? AND state = 'running' AND lease_epoch = ?`,
+				model.DeferReasonAfterCrash, now.UnixMilli(), now.UnixMilli(),
+				runID, run.LeaseEpoch)
+			if err != nil {
+				return err
+			}
+			written, err := result.RowsAffected()
+			if err != nil {
+				return err
+			}
+			if written == 0 {
+				return fmt.Errorf("requeue run %s: %w", runID, ErrLeaseLost)
+			}
+			return nil
 		}, tx, RunEvent{
 			RunID: runID, At: now, Kind: emitKind(effects),
 			FromState: string(cur), ToState: string(state),
-			DetailJSON: `{"defer_reason":"` + model.DeferReasonAfterCrash + `"}`,
+			DetailJSON: mergeEpochDetail(`{"defer_reason":"`+model.DeferReasonAfterCrash+`"}`, run.LeaseEpoch+1),
 		})
 	})
 }
 
-// InterruptStepForShutdown puts one running step back to pending with its
-// attempt restored (05 section 3.2, point 4): the attempt was cut short by the
-// daemon's own stop, produced no verdict, and must not spend the retry budget.
-// The step becomes runnable again at once, so the next executor claims it
-// without ceremony.
-//
-// The machine refuses anything that is not a running step, and the event row
-// names code, which for a daemon drain is RUN_INTERRUPTED_SHUTDOWN.
-func (s *Store) InterruptStepForShutdown(ctx context.Context, runID, name string, code reason.Code) error {
-	now := s.clk.Now().UTC()
-
-	return s.withTx(ctx, func(tx *sql.Tx) error {
-		step, err := readStepTx(tx, runID, name)
-		if err != nil {
-			return err
-		}
-		cur, err := model.ParseStepState(step.State)
-		if err != nil {
-			return err
-		}
-
-		state, effects, err := model.NextStepState(cur, model.EvShutdownDrain, model.Guards{
-			ReasonCode: string(code),
-		})
-		if err != nil {
-			return fmt.Errorf("interrupt step %s of run %s: %w", name, runID, err)
-		}
-
-		return finishTransition(tx, "interrupt_step", func() error {
-			_, err := tx.Exec(`UPDATE steps SET state = 'pending',
-				attempt = attempt - 1,
-				reason_code = ?, next_attempt_at = ?, finished_at = NULL,
-				duration_ms = NULL
-				WHERE run_id = ? AND name = ? AND state = 'running'`,
-				string(code), now.UnixMilli(), runID, name)
-			return err
-		}, tx, RunEvent{
-			RunID: runID, StepName: name, At: now, Kind: emitKind(effects),
-			FromState: string(cur), ToState: string(state),
-			ReasonCode: string(code),
-			DetailJSON: `{"why":"daemon_stop"}`,
-		})
-	})
-}
-
-// RequeueRunAfterDrain hands a claimed run back to the queue at a clean stop.
-// It is the mirror of RequeueCrashedRun: here the caller still holds the lease
-// it is giving up, so the guard is inverted, and no crash is counted, because
-// the executor left on purpose.
+// DrainRun hands a claimed run back to the queue at a clean stop. It is the
+// whole handback in one transaction: the running steps go back to pending
+// with their attempts restored (05 section 3.2, point 4), because the attempt
+// was cut short by the daemon's own stop and produced no verdict, and then
+// the run itself is requeued without counting a crash, because the executor
+// left on purpose.
 //
 // The epoch still rises, so any writer from the drained attempt stays fenced
 // out, and available_at moves to now so the next executor can claim at once.
-func (s *Store) RequeueRunAfterDrain(ctx context.Context, runID string) error {
+// The CAS decides whether anything is owed: a caller whose lease has moved on
+// gets handed=false and writes nothing.
+func (s *Store) DrainRun(ctx context.Context, runID string, ref LeaseRef, code reason.Code) (bool, error) {
+	if !ref.held() {
+		return false, fmt.Errorf("drain run %s: no holder was named", runID)
+	}
 	now := s.clk.Now().UTC()
 
-	return s.withTx(ctx, func(tx *sql.Tx) error {
+	handed := false
+	err := s.withTx(ctx, func(tx *sql.Tx) error {
 		run, err := readRunTx(tx, runID)
 		if err != nil {
 			return err
+		}
+		// Nothing of ours is out there any more: another holder claimed, or
+		// the reaper took the run. Quietly reporting nothing owed is correct,
+		// not a failure; the row belongs to someone else now.
+		if run.State != string(model.RunRunning) ||
+			run.LeaseOwner != ref.Owner || run.LeaseEpoch != ref.Epoch {
+			return nil
 		}
 		cur, err := model.ParseRunState(run.State)
 		if err != nil {
 			return err
 		}
 
-		held := !run.LeaseExpiresAt.IsZero() && run.LeaseExpiresAt.After(now)
+		steps, err := readStepsTx(tx, runID)
+		if err != nil {
+			return err
+		}
+		for _, step := range steps {
+			if model.StepState(step.State) != model.StepRunning {
+				continue
+			}
+			curStep, err := model.ParseStepState(step.State)
+			if err != nil {
+				return err
+			}
+			state, effects, err := model.NextStepState(curStep,
+				model.EvShutdownDrain, model.Guards{ReasonCode: string(code)})
+			if err != nil {
+				return fmt.Errorf("interrupt step %s of run %s: %w", step.Name, runID, err)
+			}
+			if err := finishTransition(tx, "interrupt_step", func() error {
+				// nolint:fencing: this transaction read the row and matched the
+				// caller's owner and token before writing; the run update below
+				// carries the same CAS, so a stale handback writes nothing.
+				_, err := tx.Exec(`UPDATE steps SET state = 'pending',
+					attempt = attempt - 1,
+					reason_code = ?, next_attempt_at = ?, finished_at = NULL,
+					duration_ms = NULL
+					WHERE run_id = ? AND name = ? AND state = 'running'`,
+					string(code), now.UnixMilli(), runID, step.Name)
+				return err
+			}, tx, RunEvent{
+				RunID: runID, StepName: step.Name, At: now, Kind: emitKind(effects),
+				FromState: string(curStep), ToState: string(state),
+				ReasonCode: string(code),
+				DetailJSON: `{"why":"daemon_stop"}`,
+			}); err != nil {
+				return err
+			}
+		}
+
+		held := run.LeaseExpiresAt.IsZero() || run.LeaseExpiresAt.After(now)
 		state, effects, err := model.NextRunState(cur, model.EvShutdownDrain, model.Guards{
 			LeaseValid: held,
 		})
@@ -968,20 +962,39 @@ func (s *Store) RequeueRunAfterDrain(ctx context.Context, runID string) error {
 			return fmt.Errorf("drain run %s: the machine sent a running run to %s", runID, state)
 		}
 
-		return finishTransition(tx, "requeue_drained", func() error {
-			_, err := tx.Exec(`UPDATE runs SET state = 'queued',
+		if err := finishTransition(tx, "requeue_drained", func() error {
+			result, err := tx.Exec(`UPDATE runs SET state = 'queued',
 				lease_owner = NULL, lease_expires_at = NULL,
 				lease_epoch = lease_epoch + 1,
 				defer_reason = ?, available_at = ?, updated_at = ?
-				WHERE id = ? AND state = 'running'`,
-				model.DeferReasonAfterShutdown, now.UnixMilli(), now.UnixMilli(), runID)
-			return err
+				WHERE id = ? AND state = 'running' AND lease_owner = ? AND lease_epoch = ?`,
+				model.DeferReasonAfterShutdown, now.UnixMilli(), now.UnixMilli(),
+				runID, ref.Owner, ref.Epoch)
+			if err != nil {
+				return err
+			}
+			written, err := result.RowsAffected()
+			if err != nil {
+				return err
+			}
+			if written == 0 {
+				return fmt.Errorf("drain run %s: %w", runID, ErrLeaseLost)
+			}
+			return nil
 		}, tx, RunEvent{
 			RunID: runID, At: now, Kind: emitKind(effects),
 			FromState: string(cur), ToState: string(state),
-			DetailJSON: `{"defer_reason":"` + model.DeferReasonAfterShutdown + `"}`,
-		})
+			DetailJSON: mergeEpochDetail(`{"defer_reason":"`+model.DeferReasonAfterShutdown+`"}`, run.LeaseEpoch+1),
+		}); err != nil {
+			return err
+		}
+		handed = true
+		return nil
 	})
+	if err != nil {
+		return false, err
+	}
+	return handed, nil
 }
 
 // The fault injection writes. Fsck's negative proofs (#75) plant broken rows
@@ -993,6 +1006,8 @@ func (s *Store) RequeueRunAfterDrain(ctx context.Context, runID string) error {
 
 // plantStepPendingTx flips one step of a terminal run back to pending: the
 // row I2 exists for.
+//
+// nolint:fencing: the fault injector's whole job is a deliberate unfenced lie.
 func plantStepPendingTx(tx *sql.Tx, runID, step string) error {
 	_, err := tx.Exec(`UPDATE steps SET state = 'pending', reason_code = NULL
 WHERE run_id = ? AND name = ?`, runID, step)
@@ -1001,6 +1016,8 @@ WHERE run_id = ? AND name = ?`, runID, step)
 
 // plantFirstSucceededStepFailedTx marks a run's first succeeded step failed
 // while the run still says succeeded: the disagreement I10 exists for.
+//
+// nolint:fencing: the fault injector's whole job is a deliberate unfenced lie.
 func plantFirstSucceededStepFailedTx(tx *sql.Tx, runID string) error {
 	_, err := tx.Exec(`UPDATE steps SET state = 'failed'
 WHERE run_id = ? AND state = 'succeeded'`, runID)
@@ -1009,6 +1026,8 @@ WHERE run_id = ? AND state = 'succeeded'`, runID)
 
 // plantStepFinishedBeforeStartedTx moves every finished step's end before
 // its beginning: the shape I13 refuses.
+//
+// nolint:fencing: the fault injector's whole job is a deliberate unfenced lie.
 func plantStepFinishedBeforeStartedTx(tx *sql.Tx) error {
 	_, err := tx.Exec(`UPDATE steps SET finished_at = started_at - 1
 WHERE started_at IS NOT NULL AND finished_at IS NOT NULL`)
@@ -1019,6 +1038,8 @@ WHERE started_at IS NOT NULL AND finished_at IS NOT NULL`)
 // future and clears its defer_reason: a run held back that says no more why.
 // The CHECK constraint refuses this shape, so the caller lifts the checks
 // around the call.
+//
+// nolint:fencing: the fault injector's whole job is a deliberate unfenced lie.
 func plantUnexplainedDeferralTx(tx *sql.Tx, runID string) error {
 	_, err := tx.Exec(`UPDATE runs SET available_at = created_at + 3600000,
 		defer_reason = NULL WHERE id = ?`, runID)
@@ -1027,6 +1048,8 @@ func plantUnexplainedDeferralTx(tx *sql.Tx, runID string) error {
 
 // plantUnexplainedTerminalRunTx clears a terminal run's reason code: the
 // catalogue rule swept along with the invariants.
+//
+// nolint:fencing: the fault injector's whole job is a deliberate unfenced lie.
 func plantUnexplainedTerminalRunTx(tx *sql.Tx, runID string) error {
 	_, err := tx.Exec(`UPDATE runs SET reason_code = '' WHERE id = ?`, runID)
 	return err

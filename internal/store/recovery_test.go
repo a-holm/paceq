@@ -44,7 +44,7 @@ func seedRunningRunWithLease(t *testing.T, ttl time.Duration) (*Store, string) {
 	if err != nil {
 		t.Fatalf("materialise: %v", err)
 	}
-	if _, err := s.ClaimRun(context.Background(), res.Run.ID,
+	if _, _, err := s.ClaimRun(context.Background(), res.Run.ID,
 		LeaseInput{Owner: "exec-doomed", TTL: ttl}); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
@@ -158,16 +158,16 @@ func TestRequeueCrashedRunRefusesATerminalRun(t *testing.T) {
 	// The doomed executor starts its step, finishes it, and finishes the
 	// run before dying in the test's imagination: the point is only that
 	// the run is terminal when recovery is asked about it.
-	if err := s.StartStep(ctx, runID, "only"); err != nil {
+	if err := s.StartStep(ctx, runID, "only", LeaseRef{Owner: "exec-doomed", Epoch: 1}); err != nil {
 		t.Fatalf("start the step: %v", err)
 	}
 	if err := s.RecordStepOutcome(ctx, runID, "only", StepOutcome{
 		Event:      string(model.EvStepSucceeded),
 		ReasonCode: reason.STEPSucceeded,
-	}); err != nil {
+	}, LeaseRef{Owner: "exec-doomed", Epoch: 1}); err != nil {
 		t.Fatalf("record the verdict: %v", err)
 	}
-	if _, err := s.FinishRun(ctx, runID, "exec-doomed",
+	if _, err := s.FinishRun(ctx, runID, LeaseRef{Owner: "exec-doomed", Epoch: 1},
 		FinishReason{Code: reason.RUNSucceeded}); err != nil {
 		t.Fatalf("finish: %v", err)
 	}
