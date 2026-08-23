@@ -186,6 +186,19 @@ const claimTickSQL = `INSERT INTO ticks
 VALUES (?, 'schedule', ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(source_kind, source_name, scheduled_for) DO NOTHING`
 
+// coalesceSkipSQL folds one more identical skipped evaluation into the
+// latest row for this source, but only when that row really is a childless
+// skip with the same reason: a triggered or errored latest row never absorbs,
+// and a status change starts its own row. Empty RETURNING means nothing
+// identical was there to fold into.
+const coalesceSkipSQL = `UPDATE ticks
+   SET repeat_count = repeat_count + 1, last_started_at = ?, finished_at = ?
+ WHERE id = (SELECT id FROM ticks
+              WHERE source_kind = 'schedule' AND source_name = ?
+              ORDER BY started_at DESC LIMIT 1)
+   AND outcome = 'skipped' AND reason_code = ? AND trigger_count = 0
+RETURNING id`
+
 // updateProgressSQL moves the cursor to the fire-time just claimed and names
 // the moment after it as the next due instant. The predicate keeps the cursor
 // monotone: a stale pass from before a handover must never drag it back over
@@ -296,6 +309,37 @@ func (s *Store) MaterializeTick(ctx context.Context, in TickInput) (TickResult, 
 		}
 
 		faults.Point("M2:tick:before_insert")
+
+		// Identical skips coalesce before anything else: the latest row for
+		// this source, if it is an identical childless skip, absorbs this
+		// evaluation as another repeat. Errors and triggers never take this
+		// path, so history only ever folds where nothing happened.
+		//
+		// SEAM (M3 sensors): coalesce_skips is configurable there; schedules
+		// always coalesce, which is the documented default.
+		if outcome == OutcomeSkipped {
+			var absorbed string
+			err := tx.QueryRow(coalesceSkipSQL,
+				at, at, sourceName, string(reasonCode)).Scan(&absorbed)
+			switch {
+			case err == nil:
+				out.Claimed = true
+				out.Coalesced = true
+				if in.UpdateProgress {
+					faults.Point("M2:tick:after_run_before_progress")
+					if _, err := tx.Exec(updateProgressSQL,
+						fireAt.UnixMilli(), in.NextTickAt.UnixMilli(), at, in.Schedule.ID, fireAt.UnixMilli()); err != nil {
+						return fmt.Errorf("advance the cursor of schedule %s: %w", sourceName, err)
+					}
+				}
+				return nil
+			case errors.Is(err, sql.ErrNoRows):
+				// Nothing identical to fold into: fall through to the gate.
+			default:
+				return fmt.Errorf("coalesce the skip of schedule %s: %w", sourceName, err)
+			}
+		}
+
 		res, err := tx.Exec(claimTickSQL,
 			tickID, sourceName, fireAt.UnixMilli(), at, at, outcome,
 			nullIfEmpty(string(reasonCode)), nullIfEmpty(in.ReasonText), nullIfEmpty(in.ReasonData),
