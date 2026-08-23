@@ -134,7 +134,7 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 	launch(grp.ctx, nil, func(c context.Context) error {
 		return janitorLoop(c, d, tickEvery)
 	})
-	stopHealth := startHealthEndpoint(cfg, statuses, log)
+	stopHealth := startHealthEndpoint(cfg, statuses, log, st)
 	launch(grp.ctx, nil, func(c context.Context) error {
 		return heartbeatLoop(c, d, cfg.heartbeatEvery(), st, sess.ID)
 	})
