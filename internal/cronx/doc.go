@@ -28,6 +28,30 @@
 // chronological position so a consumer can record why nothing ran. Absence of
 // a run is not data; a row that says so is.
 //
+// # Chaining Next across a DST seam
+//
+// Next is a point query: the first occurrence strictly after the cursor in
+// the schedule's local timetable order. That order puts wall clock position
+// first and UTC instant second, so around a transition the instants of
+// consecutive results do not always rise, and a loop that chains Next by At
+// cannot reproduce Between there:
+//
+//   - Spring forward: a skipped slot normalises to the same UTC instant as a
+//     later real slot. Between returns both; a chain keyed on the bare
+//     instant can only reach the first of each tied pair. Over Oslo's
+//     2026-03-29 day, Between("*/15 * * * *") returns 100 occurrences while
+//     the chain yields 96.
+//   - Fall back: the second instance of a doubled slot sits at a wall
+//     position between first pass slots whose instants are earlier, so its
+//     successor carries an instant earlier than the cursor. Over Oslo's
+//     2026-10-25 day a naive chain stops at the first doubled slot.
+//
+// This is inherent to a time.Time cursor at a seam: the cursor cannot carry
+// which side of the transition it came from. Consumers that enumerate MUST
+// use Between, the catch-up primitive; Next exists for single lookups such as
+// "next fire after now". The shapes above are pinned by
+// TestNextChainContractAtBothSeams.
+//
 // Interval schedules ("@every 90m") are pure UTC arithmetic anchored to the
 // Unix epoch, so DST never affects them and two daemons always agree.
 //

@@ -163,6 +163,15 @@ func (w *wallPoint) borrowDay() {
 // daylight saving edge between the two. from may carry any location; the
 // returned Occurrence.At is always UTC.
 //
+// Next is a point query, not a chain primitive. A loop that feeds each
+// result's At back into Next loses emissions across a spring forward seam,
+// because a skipped slot and the real slot sharing its instant are
+// indistinguishable from a bare time value, and it steps onto an earlier
+// instant across a fall back seam, where the timetable successor of a doubled
+// slot is the next slot's earlier first pass twin. Enumerate with Between;
+// see "Chaining Next across a DST seam" in the package documentation and the
+// pinned shapes in TestNextChainContractAtBothSeams.
+//
 // For interval schedules the DST policy plays no part: intervals are pure UTC
 // arithmetic on a grid anchored to the Unix epoch.
 func (s Schedule) Next(from time.Time, tz *time.Location, p Policy) (Occurrence, error) {
@@ -191,9 +200,9 @@ func (s Schedule) Prev(from time.Time, tz *time.Location, p Policy) (Occurrence,
 
 // Between returns every occurrence in the half open window (from, to],
 // ordered by the schedule's local timetable, with Skipped occurrences in
-// their place. In UTC terms instants rise throughout except across a spring
-// forward seam, where skipped slots land between the real slots whose
-// instants they share; see occKey.
+// their place. In UTC terms instants rise except at the two documented
+// disorder classes around transitions; see occKey and "Chaining Next across
+// a DST seam" in the package documentation.
 //
 // Between(t, t) is empty by definition of half open, and so is any window
 // where to does not lie after from.
@@ -281,11 +290,14 @@ func noOcc(s Schedule) error {
 // deterministic and split safe: chopping the window anywhere and joining the
 // halves always reproduces the whole.
 //
-// In UTC terms instants rise with one exception: right after a spring
-// forward gap, skipped slots (whose nonexistent wall times normalize into
-// instants the post gap real slots also occupy) sit BETWEEN the real slots
-// around them. Consumers key ticks on the pair of instant and skip reason,
-// or dedupe on their side; the sequence itself stays deterministic.
+// In UTC terms the sequence stays deterministic without rising monotonically:
+// two disorder classes exist around transitions. After a spring forward gap,
+// skipped slots normalise into instants that post gap real slots also occupy,
+// so equal instants appear under two different wall positions. Around a fall
+// back seam, the second instance of a doubled slot sits between first pass
+// slots whose instants are earlier, so consecutive emissions may step
+// backwards in UTC. Consumers key ticks on the pair of instant and skip
+// reason, or dedupe on their side; the sequence itself stays deterministic.
 type occKey struct {
 	pos int64 // monotone encoding of the wall tuple
 	at  time.Time
@@ -427,12 +439,12 @@ type emission struct {
 
 // classifyEmissions implements the documented DST table for one matched wall
 // clock tuple. Detection follows the standard construct-and-read-back trick:
-// Go resolves a nonexistent wall time through the offset before the jump, so
-// the normalized Hour differs from the requested one exactly when the slot
-// fell into a gap, and its value IS the shift target. A duplicate is found by
-// scanning plus and minus one hour, then thirty minutes, for a second instant
-// rendering the same wall clock; Lord Howe shifts by thirty minutes, which is
-// why the scan must not look at full hours only.
+// Go resolves a nonexistent wall time to an instant rendering a different
+// wall exactly when the slot fell into a gap, and the gap landing is
+// reconstructed from the pre jump offset (see the branch below). A duplicate
+// is found by scanning plus and minus one hour, then thirty minutes, for a
+// second instant rendering the same wall clock; Lord Howe shifts by thirty
+// minutes, which is why the scan must not look at full hours only.
 //
 // The result goes into the caller's buffer so a long Between walk does not
 // allocate a slice per matched slot.
@@ -440,13 +452,30 @@ func classifyEmissions(w wallPoint, tz *time.Location, p Policy, buf *[2]emissio
 	t := time.Date(w.y, w.mo, w.d, w.h, w.mi, 0, 0, tz)
 
 	if t.Hour() != w.h || t.Minute() != w.mi {
-		// Spring forward: the wall time does not exist. t is the instant the
-		// requested clock maps to after the jump.
+		// Spring forward: the wall time does not exist. Reconstruct the
+		// instant the requested wall maps to under the offset that applied
+		// just before the jump; that instant is the canonical gap landing
+		// and the policy decides whether it fires for real or carries the
+		// skip mark. Go's own normalization cannot be used directly: it
+		// resolves through the pre jump offset for Oslo (02:15 becomes
+		// 01:15Z, rendering 03:15+02:00) but lands short of the transition
+		// for a midnight jump like Santiago (00:15 becomes 03:15Z, before
+		// the 04:00Z jump, rendering as the already fired wall 23:15 of the
+		// previous evening). Reading the rendering back tells the two cases
+		// apart, and the pre jump offset falls out either way.
+		requested := time.Date(w.y, w.mo, w.d, w.h, w.mi, 0, 0, time.UTC)
+		var preJump int
+		if wallOrdinal(wallOf(t, tz)) >= wallOrdinal(w) {
+			preJump = int(requested.Sub(t) / time.Second)
+		} else {
+			_, preJump = t.In(tz).Zone()
+		}
+		at := requested.Add(-time.Duration(preJump) * time.Second)
 		if p.SpringForward == Shift {
-			buf[0] = emission{at: t}
+			buf[0] = emission{at: at}
 			return buf[:1]
 		}
-		buf[0] = emission{at: t, skipped: true, reason: SkipReasonNonexistent, requested: true}
+		buf[0] = emission{at: at, skipped: true, reason: SkipReasonNonexistent, requested: true}
 		return buf[:1]
 	}
 

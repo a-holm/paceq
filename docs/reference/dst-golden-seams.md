@@ -17,7 +17,9 @@ func (s Schedule) Prev(from time.Time, tz *time.Location, p Policy) (Occurrence,
 func (s Schedule) Between(from, to time.Time, tz *time.Location, p Policy) ([]Occurrence, error)
 ```
 
-`Between` is half open `(from, to]`, ascending in UTC, and includes rows with
+`Between` is half open `(from, to]`, ordered by the schedule's local timetable
+(UTC instants rise except across DST seams; see "Chaining Next across a DST
+seam" in the cronx package doc), and includes rows with
 `Skipped: true`. Policy strings in fixtures map onto the constants:
 `skip`/`shift` for spring forward, `first`/`both` for fall back. Occurrence
 fields used by the driver: `At`, `LocalWall`, `Skipped`, `SkipReason`.

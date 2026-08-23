@@ -347,6 +347,79 @@ func TestLordHoweThirtyMinuteTransition(t *testing.T) {
 	})
 }
 
+// TestShiftPolicyOnMidnightJumpZones pins spring_forward=shift on zones whose
+// transition runs through midnight. Santiago jumps 00:00 to 01:00 on
+// 2026-09-06 (04:00Z): Go resolves those gap walls through the post jump
+// offset, lands before the transition, and the instant renders as an already
+// fired wall of the previous evening, colliding with the real evening slots.
+// The policy table promises the first existing local time after the jump
+// instead. See classifyEmissions for the read-back rule that fixes it.
+func TestShiftPolicyOnMidnightJumpZones(t *testing.T) {
+	santiago := mustZone(t, "America/Santiago")
+	shift := Policy{SpringForward: Shift}
+
+	t.Run("midnight slot fires at the first existing wall after the jump", func(t *testing.T) {
+		s := mustParse(t, "0 0 * * *")
+		got, err := s.Next(utc(t, "2026-09-05T12:00:00Z"), santiago, shift)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantOcc(t, got, "shifted midnight", "2026-09-06T04:00:00Z",
+			"2026-09-06 01:00:00 -03:00", false, "")
+	})
+
+	t.Run("half past midnight keeps its minute one jump later", func(t *testing.T) {
+		s := mustParse(t, "30 0 * * *")
+		got, err := s.Next(utc(t, "2026-09-05T12:00:00Z"), santiago, shift)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantOcc(t, got, "shifted 00:30", "2026-09-06T04:30:00Z",
+			"2026-09-06 01:30:00 -03:00", false, "")
+	})
+
+	t.Run("shifted slots never land on already fired walls", func(t *testing.T) {
+		// The old normalization put the missing 00:45 at 03:45Z, the very
+		// instant the real 23:45 slot of the same schedule fires on: two
+		// occurrences sharing one scheduled_for value.
+		s := mustParse(t, "45 23,0 * * *")
+		got, err := s.Between(utc(t, "2026-09-05T00:00:00Z"), utc(t, "2026-09-07T00:00:00Z"), santiago, shift)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen := map[int64]int{}
+		for _, o := range got {
+			seen[o.At.Unix()]++
+		}
+		for unix, n := range seen {
+			if n > 1 {
+				t.Errorf("instant %s carried %d occurrences: schedules must never emit the same instant twice",
+					time.Unix(unix, 0).Format(time.RFC3339), n)
+			}
+		}
+		var shifted Occurrence
+		for _, o := range got {
+			if o.LocalWall == "2026-09-06 01:45:00 -03:00" {
+				shifted = o
+				break
+			}
+		}
+		if shifted.At.IsZero() {
+			t.Fatalf("the missing 00:45 slot never surfaced as the first existing wall 01:45: %+v", formatOccs(got))
+		}
+	})
+
+	t.Run("skip still marks the missing midnight", func(t *testing.T) {
+		s := mustParse(t, "0 0 * * *")
+		got, err := s.Next(utc(t, "2026-09-05T12:00:00Z"), santiago, Policy{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantOcc(t, got, "missing midnight marker", "2026-09-06T04:00:00Z",
+			"2026-09-06 00:00:00 -04:00", true, SkipReasonNonexistent)
+	})
+}
+
 func TestBetweenIsHalfOpenOnBothEnds(t *testing.T) {
 	minutely := mustParse(t, "* * * * *")
 	u := mustZone(t, "UTC")
@@ -550,6 +623,13 @@ func TestLeapYearFebruaryTwentyNineIsFoundNotRejected(t *testing.T) {
 // TestBetweenEqualsIteratedNext is the property from the test plan: for any
 // window, Between(from, to) must equal iterating Next until past to. Seeded
 // pseudo randomness keeps the case mix fixed between runs.
+//
+// Windows that touch a DST transition are skipped on purpose: a time.Time
+// cursor cannot carry which side of a seam it came from, so chain equals
+// Between only away from transitions. The seam shapes have their own
+// deterministic contract in TestNextChainContractAtBothSeams; the guard below
+// also asserts the draw really produces seam windows, so the skip can never
+// silently stop covering anything.
 func TestBetweenEqualsIteratedNext(t *testing.T) {
 	exprs := []string{"*/7 * * * *", "0 */3 * * *", "15 2 * * 0", "30 1 * * *", "0 0 29 2 *"}
 	zones := []string{"UTC", "Europe/Oslo", "Asia/Kolkata", "Australia/Lord_Howe"}
@@ -557,6 +637,7 @@ func TestBetweenEqualsIteratedNext(t *testing.T) {
 
 	rnd := newRand(47)
 	base := utc(t, "2026-01-01T00:00:00Z").Unix()
+	seamWindows := 0
 
 	for i := 0; i < 40; i++ {
 		expr := exprs[rnd.intn(len(exprs))]
@@ -566,6 +647,11 @@ func TestBetweenEqualsIteratedNext(t *testing.T) {
 		to := from.Add(time.Duration(1+rnd.intn(24*14)) * time.Hour)
 
 		s := mustParse(t, expr)
+
+		if touchesZoneTransition(tz, from, to) {
+			seamWindows++
+			continue
+		}
 
 		want, werr := iterateNext(s, from, to, tz, p)
 		got, gerr := s.Between(from, to, tz, p)
@@ -585,6 +671,131 @@ func TestBetweenEqualsIteratedNext(t *testing.T) {
 			}
 		}
 	}
+	if seamWindows == 0 {
+		t.Error("no drawn window touched a zone transition: the seam skip guard never fired, so this property no longer exercises its documented limit")
+	}
+}
+
+// touchesZoneTransition reports whether a UTC offset change happens inside
+// the window. Offsets are sampled at both ends and the midpoint; every real
+// transition moves at least one of the three.
+func touchesZoneTransition(tz *time.Location, from, to time.Time) bool {
+	mid := from.Add(to.Sub(from) / 2)
+	o0, _ := from.In(tz).Zone()
+	o1, _ := mid.In(tz).Zone()
+	o2, _ := to.In(tz).Zone()
+	return o0 != o1 || o1 != o2
+}
+
+// TestNextChainContractAtBothSeams pins what chaining Next means at the two
+// DST seams, so the shapes the package doc promises cannot drift. A bare
+// time.Time cursor cannot carry which side of a seam it came from, so a
+// chain by At provably cannot reproduce Between there; these assertions pin
+// the exact documented shapes instead of pretending equality holds.
+func TestNextChainContractAtBothSeams(t *testing.T) {
+	s := mustParse(t, "*/15 * * * *")
+	oslo := mustZone(t, "Europe/Oslo")
+
+	t.Run("spring forward: a chain by instant loses exactly the tied emissions", func(t *testing.T) {
+		from := utc(t, "2026-03-29T00:00:00Z")
+		to := utc(t, "2026-03-30T00:00:00Z")
+		full, err := s.Between(from, to, oslo, Policy{})
+		if err != nil {
+			t.Fatalf("Between: %v", err)
+		}
+		if len(full) != 100 {
+			t.Fatalf("Between = %d occurrences, want 100", len(full))
+		}
+
+		var chain []Occurrence
+		cur := from
+		for i := 0; i < 500; i++ {
+			o, err := s.Next(cur, oslo, Policy{})
+			if err != nil {
+				t.Fatalf("Next(%s): %v", cur, err)
+			}
+			if o.At.After(to) {
+				break
+			}
+			if !o.At.After(cur) {
+				t.Fatalf("spring chain stepped backwards at %s -> %s", cur, o.At)
+			}
+			chain = append(chain, o)
+			cur = o.At
+		}
+		if len(chain) != 96 {
+			t.Fatalf("chain by At = %d occurrences, want the documented 96", len(chain))
+		}
+
+		type chainKey struct {
+			at     int64
+			reason string
+		}
+		seen := map[chainKey]bool{}
+		for _, o := range chain {
+			seen[chainKey{o.At.Unix(), o.SkipReason}] = true
+		}
+		var dropped []Occurrence
+		for _, o := range full {
+			if !seen[chainKey{o.At.Unix(), o.SkipReason}] {
+				dropped = append(dropped, o)
+			}
+		}
+		if len(dropped) != 4 {
+			t.Fatalf("chain dropped %d emissions, want exactly the 4 tied ones: %s", len(dropped), formatOccs(dropped))
+		}
+		tieStart := utc(t, "2026-03-29T01:00:00Z")
+		tieEnd := utc(t, "2026-03-29T01:45:00Z")
+		for _, o := range dropped {
+			if o.At.Before(tieStart) || o.At.After(tieEnd) {
+				t.Errorf("dropped emission outside the tied hour: %s", formatOcc(o))
+			}
+		}
+	})
+
+	t.Run("fall back: the timetable successor of a marker carries an earlier instant", func(t *testing.T) {
+		from := utc(t, "2026-10-25T00:00:00Z")
+		to := utc(t, "2026-10-26T00:00:00Z")
+		full, err := s.Between(from, to, oslo, Policy{})
+		if err != nil {
+			t.Fatalf("Between: %v", err)
+		}
+		if len(full) != 96 {
+			t.Fatalf("Between = %d occurrences, want 96", len(full))
+		}
+
+		marker := utc(t, "2026-10-25T01:00:00Z") // second instance of doubled 02:00
+		next, err := s.Next(marker, oslo, Policy{})
+		if err != nil {
+			t.Fatalf("Next: %v", err)
+		}
+		wantOcc(t, next, "successor of the doubled 02:00 marker",
+			"2026-10-25T00:15:00Z", "2026-10-25 02:15:00 +02:00", false, "")
+		if !next.At.Before(marker) {
+			t.Errorf("successor At %s is not earlier than the marker cursor %s: the documented backward step vanished",
+				next.At, marker)
+		}
+
+		// A naive loop that advances by At stops on that non advancing step
+		// instead of hanging or spinning; it must see exactly one occurrence
+		// before quitting.
+		steps := 0
+		cur := from
+		for i := 0; i < 500; i++ {
+			o, err := s.Next(cur, oslo, Policy{})
+			if err != nil {
+				t.Fatalf("Next(%s): %v", cur, err)
+			}
+			if o.At.After(to) || !o.At.After(cur) {
+				break
+			}
+			steps++
+			cur = o.At
+		}
+		if steps != 1 {
+			t.Errorf("naive fall back chain produced %d occurrences, want 1 before the documented non advancing step", steps)
+		}
+	})
 }
 
 func iterateNext(s Schedule, from, to time.Time, tz *time.Location, p Policy) ([]Occurrence, error) {
