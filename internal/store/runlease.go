@@ -101,12 +101,13 @@ type ClaimedRun struct {
 	ParamsJSON   string
 }
 
-// claimRunsSQL is the whole claim in one statement: queued, due, uncancelled
-// rows become running rows of one named owner, each epoch up by exactly one,
-// in the order they were meant to start. One statement is the point (11
-// section 3.2): there is no read of who else might be claiming, no window
-// between seeing a run and taking it, and the fencing tokens come back with
-// the rows.
+// claimRunsSQL flips the chosen rows to running: one named owner, each epoch
+// up by exactly one, fencing tokens coming back with the rows. The candidate
+// selection is no longer inside this statement (#68): the claim now decides
+// per job under the job's ceiling, and a quota decision cannot live in a
+// LIMIT clause. The choice happens in claimTx, in the same BEGIN IMMEDIATE
+// transaction as this update, which is what keeps the window between choosing
+// and taking shut.
 //
 // The predicate rides the partial claim index (available_at WHERE state =
 // 'queued'), which the query plan test pins.
@@ -118,15 +119,22 @@ const claimRunsSQL = `UPDATE runs SET
 	heartbeat_at = ?2,
 	started_at = COALESCE(started_at, ?2),
 	updated_at = ?2
-WHERE id IN (
-	SELECT r.id FROM runs r
-	WHERE r.state = 'queued'
-		AND r.available_at <= ?2
-		AND r.cancel_requested_at IS NULL
-	ORDER BY r.scheduled_for, r.created_at, r.id
-	LIMIT ?4
-)
+WHERE id IN (?4)
 RETURNING id, job_name, job_version_id, run_key, attempt, lease_epoch, params_json`
+
+// claimCandidatesSQL reads the due queue in claim order with each job's
+// ceiling beside it. It is the read half of the claim's read-decide-write,
+// served by idx_runs_claim exactly as the old embedded subselect was; the
+// query plan test pins this statement too. The Only clause slots in ahead of
+// the order, which is where a predicate belongs.
+const claimCandidatesSQL = `SELECT r.id, r.job_name, j.max_concurrent
+FROM runs r
+JOIN jobs j ON j.name = r.job_name
+WHERE r.state = 'queued'
+	AND r.available_at <= ?
+	AND r.cancel_requested_at IS NULL
+%s
+ORDER BY r.scheduled_for, r.created_at, r.id`
 
 // closeCancelledQueuedSQL closes queued runs whose cancellation was requested
 // before anyone claimed them. There is no process group to kill, which makes
@@ -183,19 +191,31 @@ func (s *Store) ClaimRuns(ctx context.Context, spec ClaimSpec) ([]ClaimedRun, er
 	return out, nil
 }
 
-// claimTx runs the claim statement and writes an event per claimed row. When
-// Only names ids, the ids are filtered one id per placeholder, which keeps the
-// single-statement shape even for the executor claiming the run it was given.
+// claimTx is the claim's read-decide-write, all inside one BEGIN IMMEDIATE
+// transaction: read the due queue with each job's ceiling, count the running
+// rows per job, choose candidates in order while the ceiling has room, then
+// flip exactly the chosen rows. The writer pool has one connection and the
+// transaction takes the write lock first, so nothing can commit between the
+// count and the flip; the decision cannot be acting on numbers that moved.
+//
+// The running count is the baseline on purpose: counting a candidate against
+// its own job's ceiling would deadlock an empty machine (one due run, limit
+// one, and the count already full). A deferred run whose available_at has
+// arrived therefore claims like any other queued row, but only into a slot.
 func claimTx(tx *sql.Tx, spec ClaimSpec, now, expires time.Time, limit int, out *[]ClaimedRun) error {
-	query := claimRunsSQL
-	args := []any{spec.Owner, now.UnixMilli(), expires.UnixMilli(), limit}
-	if len(spec.Only) > 0 {
-		query = strings.Replace(query,
-			"ORDER BY r.scheduled_for", idFilter(spec.Only)+" ORDER BY r.scheduled_for", 1)
-		args[3] = len(spec.Only)
-		for _, id := range spec.Only {
-			args = append(args, id)
-		}
+	ids, err := chooseClaimableTx(tx, spec, now, limit)
+	if err != nil {
+		return err
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+
+	query := strings.Replace(claimRunsSQL,
+		"IN (?4)", "IN ("+idFilter(ids)+")", 1)
+	args := []any{spec.Owner, now.UnixMilli(), expires.UnixMilli()}
+	for _, id := range ids {
+		args = append(args, id)
 	}
 	rows, err := tx.Query(query, args...)
 	if err != nil {
@@ -241,15 +261,101 @@ func claimTx(tx *sql.Tx, spec ClaimSpec, now, expires time.Time, limit int, out 
 	return nil
 }
 
-// idFilter adds an explicit id membership test ahead of the order clause, so
-// the executor path claims the run it was named and nothing else. The
-// placeholders are numbered ?5 onward, after the four fixed parameters.
+// chooseClaimableTx walks the due queue in claim order and keeps every run
+// whose job still has room under max_concurrent. The overall batch limit
+// caps the walk; the per job ceilings cap what may start. Both are applied
+// before anything is written, so a refusal costs a read and never a rollback.
+func chooseClaimableTx(tx *sql.Tx, spec ClaimSpec, now time.Time, limit int) ([]string, error) {
+	onlyClause := ""
+	if len(spec.Only) > 0 {
+		onlyClause = "AND r.id IN (" + strings.TrimSuffix(strings.Repeat("?, ", len(spec.Only)), ", ") + ")"
+	}
+	query := fmt.Sprintf(claimCandidatesSQL, onlyClause)
+	args := []any{now.UnixMilli()}
+	for _, id := range spec.Only {
+		args = append(args, id)
+	}
+	rows, err := tx.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("read the claim candidates for %s: %w", spec.Owner, err)
+	}
+	type candidate struct {
+		id    string
+		job   string
+		limit int
+	}
+	var cands []candidate
+	for rows.Next() {
+		var c candidate
+		if err := rows.Scan(&c.id, &c.job, &c.limit); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("scan a claim candidate for %s: %w", spec.Owner, err)
+		}
+		cands = append(cands, c)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, fmt.Errorf("read the claim candidates for %s: %w", spec.Owner, err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close the claim candidates of %s: %w", spec.Owner, err)
+	}
+
+	held, err := runningCountsTx(tx)
+	if err != nil {
+		return nil, err
+	}
+	chosen := make([]string, 0, min(len(cands), limit))
+	for _, c := range cands {
+		if len(chosen) == limit {
+			break
+		}
+		if c.limit < 1 {
+			c.limit = 1
+		}
+		if held[c.job] >= c.limit {
+			continue
+		}
+		held[c.job]++
+		chosen = append(chosen, c.id)
+	}
+	return chosen, nil
+}
+
+// runningCountsTx counts the running rows per job inside the caller's
+// transaction. It is the claim side's occupancy baseline; see claimTx for why
+// it counts only running rows.
+const runningCountsSQL = `SELECT job_name, COUNT(*) FROM runs
+WHERE state = 'running'
+GROUP BY job_name`
+
+func runningCountsTx(tx *sql.Tx) (map[string]int, error) {
+	rows, err := tx.Query(runningCountsSQL)
+	if err != nil {
+		return nil, fmt.Errorf("count the running runs: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	counts := map[string]int{}
+	for rows.Next() {
+		var job string
+		var n int
+		if err := rows.Scan(&job, &n); err != nil {
+			return nil, fmt.Errorf("scan a running count: %w", err)
+		}
+		counts[job] = n
+	}
+	return counts, rows.Err()
+}
+
+// idFilter builds the explicit id membership test the claim update runs
+// against, one placeholder per chosen id. The placeholders are numbered ?4
+// onward, after the three fixed parameters.
 func idFilter(ids []string) string {
 	named := make([]string, len(ids))
 	for i := range ids {
-		named[i] = fmt.Sprintf("?%d", i+5)
+		named[i] = fmt.Sprintf("?%d", i+4)
 	}
-	return "AND r.id IN (" + strings.Join(named, ", ") + ")"
+	return strings.Join(named, ", ")
 }
 
 func closeCancelledQueuedTx(tx *sql.Tx, now time.Time) error {

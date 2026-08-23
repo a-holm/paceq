@@ -3,6 +3,8 @@ package store_test
 import (
 	"context"
 	"errors"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -18,6 +20,13 @@ const (
 	singleStepSpec = `{"max_concurrent":1,"name":"nightly","schema":"paceq.job.v1",` +
 		`"steps":[{"name":"build","run":["/bin/true"],"shell":false}],"timeout_ms":3600000}`
 
+	// batchSpec is singleStepSpec with a ceiling no test here binds: the run
+	// lease tests claim batches of one job and exercise fencing, not
+	// admission control (#68). A binding ceiling would cap every batch at
+	// its first run by design.
+	batchSpec = `{"max_concurrent":200,"name":"nightly","schema":"paceq.job.v1",` +
+		`"steps":[{"name":"build","run":["/bin/true"],"shell":false}],"timeout_ms":3600000}`
+
 	diamondSpec = `{"max_concurrent":2,"name":"graph","schema":"paceq.job.v1",` +
 		`"steps":[` +
 		`{"name":"a","needs":["b"],"run":["/bin/true"],"shell":false},` +
@@ -27,14 +36,26 @@ const (
 )
 
 // aCanonicalJob records one job whose spec is a real v1 document, which is
-// what every materialisation path reads back.
+// what every materialisation path reads back. It keeps the jobs.max_concurrent
+// column in step with the document, exactly as apply does (#68): admission
+// branches on the frozen spec while the claim joins on the column, and a
+// fixture that let them drift would prove nothing honest.
 func aCanonicalJob(t *testing.T, s *store.Store, name, specJSON string) store.JobVersion {
 	t.Helper()
 
+	maxConcurrent := 0
+	if m := regexp.MustCompile(`"max_concurrent":(\d+)`).FindStringSubmatch(specJSON); m != nil {
+		n, err := strconv.Atoi(m[1])
+		if err != nil {
+			t.Fatalf("read max_concurrent out of the fixture spec: %v", err)
+		}
+		maxConcurrent = n
+	}
 	version, _, err := s.UpsertJobVersion(context.Background(), store.JobVersionInput{
-		JobName:  name,
-		SpecHash: "sha256:" + name,
-		SpecJSON: specJSON,
+		JobName:       name,
+		SpecHash:      "sha256:" + name,
+		SpecJSON:      specJSON,
+		MaxConcurrent: maxConcurrent,
 	})
 	if err != nil {
 		t.Fatalf("record job %s: %v", name, err)

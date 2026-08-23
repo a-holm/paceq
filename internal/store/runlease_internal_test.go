@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -46,12 +47,23 @@ func internalLeaseStore(t *testing.T) (*Store, *clock.Fake) {
 func TestClaimQueryPlansThroughTheClaimIndex(t *testing.T) {
 	s, _ := internalLeaseStore(t)
 
-	plan := queryPlan(t, s, claimRunsSQL, "exec-1", int64(1000), int64(61_000), 5)
+	// The read half: the candidate walk must ride the partial claim index.
+	plan := queryPlan(t, s, fmt.Sprintf(claimCandidatesSQL, ""), int64(1000))
 	if !strings.Contains(plan, "idx_runs_claim") {
-		t.Fatalf("the claim does not read idx_runs_claim:\n%s", plan)
+		t.Fatalf("the claim candidates do not read idx_runs_claim:\n%s", plan)
 	}
 	if strings.Contains(plan, "SCAN runs") {
-		t.Fatalf("the claim scans the runs table:\n%s", plan)
+		t.Fatalf("the claim candidates scan the runs table:\n%s", plan)
+	}
+
+	// The write half: flipping the chosen rows looks them up by primary
+	// key, one placeholder per chosen id.
+	updatePlan := queryPlan(t, s, claimRunsSQL, "exec-1", int64(1000), int64(61_000), "01J0RUN1")
+	if !strings.Contains(updatePlan, "sqlite_autoindex_runs_1") {
+		t.Fatalf("the claim update does not look its rows up by id:\n%s", updatePlan)
+	}
+	if strings.Contains(updatePlan, "SCAN runs") {
+		t.Fatalf("the claim update scans the runs table:\n%s", updatePlan)
 	}
 }
 

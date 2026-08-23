@@ -24,12 +24,15 @@ func ptr(i int) *int { return &i }
 
 // fixtureJobInput is the one job every fixture run is a run of. Re-upserting
 // it returns the version already stored, so extra fixtures need no lookup.
+// Its ceiling is generous (#68): several fixtures hold one run open while they
+// claim another, which admission control rightly refuses at a ceiling of one.
 var fixtureJobInput = store.JobVersionInput{
-	JobName:     "nightly",
-	Description: "the nightly job",
-	SourcePath:  "jobs/nightly.yaml",
-	SpecHash:    "sha256:nightly",
-	SpecJSON:    `{"steps":[{"name":"extract"},{"name":"load"}]}`,
+	JobName:       "nightly",
+	Description:   "the nightly job",
+	SourcePath:    "jobs/nightly.yaml",
+	SpecHash:      "sha256:nightly",
+	SpecJSON:      `{"steps":[{"name":"extract"},{"name":"load"}]}`,
+	MaxConcurrent: 8,
 }
 
 // logsFixture builds a state directory with one run of two steps: extract,

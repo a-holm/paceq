@@ -27,11 +27,15 @@ func TestRenewRunLeasesCommitsOneTransactionForAllHeldRuns(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 
+	// The ceiling holds nothing back on purpose (#68): the subject here is
+	// the batch heartbeat's commit count over one hundred held runs, not
+	// admission control, and a binding ceiling would stop the second claim.
 	version, _, err := s.UpsertJobVersion(ctx, JobVersionInput{
 		JobName:  "nightly",
 		SpecHash: "sha256:nightly",
-		SpecJSON: `{"max_concurrent":1,"name":"nightly","schema":"paceq.job.v1",` +
+		SpecJSON: `{"max_concurrent":200,"name":"nightly","schema":"paceq.job.v1",` +
 			`"steps":[{"name":"build","run":["/bin/true"],"shell":false}],"timeout_ms":3600000}`,
+		MaxConcurrent: 200,
 	})
 	if err != nil {
 		t.Fatalf("record the job: %v", err)

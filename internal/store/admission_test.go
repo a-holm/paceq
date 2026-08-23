@@ -57,18 +57,25 @@ func admitSchedule(t *testing.T, s *Store, job string, overlap string) ScheduleR
 	return row
 }
 
+// admitFire is the fixed fire-time of the n-th tick of a test schedule.
+// Both the materialiser and the readers derive it from this one function, so
+// a second boundary crossing between two calls can never split the identity.
+func admitFire(n int) time.Time {
+	base := time.Date(2026, 6, 1, 9, 0, 0, 0, time.UTC)
+	return base.Add(time.Duration(n) * time.Minute)
+}
+
 // admitTick materialises one fire-time through the same door the scheduler
 // loop uses. Every call gets its own fire-time, because the UNIQUE gate on
 // (source_kind, source_name, scheduled_for) is doing its job.
 func admitTick(t *testing.T, s *Store, sched ScheduleRow, n int) TickResult {
 	t.Helper()
 
-	fire := time.Now().Add(-time.Hour + time.Duration(n)*time.Minute).Truncate(time.Second)
 	res, err := s.MaterializeTick(context.Background(), TickInput{
 		Schedule:       sched,
-		ScheduledFor:   fire,
+		ScheduledFor:   admitFire(n),
 		Outcome:        OutcomeTriggered,
-		RunKey:         fmt.Sprintf("%s/nightly:%s", sched.JobName, fire.Format(time.RFC3339)),
+		RunKey:         fmt.Sprintf("%s/nightly:%s", sched.JobName, admitFire(n).Format(time.RFC3339)),
 		NextTickAt:     time.Now().Add(2 * time.Minute),
 		UpdateProgress: true,
 		Actor:          "scheduler",
@@ -110,7 +117,7 @@ type tickRow struct {
 func readTickRow(t *testing.T, s *Store, source string, n int) tickRow {
 	t.Helper()
 
-	fire := time.Now().Add(-time.Hour + time.Duration(n)*time.Minute).Truncate(time.Second).UnixMilli()
+	fire := admitFire(n).UnixMilli()
 	ctx := context.Background()
 	var row tickRow
 	var code, text, data sql.NullString
@@ -300,6 +307,45 @@ func TestADeferredRunIsNotActive(t *testing.T) {
 	second := admitTick(t, s, sched, 1)
 	if second.Run.ID == "" || second.Deferred {
 		t.Fatalf("with a free slot and one waiting run, the next fire-time neither admitted nor ran now: %+v", second)
+	}
+}
+
+// TestTheOnlyPathClaimsExactlyTheNamedRunAndNothingElse pins the single run
+// form of the claim: an executor handed one run id claims that run even when
+// older queued runs sit ahead of it in claim order. The candidate filter must
+// stay a WHERE predicate; appended after ORDER BY it silently becomes a sort
+// key and hands back whatever the queue likes (found by the crash harness).
+func TestTheOnlyPathClaimsExactlyTheNamedRunAndNothingElse(t *testing.T) {
+	s := migratedStore(t)
+	admitJob(t, s, "build", 8)
+
+	now := time.Now().UTC()
+	var ids []string
+	for i := 0; i < 3; i++ {
+		id := fmt.Sprintf("01J0ADMOL%d", i)
+		if _, err := s.w.ExecContext(context.Background(), `INSERT INTO runs
+(id, job_name, job_version_id, origin, state, available_at, created_at, updated_at)
+SELECT ?, 'build', current_version_id, 'manual', 'queued', ?, ?, ?
+FROM jobs WHERE name = 'build'`, id, now.UnixMilli(), now.UnixMilli(), now.UnixMilli()); err != nil {
+			t.Fatalf("seed queued run %d: %v", i, err)
+		}
+		ids = append(ids, id)
+	}
+
+	got, err := s.ClaimRuns(context.Background(), ClaimSpec{
+		Owner: "exec-1", TTL: time.Minute, Only: []string{ids[2]},
+	})
+	if err != nil {
+		t.Fatalf("claim the named run: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != ids[2] {
+		t.Fatalf("the named claim took %v, want exactly %s", got, ids[2])
+	}
+
+	if again, err := s.ClaimRuns(context.Background(), ClaimSpec{
+		Owner: "exec-2", TTL: time.Minute, Only: []string{ids[2]},
+	}); err != nil || len(again) != 0 {
+		t.Fatalf("a second named claim answered %v (%d runs), want an empty hand-back", err, len(again))
 	}
 }
 
