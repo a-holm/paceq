@@ -31,7 +31,7 @@ Without a subcommand this prints help. Every listing is newest first, walks
 backwards with --before, and reads through the read only pool, so history is
 there while another process writes new runs.`,
 	}
-	cmd.AddCommand(newRunsListCmd(env, g), newRunsShowCmd(env, g))
+	cmd.AddCommand(newRunsListCmd(env, g), newRunsShowCmd(env, g), newRunsCancelCmd(env, g))
 	return cmd
 }
 
@@ -346,4 +346,111 @@ func relAge(now, then time.Time) string {
 	default:
 		return fmt.Sprintf("%dd ago", int(age.Hours()/24))
 	}
+}
+
+// --------------- cancel ---------------
+
+func newRunsCancelCmd(env Env, g *globals) *cobra.Command {
+	return &cobra.Command{
+		Use:   "cancel <run>",
+		Short: "Request cancellation of a run",
+		Long: `Ask the daemon to stop a run. This is a request, not an immediate stop:
+the executor observes the flag between steps and stops within roughly 20 seconds.
+
+A queued run is cancelled immediately. A running run receives the request and
+the executor honours it at its next step boundary. Repeated cancellations change
+nothing: only the first request is recorded and its timestamp stays.`,
+		Args: exactArgs(1, "one run id or prefix"),
+		RunE: runArgsE(env, g, func(ctx context.Context, out *ui, args []string) error {
+			return runRunsCancel(ctx, env, g, out, args[0])
+		}),
+	}
+}
+
+func runRunsCancel(ctx context.Context, env Env, g *globals, out *ui, runArg string) error {
+	stateDir, err := g.stateDir(env)
+	if err != nil {
+		return err
+	}
+
+	// Resolve the run first against a read-only store.
+	ro, err := store.OpenReadOnly(ctx, filepath.Join(stateDir, store.DatabaseFileName), store.Options{})
+	if err != nil {
+		return err
+	}
+	detail, err := ro.GetRun(ctx, runArg)
+	_ = ro.Close()
+	if err != nil {
+		switch {
+		case errors.Is(err, store.ErrAmbiguousRunID):
+			return notFoundError(
+				fmt.Sprintf("%q does not name one run: the prefix matches more than one", runArg),
+				ambiguousHint(err),
+				"give more characters until the prefix names exactly one run",
+			)
+		case errors.Is(err, store.ErrRunNotFound):
+			return notFoundError(
+				fmt.Sprintf("no run matches %q", runArg),
+				runArg,
+				"the ids of finished runs, shortest first: any prefix names a run as soon as it can",
+				"check the id: paceq explains it on every failure it reports",
+			)
+		default:
+			return err
+		}
+	}
+
+	// Already terminal: nothing to cancel.
+	terminal := map[string]bool{
+		"succeeded": true, "failed": true, "cancelled": true,
+	}
+	if terminal[detail.State] {
+		out.print("%s run %s is already %s", out.symbols.warn, detail.ID, detail.State)
+		return nil
+	}
+
+	actor := cliActor()
+
+	// Try through the daemon socket first.
+	socketPath := daemonSocket(stateDir)
+	if socketPath != "" {
+		if err := cancelViaSocket(ctx, socketPath, detail.ID, "manual"); err == nil {
+			if detail.State == "queued" {
+				out.print("%s cancellation of %s recorded; the run will not start", out.symbols.ok, detail.ID)
+			} else {
+				out.print("%s cancellation of %s requested; the owner stops within roughly 20 s", out.symbols.ok, detail.ID)
+			}
+			return nil
+		}
+		out.note(1, "daemon unreachable; writing directly to the database")
+	} else {
+		out.note(1, "no daemon socket; writing directly to the database")
+	}
+
+	s, err := store.OpenState(ctx, stateDir, store.Options{Clock: clockForEnv(env)})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = s.Close() }()
+
+	cr, err := s.RequestCancel(ctx, detail.ID, actor, "manual")
+	if err != nil {
+		if errors.Is(err, store.ErrRunNotFound) {
+			return notFoundError(
+				fmt.Sprintf("no run matches %q", runArg),
+				runArg,
+				"check the id: paceq explains it on every failure it reports",
+			)
+		}
+		return internalError("could not cancel the run", err)
+	}
+
+	if detail.State == "queued" {
+		out.print("%s cancellation of %s recorded (requested at %s); the run will not start",
+			out.symbols.ok, detail.ID, cr.CancelRequestedAt.UTC().Format("2006-01-02 15:04:05"))
+	} else {
+		out.print("%s cancellation of %s requested (requested at %s); the owner stops within roughly 20 s",
+			out.symbols.ok, detail.ID, cr.CancelRequestedAt.UTC().Format("2006-01-02 15:04:05"))
+	}
+	return nil
 }

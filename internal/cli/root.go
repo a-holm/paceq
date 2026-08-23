@@ -140,10 +140,12 @@ func newRoot(env Env) *cobra.Command {
 		newRunCmd(env, &g),
 		newServeCmd(env, &g),
 		newRunsCmd(env, &g),
+		newSchedulesCmd(env, &g),
 		newStatusCmd(env, &g),
 		newFsckCmd(env, &g),
 		newErrorCmd(env, &g),
 		newLogsCmd(env, &g),
+		newLsCmd(env, &g),
 	)
 	return root
 }

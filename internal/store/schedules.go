@@ -740,3 +740,128 @@ func (r *ScheduleRow) finalize() {
 	r.CreatedAt = time.UnixMilli(r.createdRaw).UTC()
 	r.UpdatedAt = time.UnixMilli(r.updatedRaw).UTC()
 }
+
+// listAllSchedulesSQL returns every schedule, active first, then paused.
+const listAllSchedulesSQL = `SELECT id, job_name, name, kind, expr, timezone,
+       spring_forward, fall_back, catchup, catchup_limit, catchup_window_ms,
+       paused, last_tick_at, next_tick_at, created_at, updated_at
+  FROM schedules
+ ORDER BY paused ASC, job_name ASC, name ASC`
+
+// ListAllSchedules returns every schedule row: unpaused first, then paused,
+// alphabetically within each group.
+func (s *Store) ListAllSchedules(ctx context.Context) ([]ScheduleRow, error) {
+	rows, err := s.r.QueryContext(ctx, listAllSchedulesSQL)
+	if err != nil {
+		return nil, fmt.Errorf("list all schedules: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []ScheduleRow
+	for rows.Next() {
+		var row ScheduleRow
+		if err := rows.Scan(row.scanTargets()...); err != nil {
+			return nil, fmt.Errorf("scan a schedule row: %w", err)
+		}
+		row.finalize()
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list all schedules: %w", err)
+	}
+	return out, nil
+}
+
+// getScheduleSQL reads one schedule by its natural key.
+const getScheduleSQL = `SELECT id, job_name, name, kind, expr, timezone,
+       spring_forward, fall_back, catchup, catchup_limit, catchup_window_ms,
+       paused, last_tick_at, next_tick_at, created_at, updated_at
+  FROM schedules
+ WHERE job_name = ? AND name = ?`
+
+// GetSchedule reads one schedule by job name and schedule name.
+func (s *Store) GetSchedule(ctx context.Context, jobName, name string) (ScheduleRow, error) {
+	var row ScheduleRow
+	err := s.r.QueryRowContext(ctx, getScheduleSQL, jobName, name).Scan(row.scanTargets()...)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ScheduleRow{}, fmt.Errorf("find schedule %s/%s: %w", jobName, name, ErrNotFound)
+	}
+	if err != nil {
+		return ScheduleRow{}, fmt.Errorf("find schedule %s/%s: %w", jobName, name, err)
+	}
+	row.finalize()
+	return row, nil
+}
+
+// PauseSchedule sets paused=1 on the schedule and returns the new row.
+// Idempotent: calling on an already-paused schedule succeeds without error
+// and does not change updated_at.
+func (s *Store) PauseSchedule(ctx context.Context, jobName, name string) (ScheduleRow, error) {
+	now := s.clk.Now().UTC()
+	var row ScheduleRow
+
+	err := s.withTx(ctx, func(tx *sql.Tx) error {
+		result, err := tx.Exec(`UPDATE schedules SET paused = 1, updated_at = ?
+ WHERE job_name = ? AND name = ? AND paused = 0`, now.UnixMilli(), jobName, name)
+		if err != nil {
+			return fmt.Errorf("pause schedule %s/%s: %w", jobName, name, err)
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("pause schedule %s/%s: %w", jobName, name, err)
+		}
+		if changed == 0 {
+			// Already paused: read back without rewriting.
+		}
+		err = tx.QueryRow(getScheduleSQL, jobName, name).Scan(row.scanTargets()...)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("pause schedule %s/%s: %w", jobName, name, ErrNotFound)
+		}
+		if err != nil {
+			return fmt.Errorf("pause schedule %s/%s: %w", jobName, name, err)
+		}
+		row.finalize()
+		return nil
+	})
+	if err != nil {
+		return ScheduleRow{}, err
+	}
+	return row, nil
+}
+
+// ResumeSchedule sets paused=0, writes the caller's pre-computed next_tick_at,
+// and returns the new row. The caller computes nextTickAt from the cursor and
+// cron expression to avoid re-parsing inside the transaction.
+func (s *Store) ResumeSchedule(ctx context.Context, jobName, name string, nextTickAt time.Time) (ScheduleRow, error) {
+	now := s.clk.Now().UTC()
+	var row ScheduleRow
+
+	err := s.withTx(ctx, func(tx *sql.Tx) error {
+		result, err := tx.Exec(`UPDATE schedules SET paused = 0, next_tick_at = ?, updated_at = ?
+ WHERE job_name = ? AND name = ? AND paused = 1`,
+			nextTickAt.UnixMilli(), now.UnixMilli(), jobName, name)
+		if err != nil {
+			return fmt.Errorf("resume schedule %s/%s: %w", jobName, name, err)
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("resume schedule %s/%s: %w", jobName, name, err)
+		}
+		if changed == 0 {
+			// Already active: read back without rewriting.
+		}
+		err = tx.QueryRow(getScheduleSQL, jobName, name).Scan(row.scanTargets()...)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("resume schedule %s/%s: %w", jobName, name, ErrNotFound)
+		}
+		if err != nil {
+			return fmt.Errorf("resume schedule %s/%s: %w", jobName, name, err)
+		}
+		row.finalize()
+		return nil
+	})
+	if err != nil {
+		return ScheduleRow{}, err
+	}
+	return row, nil
+}
