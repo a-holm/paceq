@@ -32,11 +32,17 @@ type ScheduleRow struct {
 	Catchup         string
 	CatchupLimit    int
 	CatchupWindowMS int64
-	Paused          bool
-	LastTickAt      *time.Time
-	NextTickAt      time.Time
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+
+	// Overlap is what a tick does when the job's max_concurrent is already
+	// held: "skip" stands down and records why, "queue" materialises the run
+	// deferred into the future with a defer_reason. Empty means skip.
+	Overlap string
+
+	Paused     bool
+	LastTickAt *time.Time
+	NextTickAt time.Time
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 
 	// Scan primitives, filled by scanTargets and folded into the exported
 	// fields by finalize.
@@ -60,8 +66,13 @@ type ScheduleInput struct {
 	Catchup         string
 	CatchupLimit    int
 	CatchupWindowMS int64
-	Paused          bool
-	NextTickAt      time.Time
+
+	// Overlap is the policy for ticks that fire while the job's concurrency
+	// limit is held: "skip" (default) or "queue".
+	Overlap string
+
+	Paused     bool
+	NextTickAt time.Time
 }
 
 // The column defaults, mirrored in Go so the conflict branch of the upsert
@@ -90,6 +101,9 @@ func (in ScheduleInput) normalized() ScheduleInput {
 	if out.CatchupLimit == 0 {
 		out.CatchupLimit = 10
 	}
+	if out.Overlap == "" {
+		out.Overlap = "skip"
+	}
 	return out
 }
 
@@ -99,17 +113,18 @@ func (in ScheduleInput) normalized() ScheduleInput {
 // statement both writes and reads back.
 const upsertScheduleSQL = `INSERT INTO schedules
 (id, job_name, name, kind, expr, timezone, spring_forward, fall_back, catchup,
- catchup_limit, catchup_window_ms, paused, next_tick_at, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ catchup_limit, catchup_window_ms, paused, next_tick_at, created_at, updated_at, overlap)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(job_name, name) DO UPDATE SET
     kind = excluded.kind, expr = excluded.expr, timezone = excluded.timezone,
     spring_forward = excluded.spring_forward, fall_back = excluded.fall_back,
     catchup = excluded.catchup, catchup_limit = excluded.catchup_limit,
     catchup_window_ms = excluded.catchup_window_ms, paused = excluded.paused,
-    next_tick_at = excluded.next_tick_at, updated_at = excluded.updated_at
+    next_tick_at = excluded.next_tick_at, updated_at = excluded.updated_at,
+    overlap = excluded.overlap
 RETURNING id, job_name, name, kind, expr, timezone,
        spring_forward, fall_back, catchup, catchup_limit, catchup_window_ms,
-       paused, last_tick_at, next_tick_at, created_at, updated_at`
+       overlap, paused, last_tick_at, next_tick_at, created_at, updated_at`
 
 // UpsertSchedule inserts a schedule or replaces its definition in place,
 // keeping id and timestamps stable across re-apply.
@@ -130,6 +145,7 @@ func (s *Store) UpsertSchedule(ctx context.Context, in ScheduleInput) (ScheduleR
 		rowID, in.JobName, in.Name, in.Kind, in.Expr, in.Timezone,
 		in.SpringForward, in.FallBack, in.Catchup,
 		in.CatchupLimit, in.CatchupWindowMS, paused, in.NextTickAt.UnixMilli(), at, at,
+		in.Overlap,
 	).Scan(row.scanTargets()...)
 	if err != nil {
 		return ScheduleRow{}, fmt.Errorf("upsert schedule %s/%s: %w", in.JobName, in.Name, err)
@@ -144,7 +160,7 @@ func (s *Store) UpsertSchedule(ctx context.Context, in ScheduleInput) (ScheduleR
 // idx_schedules_due (next_tick_at) WHERE paused = 0 serves it.
 const dueSchedulesSQL = `SELECT id, job_name, name, kind, expr, timezone,
        spring_forward, fall_back, catchup, catchup_limit, catchup_window_ms,
-       paused, last_tick_at, next_tick_at, created_at, updated_at
+       overlap, paused, last_tick_at, next_tick_at, created_at, updated_at
   FROM schedules
  WHERE paused = 0 AND next_tick_at <= ?
  ORDER BY next_tick_at
@@ -593,6 +609,7 @@ func (r *ScheduleRow) scanTargets() []any {
 	return []any{
 		&r.ID, &r.JobName, &r.Name, &r.Kind, &r.Expr, &r.Timezone,
 		&r.SpringForward, &r.FallBack, &r.Catchup, &r.CatchupLimit, &r.CatchupWindowMS,
+		&r.Overlap,
 		&r.pausedRaw, r.nulls.lastTick, &r.nextTickRaw, &r.createdRaw, &r.updatedRaw,
 	}
 }

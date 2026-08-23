@@ -173,7 +173,8 @@ CREATE TABLE schedules (
   last_tick_at      INTEGER,
   next_tick_at      INTEGER NOT NULL,
   created_at        INTEGER NOT NULL,
-  updated_at        INTEGER NOT NULL,
+  updated_at        INTEGER NOT NULL, overlap TEXT NOT NULL DEFAULT 'skip'
+  CHECK (overlap IN ('skip', 'queue')),
   UNIQUE (job_name, name)
 ) STRICT;
 
