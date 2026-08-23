@@ -352,8 +352,7 @@ func TestRunsListIsATableHereAndJSONThere(t *testing.T) {
 	if !json.Valid([]byte(strings.TrimSpace(piped.stdout))) {
 		t.Fatalf("a pipe got no JSON array:\n%s", piped.stdout)
 	}
-	var rows []map[string]any
-	rows = decodeRunRows(t, piped.stdout)
+	rows := decodeRunRows(t, piped.stdout)
 	if len(rows) != 2 {
 		t.Fatalf("the listing holds %d rows, want both runs", len(rows))
 	}

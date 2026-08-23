@@ -15,5 +15,5 @@ func sameOwner(info os.FileInfo) bool {
 	if !ok {
 		return true // cannot tell: the mode check above still ran
 	}
-	return raw.Uid == uint32(os.Geteuid())
+	return int(raw.Uid) == os.Geteuid()
 }

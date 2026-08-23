@@ -190,7 +190,9 @@ func (c *Client) Apply(ctx context.Context, paths []string) (ApplyReport, error)
 	if err := json.Unmarshal(raw, &wire); err != nil {
 		return ApplyReport{}, fmt.Errorf("the apply report is not shaped like the contract: %w", err)
 	}
-	return ApplyReport{Applied: wire.Applied, Unchanged: wire.Unchanged, Failed: wire.Failed}, nil
+	// The wire shape and the report are the same struct by design; the
+	// conversion keeps it that way (a field drift is a compile error).
+	return ApplyReport(wire), nil
 }
 
 // call performs one request and decodes one JSON object answer. A non-2xx
