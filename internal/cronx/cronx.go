@@ -189,7 +189,7 @@ func parseCron(raw string) (Schedule, error) {
 	}
 
 	for i, spec := range specs {
-		if err := checkField(fields[i], spec); err != nil {
+		if err := harnessCheckField(fields[i], spec); err != nil {
 			return Schedule{}, err
 		}
 	}
@@ -221,11 +221,11 @@ func gronxSafeIsValid(expr string) (ok bool) {
 	return gronx.IsValid(expr)
 }
 
-// checkField rejects the L, W and # extensions by token shape, then leaves
+// harnessCheckField rejects the L, W and # extensions by token shape, then leaves
 // deeper validation to the number walk in canonicalFields. Month and weekday
 // names contain the letters l and w (jul, wed), so a bare substring search
 // would reject legal expressions; the shape check does not.
-func checkField(field string, spec fieldSpec) error {
+func harnessCheckField(field string, spec fieldSpec) error {
 	if strings.Contains(field, "#") {
 		return fmt.Errorf("field %d (%s) %q uses #: nth weekday extensions are not supported in paceq 1.0; spell the schedule out with plain cron fields", spec.pos, spec.name, field)
 	}
