@@ -235,3 +235,56 @@ VALUES (?, ?, ?)`, runID, e[0], e[1]); err != nil {
 	}
 	return subject, nil
 }
+
+// InjectActiveRunOverflow plants I12: two running runs on one job whose
+// max_concurrent is 1. The seeded night job has one queued run; the
+// injection sets it to running and creates a second running run, so the
+// active count exceeds the ceiling.
+func (s *Store) InjectActiveRunOverflow(ctx context.Context) (string, error) {
+	var subject string
+	err := s.withTx(ctx, func(tx *sql.Tx) error {
+		var (
+			runID   string
+			job     string
+			version string
+		)
+		if err := tx.QueryRow(`SELECT id, job_name, job_version_id FROM runs
+WHERE job_name = 'nightly' ORDER BY created_at LIMIT 1`).Scan(&runID, &job, &version); err != nil {
+			return fmt.Errorf("inject an active overflow: %w", err)
+		}
+		now := s.clk.Now().UTC().UnixMilli()
+		// Set the first run to running with its own concurrency
+		// key so the second can take a different one.
+		if _, err := tx.Exec(`UPDATE runs SET state = 'running',
+concurrency_key = 'nightly-1',
+lease_owner = 'inject-1',
+lease_epoch = 1,
+lease_expires_at = ?,
+started_at = ?,
+updated_at = ?
+WHERE id = ?`, now+60_000, now, now, runID); err != nil {
+			return fmt.Errorf("inject a running first run: %w", err)
+		}
+		twin := runID + "-overflow"
+		if _, err := tx.Exec(`INSERT INTO runs (id, job_name, job_version_id, origin,
+state, available_at, concurrency_key,
+lease_owner, lease_epoch, lease_expires_at,
+started_at, created_at, updated_at)
+VALUES (?, ?, ?, 'manual', 'running',
+?, 'nightly-2',
+'inject-2', 1, ?,
+?, ?, ?)`,
+			twin, job, version,
+			0,
+			now+60_000,
+			now, now, now); err != nil {
+			return fmt.Errorf("inject a second running run: %w", err)
+		}
+		subject = "job " + job
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return subject, nil
+}

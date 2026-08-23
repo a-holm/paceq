@@ -66,3 +66,25 @@ func TestQuickFsckNamesADependencyCycle(t *testing.T) {
 // makes duplicate slots unwritable through SQL, which is the same guarantee
 // the checker re-reads. Its healthy path is covered above; the negative path
 // is the database's own job.
+
+func TestQuickFsckNamesActiveRunOverflow(t *testing.T) {
+	s := seededStore(t)
+	subject, err := s.InjectActiveRunOverflow(context.Background())
+	if err != nil {
+		t.Fatalf("plant I12: %v", err)
+	}
+
+	violations, err := s.QuickFsck(context.Background())
+	if err != nil {
+		t.Fatalf("quick fsck: %v", err)
+	}
+	found := false
+	for _, v := range violations {
+		if v.Check == "I12" && strings.Contains(v.Subject, strings.TrimPrefix(subject, "job ")) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("violations %+v, want an I12 on %s", violations, subject)
+	}
+}
