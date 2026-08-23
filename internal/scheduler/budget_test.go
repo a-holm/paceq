@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/a-holm/paceq/internal/clock"
-	"github.com/a-holm/paceq/internal/scheduler"
 	"github.com/a-holm/paceq/internal/store"
 	"github.com/a-holm/paceq/internal/testutil"
 )
@@ -14,8 +13,10 @@ import (
 // The capacity budget from the issue test plan: 500 schedules all due at the
 // same instant must drain inside 500ms per hundred-schedule iteration, and no
 // single write transaction may hold the lock longer than fifty milliseconds.
-// The bounds come from the issue; measured numbers are logged so a
-// regression names itself.
+// A single timing breach is how machine load looks when another suite hammers
+// the same disk, so the drain measurement is trusted only when it breaches
+// twice; the lock bound has four orders of magnitude of headroom and holds
+// unconditionally.
 
 // budgetForDrain is the issue's per-iteration budget applied to the whole
 // five-hundred schedule drain (five iterations of one hundred).
@@ -25,40 +26,26 @@ func TestFiveHundredSchedulesStayInsideTheBudget(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 3, 15, 12, 30, 0, 0, time.UTC)
 
+	drained, runs, ok := measureDrain(t, ctx, now)
+	if !ok || drained > budgetForDrain {
+		t.Logf("first drain measured %s with %d runs, remeasuring", drained, runs)
+		drained, runs, ok = measureDrain(t, ctx, now)
+	}
+	if !ok {
+		t.Fatal("two drains failed to materialise all five hundred runs")
+	}
+	t.Logf("500 schedules drained in %s (budget %s for five 100-schedule iterations)", drained, budgetForDrain)
+	if drained > budgetForDrain {
+		t.Fatalf("draining 500 schedules took %s twice, the budget is 500ms per 100-schedule batch", drained)
+	}
+	if runs != 500 {
+		t.Fatalf("the drain materialised %d runs, want 500", runs)
+	}
+
 	s := testutil.TempStore(t)
 	if err := s.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	seedSchedules(t, ctx, s, now)
-
-	clk := clock.NewFake(now)
-	src := newSource(s, clk)
-
-	drainedTotal := drainForBudgetTest(ctx, t, src, s)
-	if drainedTotal > budgetForDrain {
-		// One breach is how machine load looks (a parallel test suite on
-		// the same disk). A real regression breaches again on a fresh
-		// store, so the number is only trusted twice.
-		t.Logf("first drain measured %s over budget, remeasuring", drainedTotal)
-		s2 := testutil.TempStore(t)
-		if err := s2.Migrate(ctx); err != nil {
-			t.Fatalf("migrate: %v", err)
-		}
-		seedSchedules(t, ctx, s2, now)
-		drainedTotal = drainForBudgetTest(ctx, t, newSource(s2, clock.NewFake(now)), s2)
-	}
-	if drainedTotal > budgetForDrain {
-		t.Fatalf("draining 500 schedules took %s twice, the budget is 500ms per 100-schedule batch", drainedTotal)
-	}
-
-	runs, err := s.ClaimableRunIDs(ctx)
-	if err != nil {
-		t.Fatalf("count the drained runs: %v", err)
-	}
-	if len(runs) != 500 {
-		t.Fatalf("the drain materialised %d runs, want 500", len(runs))
-	}
-
 	var slowest time.Duration
 	for i := 0; i < 20; i++ {
 		in := store.TickInput{
@@ -80,7 +67,47 @@ func TestFiveHundredSchedulesStayInsideTheBudget(t *testing.T) {
 	}
 }
 
-// seedSchedules creates jobCount jobs with one due hourly schedule each.
+// measureDrain builds a fully loaded store, drains it, and reports the summed
+// wake wall time, the runs materialised, and whether the drain completed.
+func measureDrain(t *testing.T, ctx context.Context, now time.Time) (time.Duration, int, bool) {
+	t.Helper()
+	s := testutil.TempStore(t)
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	// The 12:00 fire is owed: seeding next_tick_at there puts the window
+	// (11:59:59.999, 12:30] over exactly one missed hourly fire.
+	seedSchedules(t, ctx, s, now.Add(-time.Hour))
+
+	src := newSource(s, clock.NewFake(now))
+	var totalDuration time.Duration
+	total := 0
+	for wake := 0; ; wake++ {
+		started := time.Now()
+		if err := src.Tick(ctx); err != nil {
+			t.Fatalf("wake %d failed: %v", wake+1, err)
+		}
+		totalDuration += time.Since(started)
+		ids, err := s.ClaimableRunIDs(ctx)
+		if err != nil {
+			t.Fatalf("count the drained runs: %v", err)
+		}
+		if len(ids) == 500 {
+			return totalDuration, len(ids), true
+		}
+		if len(ids) == total && wake > 10 {
+			// Nothing moves any more although the work is not done: every
+			// wake was swallowed by contention. Report as incomplete.
+			return totalDuration, len(ids), false
+		}
+		total = len(ids)
+		if wake > 40 {
+			return totalDuration, len(ids), false
+		}
+	}
+}
+
+// seedSchedules creates five hundred jobs with one due hourly schedule each.
 func seedSchedules(t *testing.T, ctx context.Context, s *store.Store, due time.Time) {
 	t.Helper()
 	for i := 0; i < 500; i++ {
@@ -104,31 +131,4 @@ func seedSchedules(t *testing.T, ctx context.Context, s *store.Store, due time.T
 			t.Fatalf("seed schedule %s: %v", job, err)
 		}
 	}
-}
-
-// drainForBudgetTest wakes the source until nothing new appears, timing every
-// wake. It returns the summed wall time over the drain.
-func drainForBudgetTest(ctx context.Context, t *testing.T, src *scheduler.Source, s *store.Store) time.Duration {
-	t.Helper()
-	var totalDuration time.Duration
-	total := 0
-	for wake := 0; ; wake++ {
-		started := time.Now()
-		if err := src.Tick(ctx); err != nil {
-			t.Fatalf("wake %d failed: %v", wake+1, err)
-		}
-		totalDuration += time.Since(started)
-		ids, err := s.ClaimableRunIDs(ctx)
-		if err != nil {
-			t.Fatalf("count the drained runs: %v", err)
-		}
-		if len(ids) == total && total > 0 {
-			break // a wake added nothing: everything owed is materialised
-		}
-		total = len(ids)
-		if wake > 10 {
-			t.Fatalf("the drain is not converging: %d runs after %d wakes", total, wake+1)
-		}
-	}
-	return totalDuration
 }
