@@ -23,13 +23,17 @@ func scheduleSeed(name string, next time.Time) ScheduleInput {
 }
 
 // seedScheduleJob creates the job a schedule belongs to; the schema refuses a
-// schedule without one.
+// schedule without one. Its ceiling is deliberately generous (#68): these
+// tests exercise discovery, cursors and coalescing, not admission control,
+// and the default ceiling of one would stand later fire-times down before
+// coalescing ever got involved.
 func seedScheduleJob(t *testing.T, s *Store) {
 	t.Helper()
 	if _, _, err := s.UpsertJobVersion(context.Background(), JobVersionInput{
-		JobName:  "nightly",
-		SpecHash: "sha256:seed",
-		SpecJSON: `{"schema":"paceq.job.v1","name":"nightly","steps":[{"name":"build","run":["true"]}]}`,
+		JobName:       "nightly",
+		SpecHash:      "sha256:seed",
+		SpecJSON:      `{"schema":"paceq.job.v1","name":"nightly","max_concurrent":200,"steps":[{"name":"build","run":["true"]}]}`,
+		MaxConcurrent: 200,
 	}); err != nil {
 		t.Fatalf("seed the job: %v", err)
 	}

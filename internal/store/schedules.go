@@ -278,6 +278,11 @@ type TickResult struct {
 	// evaluation in as another repeat_count step instead of a new row.
 	Coalesced bool
 
+	// Deferred is true when the run was materialised under overlap: queue
+	// with every concurrency slot held: queued, but available_at points
+	// into the future and defer_reason says why.
+	Deferred bool
+
 	// Run describes the queued run when Claimed and the outcome triggered.
 	Run Run
 }
@@ -391,11 +396,17 @@ func (s *Store) MaterializeTick(ctx context.Context, in TickInput) (TickResult, 
 
 		switch outcome {
 		case OutcomeTriggered:
-			run, err := s.materializeTickRun(tx, in, now, at, tickID, sourceName, fireAt, actor)
+			// A zero Run back from admitTickRun is a stand-down only:
+			// it has already converted the claimed tick row into the
+			// skipped row with its reason inside this same transaction,
+			// so one row per fire-time stays the idempotency gate's
+			// promise.
+			run, err := s.admitTickRun(tx, in, now, at, tickID, sourceName, fireAt, actor)
 			if err != nil {
 				return err
 			}
 			out.Run = run
+			out.Deferred = run.DeferReason != ""
 		default:
 			// A skip or an error closes its own evaluation: started,
 			// finished, explained. No trigger, no run.
@@ -424,16 +435,106 @@ WHERE id = ?`, at, tickID); err != nil {
 	return out, nil
 }
 
+// admitTickRun is the admission decision (#68) and the materialisation it
+// leads to, all inside the caller's one BEGIN IMMEDIATE transaction: read the
+// frozen spec, read the occupancy, decide, write. The occupancy read goes
+// through the transaction handle, so the numbers it sees are the numbers no
+// other writer could have moved: the writer pool has one connection and the
+// transaction is IMMEDIATE.
+//
+// Three outcomes:
+//
+//   - A slot is free: the run is queued due now, exactly as before #68.
+//   - The ceiling is held and the schedule's overlap policy is queue: the run
+//     is still materialised, but deferred, available_at a backoff into the
+//     future and defer_reason naming the hold. A deferred run is not active,
+//     so it never blocks its own release.
+//   - The ceiling is held and the policy is skip (the default): nothing is
+//     materialised. The claimed tick row is converted to a stand-down with
+//     the reason code, and the caller records that in the same transaction.
+func (s *Store) admitTickRun(tx *sql.Tx, in TickInput, now time.Time, at int64,
+	tickID, sourceName string, fireAt time.Time, actor string,
+) (Run, error) {
+	// The version is chosen inside the transaction, so an apply racing the
+	// loop still freezes one whole version rather than a mix of two.
+	var versionID, specJSON string
+	if err := tx.QueryRow(`SELECT j.current_version_id, v.spec_json
+FROM jobs j JOIN job_versions v ON v.id = j.current_version_id
+WHERE j.name = ?`, in.Schedule.JobName).Scan(&versionID, &specJSON); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Run{}, fmt.Errorf("materialise %s: no job version is current: %w", sourceName, ErrNotFound)
+		}
+		return Run{}, fmt.Errorf("find the current version of job %s: %w", in.Schedule.JobName, err)
+	}
+	job, err := spec.FromIR([]byte(specJSON))
+	if err != nil {
+		return Run{}, fmt.Errorf("read the frozen spec of job %s (version %s): %w",
+			in.Schedule.JobName, versionID, err)
+	}
+	limit := job.MaxConcurrent
+	if limit < 1 {
+		limit = spec.DefaultMaxConcurrent
+	}
+
+	// The occupancy read and the decision are one step inside this
+	// transaction. Nothing between the SELECT and the INSERT can commit.
+	active, blocking, err := activeRunsForJobTx(tx, in.Schedule.JobName, at)
+	if err != nil {
+		return Run{}, err
+	}
+
+	if active >= limit && overlapOf(in.Schedule.Overlap) != "queue" {
+		code := skipCodeFor(active, limit)
+		text := fmt.Sprintf("%d of %d concurrency slots of job %s are held",
+			active, limit, in.Schedule.JobName)
+		if code == reason.TICKSkippedOverlap {
+			text = fmt.Sprintf("the previous run %s is still going (%d of %d active)",
+				blocking, active, limit)
+		}
+		if err := markTickStoodDownTx(tx, tickID, at, code, text, deferDataJSON(blocking, active, limit)); err != nil {
+			return Run{}, err
+		}
+		return Run{}, nil
+	}
+
+	deferred := active >= limit
+	run, err := s.materializeTickRun(tx, in, now, at, tickID, sourceName, fireAt, actor,
+		versionID, job, deferred, blocking, active, limit)
+	if err != nil {
+		return Run{}, err
+	}
+	return run, nil
+}
+
+// markTickStoodDownTx converts the just claimed triggered tick row into the
+// stand-down it became: skipped, with the code, the human line and the data
+// that names the run which held the slot. The row keeps its fire-time, so a
+// replay still hits the UNIQUE gate instead of writing a second opinion.
+const markTickStoodDownSQL = `UPDATE ticks SET
+outcome = 'skipped', reason_code = ?, reason_text = ?, reason_data = ?,
+finished_at = ?, duration_ms = 0
+WHERE id = ?`
+
+func markTickStoodDownTx(tx *sql.Tx, tickID string, at int64,
+	code reason.Code, text, data string,
+) error {
+	if _, err := tx.Exec(markTickStoodDownSQL,
+		string(code), text, data, at, tickID); err != nil {
+		return fmt.Errorf("mark tick %s stood down: %w", tickID, err)
+	}
+	return nil
+}
+
 // materializeTickRun writes the trigger, the dedup registration, the queued
-// run frozen to the job's current version, its steps, and the queued event.
+// run frozen to the job's current version, its steps, and the queued or
+// deferred event.
 //
 // SEAM (#60, M2-06): the run is born queued with no lease columns. Run leases
 // attach when an executor CLAIMS the run, which is #60's claim statement, not
-// this insert. Nothing here claims, fences or heartbeats; when #60 lands, its
-// ClaimRuns takes over from the dispatcher exactly as it does for manual runs
-// today.
+// this insert. Nothing here claims, fences or heartbeats.
 func (s *Store) materializeTickRun(tx *sql.Tx, in TickInput, now time.Time, at int64,
 	tickID, sourceName string, fireAt time.Time, actor string,
+	versionID string, job *spec.Job, deferred bool, blocking string, active, limit int,
 ) (Run, error) {
 	runID, err := id.New(now)
 	if err != nil {
@@ -465,23 +566,6 @@ ON CONFLICT(source_id, epoch, run_key) DO NOTHING`,
 		return Run{}, fmt.Errorf("register the run key of %s: %w", sourceName, err)
 	}
 
-	// The version is chosen inside the transaction, so an apply racing the
-	// loop still freezes one whole version rather than a mix of two.
-	var versionID, specJSON string
-	if err := tx.QueryRow(`SELECT j.current_version_id, v.spec_json
-FROM jobs j JOIN job_versions v ON v.id = j.current_version_id
-WHERE j.name = ?`, in.Schedule.JobName).Scan(&versionID, &specJSON); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return Run{}, fmt.Errorf("materialise %s: no job version is current: %w", sourceName, ErrNotFound)
-		}
-		return Run{}, fmt.Errorf("find the current version of job %s: %w", in.Schedule.JobName, err)
-	}
-	job, err := spec.FromIR([]byte(specJSON))
-	if err != nil {
-		return Run{}, fmt.Errorf("read the frozen spec of job %s (version %s): %w",
-			in.Schedule.JobName, versionID, err)
-	}
-
 	run := Run{
 		ID:           runID,
 		JobName:      in.Schedule.JobName,
@@ -496,12 +580,33 @@ WHERE j.name = ?`, in.Schedule.JobName).Scan(&versionID, &specJSON); err != nil 
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
+
+	availableAt := now
+	eventKind := "run.queued"
+	var eventCode reason.Code
+	var eventData string
+	if deferred {
+		// The ceiling is held: the run is born queued but held into the
+		// future, and the row says why in both words the schema knows,
+		// defer_reason for the CHECK and the reason code for people.
+		availableAt = now.Add(DefaultDeferBackoff)
+		run.DeferReason = deferReasonModel()
+		run.ReasonCode = string(deferReasonCode())
+		run.ReasonData = deferDataJSON(blocking, active, limit)
+		eventKind = "run.deferred"
+		eventCode = deferReasonCode()
+		eventData = run.ReasonData
+	}
+
 	if _, err := tx.Exec(`INSERT INTO runs
 (id, job_name, job_version_id, trigger_id, origin, run_key, state, available_at,
- scheduled_for, params_json, attempt, max_attempts, created_at, updated_at)
-VALUES (?, ?, ?, ?, 'schedule', ?, 'queued', ?, ?, '{}', 0, 1, ?, ?)`,
+ defer_reason, reason_code, reason_data, scheduled_for, params_json, attempt,
+ max_attempts, created_at, updated_at)
+VALUES (?, ?, ?, ?, 'schedule', ?, 'queued', ?, ?, ?, ?, ?, '{}', 0, 1, ?, ?)`,
 		run.ID, run.JobName, run.JobVersionID, nullIfEmpty(run.TriggerID), in.RunKey,
-		run.AvailableAt.UnixMilli(), fireAt.UnixMilli(), at, at); err != nil {
+		availableAt.UnixMilli(), nullIfEmpty(run.DeferReason),
+		nullIfEmpty(run.ReasonCode), nullIfEmpty(run.ReasonData),
+		fireAt.UnixMilli(), at, at); err != nil {
 		return Run{}, fmt.Errorf("create the run of schedule %s: %w", sourceName, err)
 	}
 
@@ -510,13 +615,19 @@ VALUES (?, ?, ?, ?, 'schedule', ?, 'queued', ?, ?, '{}', 0, 1, ?, ?)`,
 	}
 	faults.Point("M2:tick:after_run")
 
-	if err := appendRunEvent(tx, RunEvent{
+	event := RunEvent{
 		RunID:   run.ID,
 		At:      now,
-		Kind:    "run.queued",
+		Kind:    eventKind,
 		ToState: "queued",
 		Actor:   actor,
-	}); err != nil {
+	}
+	if deferred {
+		run.AvailableAt = availableAt
+		event.ReasonCode = string(eventCode)
+		event.DetailJSON = eventData
+	}
+	if err := appendRunEvent(tx, event); err != nil {
 		return Run{}, err
 	}
 	return run, nil
