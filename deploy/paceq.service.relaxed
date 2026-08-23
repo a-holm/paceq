@@ -1,0 +1,52 @@
+# Relaxed variant: for jobs that need broad filesystem access.
+# The daemon still runs as its own user without new privileges.
+# We only surrender ProtectSystem/ProtectHome because they break common jobs.
+#
+# Copy this file to /etc/systemd/system/paceq.service.d/override.conf,
+# or replace the unit with: cp /usr/share/paceq/paceq.service.relaxed /etc/systemd/system/paceq.service
+
+[Unit]
+Description=paceq orchestrator
+Documentation=https://github.com/a-holm/paceq
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+ExecStart=/usr/bin/paceq serve
+Restart=always
+RestartSec=2s
+WatchdogSec=30s
+TimeoutStartSec=120s
+TimeoutStopSec=120s
+KillSignal=SIGTERM
+KillMode=mixed
+
+User=paceq
+Group=paceq
+StateDirectory=paceq
+StateDirectoryMode=0700
+RuntimeDirectory=paceq
+RuntimeDirectoryMode=0710
+ConfigurationDirectory=paceq
+UMask=0077
+Environment=PACEQ_LOG_FORMAT=json
+
+# Relaxed hardening: ProtectSystem=full instead of strict, no ProtectHome/PrivateTmp.
+NoNewPrivileges=yes
+ProtectSystem=full
+# ProtectHome=yes is removed: jobs may need $HOME.
+# PrivateTmp=no is removed: jobs often share /tmp with other tools.
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=no
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=multi-user.target
