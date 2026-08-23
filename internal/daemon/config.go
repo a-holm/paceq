@@ -43,6 +43,16 @@ type Config struct {
 	// until then it is accepted and carried.
 	JobsDir string
 
+	// ConfigDir is the directory paceq reads configuration files from.
+	// Empty means /etc/paceq when running under systemd, or the working
+	// directory otherwise.
+	ConfigDir string
+
+	// RuntimeDir is where transient runtime files live (the unix socket).
+	// Empty means /run/paceq when running under systemd, falling back to
+	// the state directory.
+	RuntimeDir string
+
 	// SocketPath enables the health endpoints over a unix socket when not
 	// empty. Empty means disabled for now: the runtime directory contract
 	// arrives with the systemd work, and nothing else should invent paths.

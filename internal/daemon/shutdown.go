@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/a-holm/paceq/internal/clock"
+	"github.com/a-holm/paceq/internal/obs/sdnotify"
 	"github.com/a-holm/paceq/internal/runner"
 )
 
@@ -55,6 +56,9 @@ type shutdown struct {
 // stopped, with a clean stop reported as clean.
 func (sd *shutdown) run(cause error) error {
 	base := context.WithoutCancel(context.Background())
+
+	// Notify systemd we are stopping. This prevents a restart during clean shutdown.
+	_ = sdnotify.Stopping("draining")
 
 	// Phase one: no new work enters. Measured, because "the intake stops at
 	// once" is a promise an operator can hold us to (05 section 3.2).
