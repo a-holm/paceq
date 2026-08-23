@@ -95,10 +95,7 @@ func runLogs(ctx context.Context, env Env, g *globals, out *ui, runArg string, f
 	}
 
 	// Files and the read only database carry everything this command needs.
-	// It works while the daemon is down because nothing here asks it. An
-	// explicitly named socket that nobody answers still earns its line on
-	// stderr, so a human reading -f output knows why nothing new appears.
-	noteDaemon(resolveSocket(g, env, stateDir), env, out)
+	// It works while the daemon is down because nothing here asks it.
 	ro, err := store.OpenReadOnly(ctx, dbPath, store.Options{})
 	if err != nil {
 		return err

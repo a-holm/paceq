@@ -24,6 +24,7 @@ const (
 	defaultTickInterval   = 1 * time.Second
 	defaultHeartbeatEvery = 10 * time.Second
 	defaultReapEvery      = engine.DefaultReapInterval
+	defaultReconcileEvery = 30 * time.Second
 )
 
 // Config is everything Serve needs beyond the state directory. The zero value
@@ -88,6 +89,11 @@ type Config struct {
 	// ReapEvery is how often the reaper sweep looks for expired leases.
 	// Zero means ten seconds.
 	ReapEvery time.Duration
+
+	// ReconcileEvery is the safety-net cadence for periodic reconciliation
+	// (issue #62), riding under the reaper's role lease. Zero means thirty
+	// seconds.
+	ReconcileEvery time.Duration
 
 	// MaxCrashCount is the poison quarantine line for runs that keep dying
 	// with their executor. Zero means five.
@@ -171,4 +177,11 @@ func (c Config) reapEvery() time.Duration {
 		return c.ReapEvery
 	}
 	return defaultReapEvery
+}
+
+func (c Config) reconcileEvery() time.Duration {
+	if c.ReconcileEvery > 0 {
+		return c.ReconcileEvery
+	}
+	return defaultReconcileEvery
 }

@@ -323,6 +323,71 @@ func TestReaperRequeuesAnExpiredRunForANewHolder(t *testing.T) {
 	}
 }
 
+// TestBootSweepReapsARunningRunWhoseLeaseIsStillLive is the boot-changed arm
+// of startup reconciliation (#62): a machine restart proves every child dead,
+// so the lease's own expiry has stopped being the evidence that matters. The
+// ordinary reaper must still refuse the same run, which is what keeps the two
+// callers honest about which evidence each one is using.
+func TestBootSweepReapsARunningRunWhoseLeaseIsStillLive(t *testing.T) {
+	ctx := context.Background()
+	s, _ := coreStore(t)
+	runID := aRetryableQueuedRun(t, s)
+
+	if _, _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: "doomed", TTL: time.Hour}); err != nil {
+		t.Fatalf("ClaimRun: %v", err)
+	}
+	if err := s.StartStep(ctx, runID, "build", ref("doomed", 1)); err != nil {
+		t.Fatalf("StartStep: %v", err)
+	}
+
+	// The ordinary sweep refuses: an hour of lease is left, the holder may
+	// only be slow.
+	reaped, err := s.ReapExpiredRuns(ctx, store.ReapOptions{})
+	if err != nil {
+		t.Fatalf("ReapExpiredRuns: %v", err)
+	}
+	if len(reaped) != 0 {
+		t.Fatalf("the ordinary reaper took %+v with an hour of lease left, want nothing", reaped)
+	}
+
+	// The boot sweep takes it: the machine restarted, so the holder is dead
+	// no matter what its lease says.
+	reaped, err = s.ReapExpiredRuns(ctx, store.ReapOptions{IgnoreLease: true})
+	if err != nil {
+		t.Fatalf("ReapExpiredRuns with IgnoreLease: %v", err)
+	}
+	if len(reaped) != 1 || reaped[0].ID != runID {
+		t.Fatalf("the boot sweep took %+v, want exactly run %s", reaped, runID)
+	}
+	r := reaped[0]
+	if r.State != string(model.RunQueued) {
+		t.Errorf("the boot sweep sent the run to %s, want queued", r.State)
+	}
+	if r.LeaseEpoch != 2 || r.CrashCount != 1 {
+		t.Errorf("epoch %d crash_count %d, want 2 and 1: a boot death counts as a crash", r.LeaseEpoch, r.CrashCount)
+	}
+
+	detail := mustGetRun(t, ctx, s, runID)
+	step := detail.Steps[0]
+	if step.State != string(model.StepPending) || step.ReasonCode != string(reason.STEPFailedExecutorLost) {
+		t.Errorf("the running step came back %s/%q, want pending under %q",
+			step.State, step.ReasonCode, reason.STEPFailedExecutorLost)
+	}
+	if detail.Run.LeaseOwner != "" || !detail.Run.LeaseExpiresAt.IsZero() {
+		t.Errorf("the reaped run still shows a lease: owner %q expires %v",
+			detail.Run.LeaseOwner, detail.Run.LeaseExpiresAt)
+	}
+
+	events, err := s.RunEvents(ctx, runID)
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	last := events[len(events)-1]
+	if last.Kind != "run.requeued" || last.ToState != string(model.RunQueued) {
+		t.Fatalf("the boot sweep event is %+v, want run.requeued to queued", last)
+	}
+}
+
 func TestReaperQuarantinesAPoisonedRun(t *testing.T) {
 	ctx := context.Background()
 	s, clk := coreStore(t)

@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/a-holm/paceq/internal/api"
 	"github.com/a-holm/paceq/internal/clock"
 	"github.com/a-holm/paceq/internal/model"
 	"github.com/a-holm/paceq/internal/reason"
@@ -70,6 +69,58 @@ func seedClaimedRunningRun(t *testing.T, st *store.Store) string {
 type stubRunOK struct{}
 
 func (stubRunOK) ExecuteRun(context.Context, string) (string, error) { return "succeeded", nil }
+
+// TestReconciliationFinishesBeforeLoopsAndReady is AC9's order proof: in the
+// recorded log of one real Serve run, the reconciliation finished line sits
+// before every "loop started" line and before "daemon ready". A daemon that
+// announces itself while it is still cleaning is a lie, so the order is part
+// of the contract, not an implementation detail.
+func TestReconciliationFinishesBeforeLoopsAndReady(t *testing.T) {
+	rec, logger := newRecLog()
+	root := t.TempDir()
+	cfg := Config{
+		StateDir: filepath.Join(root, "state"),
+		Version:  "test",
+		JobsDir:  "jobs",
+		Logger:   logger,
+		Owner:    "serve:test",
+	}
+	if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
+		t.Fatalf("create the state directory: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- Serve(ctx, cfg, clock.System()) }()
+
+	waitForLogLine(t, rec, "daemon ready", 10*time.Second)
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("a clean stop reported %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Serve did not return within 10s of cancellation")
+	}
+
+	finished := rec.indexes("startup reconciliation finished")
+	if len(finished) == 0 {
+		t.Fatal("the log carries no reconciliation finished line at all")
+	}
+	done := finished[0]
+	for _, i := range rec.indexes("loop started") {
+		if i < done {
+			t.Errorf("a loop started (record %d) before reconciliation finished (%d)", i, done)
+		}
+	}
+	for _, i := range rec.indexes("daemon ready") {
+		if i < done {
+			t.Error("daemon ready was logged before reconciliation finished")
+		}
+	}
+}
 
 // TestReleaseForDrainHandsEverythingBack is the unit half of acceptance
 // criterion 4: steps go to pending with the attempt restored, the event names
@@ -260,7 +311,7 @@ func TestHealthEndpointServesWithoutTheDatabase(t *testing.T) {
 	sts := newStatuses(func() time.Time { return time.Unix(0, 0).UTC() })
 	sts.mark("scheduler")
 
-	stop := startHealthEndpoint(cfg, sts, cfg.Logger, nil)
+	stop := startHealthEndpoint(cfg, sts, cfg.Logger)
 	if stop == nil {
 		t.Fatal("a configured socket did not start the endpoints")
 	}
@@ -301,11 +352,8 @@ func TestHealthEndpointServesWithoutTheDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat the socket: %v", err)
 	}
-	// M2-08 sets the mode to 0660 on purpose (the group bits are for the
-	// systemd RuntimeDirectory story of M2-11); only the other-bits are
-	// forbidden outright.
-	if mode := info.Mode().Perm(); mode != api.SocketMode {
-		t.Errorf("the socket is %#o, want %#o", mode, api.SocketMode)
+	if mode := info.Mode().Perm(); mode&0o077 != 0 {
+		t.Errorf("the socket is %#o, want no access for group or other", mode)
 	}
 }
 
@@ -338,7 +386,10 @@ func TestServeRestartConvergesWhatACrashLeftRunning(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() { errCh <- Serve(ctx, cfg, clk) }()
 
-	waitForLogLine(t, rec, "recovered a run left running by an earlier executor", 10*time.Second)
+	// Wait for reconciliation to have finished completely, not merely
+	// started: cancelling mid sweep would be a stop during startup, which
+	// refuses rather than half-serves.
+	waitForLogLine(t, rec, "startup reconciliation finished", 10*time.Second)
 	cancel()
 	select {
 	case err := <-errCh:
@@ -518,6 +569,91 @@ func waitForLogLine(t *testing.T, rec *recLog, msg string, within time.Duration)
 			t.Fatalf("%q never appeared in %+v", msg, rec.records)
 		}
 		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// TestGapRegistrationUsesPriorSession is the proof for the first review
+// must-fix: the gap written by Serve() uses the prior session's LastSeenAt,
+// not the current session's StartedAt. A stale session with a heartbeat one
+// minute after start is left behind; thirty minutes later, Serve writes an
+// outages row whose gap starts at the heartbeat, not at the restart.
+func TestGapRegistrationUsesPriorSession(t *testing.T) {
+	rec, logger := newRecLog()
+	clk := clock.NewFake(time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC))
+	root := t.TempDir()
+	cfg := Config{
+		StateDir:     filepath.Join(root, "state"),
+		Version:      "test",
+		JobsDir:      "jobs",
+		Logger:       logger,
+		Owner:        "serve:test",
+		TickInterval: time.Hour,
+	}
+	if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
+		t.Fatalf("create the state directory: %v", err)
+	}
+
+	// Seed a first session with a heartbeat and leave it stale, exactly the
+	// shape a crash leaves behind.
+	st, err := store.OpenState(context.Background(), cfg.StateDir,
+		store.Options{Clock: clk})
+	if err != nil {
+		t.Fatalf("pre-open the state to seed it: %v", err)
+	}
+	if err := st.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	sess, err := st.StartSession(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("first start: %v", err)
+	}
+	clk.Advance(time.Minute)
+	if err := st.TouchSession(context.Background(), sess.ID); err != nil {
+		t.Fatalf("heartbeat: %v", err)
+	}
+	lastHeartbeat := clk.Now().UTC()
+	clk.Advance(30 * time.Minute)
+	if err := st.Close(); err != nil {
+		t.Fatalf("close the seeded store: %v", err)
+	}
+
+	// Serve must write an outages row whose From is the prior session's
+	// LastSeenAt (the heartbeat), not the new session's StartedAt.
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() { errCh <- Serve(ctx, cfg, clk) }()
+
+	waitForLogLine(t, rec, "startup reconciliation finished", 10*time.Second)
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("a clean stop reported %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Serve did not return within 10s of cancellation")
+	}
+
+	reader, err := store.OpenReadOnly(context.Background(),
+		filepath.Join(cfg.StateDir, store.DatabaseFileName), store.Options{Clock: clk})
+	if err != nil {
+		t.Fatalf("reopen the state: %v", err)
+	}
+	defer func() { _ = reader.Close() }()
+
+	rows, err := reader.Outages(context.Background())
+	if err != nil {
+		t.Fatalf("list outages: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("%d outages after a crash with a heartbeat, want exactly 1", len(rows))
+	}
+	o := rows[0]
+	if !o.From.Equal(lastHeartbeat) {
+		t.Errorf("the gap starts at %s, want the prior session's last heartbeat %s", o.From, lastHeartbeat)
+	}
+	if o.From.Equal(o.To) {
+		t.Errorf("the gap is zero: from %s equals to %s; the gap was captured from the current session, not the prior one", o.From, o.To)
 	}
 }
 

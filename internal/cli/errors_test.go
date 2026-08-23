@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/a-holm/paceq/internal/api"
 	"github.com/a-holm/paceq/internal/store"
 )
 
@@ -38,7 +37,6 @@ func TestEveryErrorCarriesAllThreeParts(t *testing.T) {
 		"interruptedError": interruptedError(context.Canceled),
 		"internalError":    internalError("could not write paceq.yaml", errors.New("read only file system")),
 		"pathError":        pathError("jobs/nightly.yaml", fs.ErrNotExist),
-		"wireFailure":      wireFailure(Env{Getenv: lookup(nil)}, &api.WireError{Status: 409, Code: "conflict", Message: "another writer holds the state"}),
 
 		"classify": classify(ctx, errors.New("something nobody classified")),
 	}

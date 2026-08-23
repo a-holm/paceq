@@ -202,6 +202,23 @@ func TestLookupRoundTrip(t *testing.T) {
 	}
 }
 
+// TestDaemonCrashedCodeIsTheHangingTickVerdict pins the verdict startup
+// reconciliation (#62) writes over a tick its dying daemon left running. The
+// tick moves from running to error, so the code has to be terminal, and it
+// lives at the tick level beside the other outcomes the ticks table stores.
+func TestDaemonCrashedCodeIsTheHangingTickVerdict(t *testing.T) {
+	e, ok := Lookup(TICKErrorDaemonCrashed)
+	if !ok {
+		t.Fatalf("%s is not in the catalogue", TICKErrorDaemonCrashed)
+	}
+	if e.Level != LevelTick {
+		t.Errorf("%s: level is %s, want %s", e.Code, e.Level, LevelTick)
+	}
+	if !e.Terminal {
+		t.Errorf("%s: Terminal is false, want true: writing it ends the tick", e.Code)
+	}
+}
+
 // TestCatalogueMatchesTheStableList is the stability contract: deleting or
 // renaming a code breaks this test on purpose, so the change has to be argued
 // in the commit that makes it. A code means the same thing in 2027 as in 2026,

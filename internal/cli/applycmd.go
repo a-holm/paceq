@@ -6,13 +6,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
 
-	"github.com/a-holm/paceq/internal/api"
 	"github.com/a-holm/paceq/internal/diag"
 	"github.com/a-holm/paceq/internal/spec"
 	"github.com/a-holm/paceq/internal/store"
@@ -126,18 +126,7 @@ func runApply(ctx context.Context, env Env, g *globals, out *ui, args []string) 
 
 	var results []store.JobApplyResult
 	if len(loaded) > 0 {
-		plan := planWrite(ctx, env, g)
-		if plan.err != nil {
-			return plan.err
-		}
-		if plan.client != nil {
-			defer func() { _ = plan.client.Close() }()
-			// The daemon parses the files itself; definitions still enter
-			// only through its disk, never through this request.
-			return socketApply(ctx, env, out, plan.client, files)
-		}
-		defer func() { _ = plan.st.Close() }()
-		results, err = applyToStore(ctx, env, g, plan.st, loaded)
+		results, err = applyToStore(ctx, env, g, loaded)
 		if err != nil {
 			return err
 		}
@@ -172,137 +161,37 @@ func firstError(diags diag.List) diag.Diagnostic {
 	return diags[0]
 }
 
-// applyToStore records the batch through a store that resolution already
-// opened under the state lock. The database must exist already: init owns
-// creating one, and apply refuses to guess at a project nobody made.
-func applyToStore(ctx context.Context, env Env, g *globals, st *store.Store, loaded []loadedSpec) ([]store.JobApplyResult, error) {
+// applyToStore opens the state database and records the batch. The database
+// must exist already: init owns creating one, and apply refuses to guess at a
+// project nobody made.
+func applyToStore(ctx context.Context, env Env, g *globals, loaded []loadedSpec) ([]store.JobApplyResult, error) {
+	stateDir, err := g.stateDir(env)
+	if err != nil {
+		return nil, err
+	}
+	dbPath := filepath.Join(stateDir, store.DatabaseFileName)
+	if _, err := os.Stat(dbPath); errors.Is(err, fs.ErrNotExist) {
+		return nil, usageError(
+			fmt.Sprintf("there is no state database at %s yet", displayPath(env, dbPath)),
+			"paceq init  creates a project with a state directory and an example job",
+		)
+	}
+
+	s, err := store.OpenState(ctx, stateDir, store.Options{Clock: clkOf(env)})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = s.Close() }()
+
 	out := make([]store.JobVersionInput, len(loaded))
 	for i, item := range loaded {
 		out[i] = item.input
 	}
-	results, err := st.ApplyJobs(ctx, out)
+	results, err := s.ApplyJobs(ctx, out)
 	if err != nil {
 		return nil, internalError("could not record the job specs", err)
 	}
 	return results, nil
-}
-
-// socketApply sends the file paths to the daemon, which parses and records
-// them through its own writer, and renders the report it sends back. The
-// success lines match the direct path; a failed file shows its code and
-// message instead of a source excerpt, because the excerpt lives on the
-// daemon's side of the socket.
-func socketApply(ctx context.Context, env Env, out *ui, client *api.Client, files []jobFile) error {
-	paths := make([]string, len(files))
-	for i, file := range files {
-		paths[i] = file.path
-	}
-	report, err := client.Apply(ctx, paths)
-	if err != nil {
-		var wire *api.WireError
-		if errors.As(err, &wire) {
-			return wireFailure(env, wire)
-		}
-		return internalError("could not reach the daemon", err)
-	}
-
-	if out.mode == modeJSON {
-		return out.json(applyReport{
-			Applied:   convertApplied(report.Applied),
-			Unchanged: convertUnchanged(report.Unchanged),
-			Failed:    convertFailed(report.Failed),
-		})
-	}
-
-	all := append(append([]api.ApplyEntry{}, report.Applied...), report.Unchanged...)
-	width := 3
-	for _, entry := range all {
-		if len(entry.Job) > width {
-			width = len(entry.Job)
-		}
-	}
-	for _, entry := range report.Applied {
-		status := "new"
-		if entry.Version > 1 {
-			status = "updated"
-		}
-		out.print("%s %s  %s  version %d  sha256:%s",
-			out.symbols.ok, pad(entry.Job, width), status, entry.Version, shortHash(entry.SpecHash))
-	}
-	for _, entry := range report.Unchanged {
-		out.print("%s %s  unchanged  version %d  sha256:%s",
-			out.symbols.ok, pad(entry.Job, width), entry.Version, shortHash(entry.SpecHash))
-	}
-	for i, failure := range report.Failed {
-		if i == 0 && len(all) > 0 {
-			fmt.Fprintln(out.out)
-		}
-		out.print("%s %s", out.symbols.fail, failure.File)
-		out.print("    %s: %s", failure.Code, failure.Message)
-	}
-	fmt.Fprintln(out.out)
-
-	switch {
-	case len(report.Failed) > 0:
-		out.print("%s, %s", count(len(all), "job"), count(len(report.Failed), "failed file"))
-	default:
-		out.print("%s %s", out.symbols.ok, count(len(all), "job"))
-	}
-
-	if len(report.Failed) == 0 {
-		return nil
-	}
-	return &Error{
-		code: ExitValidation,
-		what: fmt.Sprintf("%s in %s", count(len(report.Failed), "job file"), count(len(files), "path")),
-		next: []string{
-			"each failed file above names its code; paceq error <code>  explains it in full",
-			"a job named by a broken file keeps its last good definition",
-		},
-	}
-}
-
-// convertApplied and its two siblings move wire entries into the report
-// types the direct path renders.
-func convertApplied(entries []api.ApplyEntry) []appliedEntry {
-	out := make([]appliedEntry, 0, len(entries))
-	for _, entry := range entries {
-		out = append(out, appliedEntry{
-			Job: entry.Job, File: entry.File, Version: entry.Version,
-			SpecHash: entry.SpecHash, FileSHA256: entry.FileSHA256,
-		})
-	}
-	return out
-}
-
-func convertUnchanged(entries []api.ApplyEntry) []unchangedEntry {
-	out := make([]unchangedEntry, 0, len(entries))
-	for _, entry := range entries {
-		out = append(out, unchangedEntry{
-			Job: entry.Job, File: entry.File, Version: entry.Version,
-			SpecHash: entry.SpecHash, FileSHA256: entry.FileSHA256,
-		})
-	}
-	return out
-}
-
-func convertFailed(entries []api.ApplyWireFailure) []failedEntry {
-	out := make([]failedEntry, 0, len(entries))
-	for _, entry := range entries {
-		out = append(out, failedEntry{File: entry.File, Code: entry.Code, Message: entry.Message})
-	}
-	return out
-}
-
-// shortHash trims a sha256: label to the width the tables show.
-func shortHash(hash string) string {
-	if cut, ok := strings.CutPrefix(hash, "sha256:"); ok {
-		hash = cut
-	}
-	if len(hash) > 12 {
-		return hash[:12]
-	}
-	return hash
 }
 
 func writeApplyReport(out *ui, results []store.JobApplyResult, loaded []loadedSpec, failed []failedSpec) error {

@@ -11,23 +11,6 @@ import (
 	"github.com/a-holm/paceq/internal/store"
 )
 
-// decodeStatusRows unwraps the status envelope a pipe gets, asserting the
-// daemon-down fact that travels with it: the fixture has no daemon running.
-func decodeStatusRows(t *testing.T, stdout string) []map[string]any {
-	t.Helper()
-	var envelope struct {
-		DaemonUp *bool            `json:"daemon_up"`
-		Jobs     []map[string]any `json:"jobs"`
-	}
-	if err := json.Unmarshal([]byte(stdout), &envelope); err != nil {
-		t.Fatalf("decode the status envelope: %v\n%s", err, stdout)
-	}
-	if envelope.DaemonUp == nil || *envelope.DaemonUp {
-		t.Fatalf("the status document does not say daemon_up false: %s", stdout)
-	}
-	return envelope.Jobs
-}
-
 // status is the per job view: one line per job, the newest run beside it.
 
 func TestStatusShowsEveryJobsCurrentState(t *testing.T) {
@@ -68,7 +51,10 @@ func TestStatusShowsEveryJobsCurrentState(t *testing.T) {
 	}
 
 	piped := runCLI(t, dir, nil, "status")
-	rows := decodeStatusRows(t, piped.stdout)
+	var rows []map[string]any
+	if err := json.Unmarshal([]byte(piped.stdout), &rows); err != nil {
+		t.Fatalf("a pipe got no JSON array: %v\n%s", err, piped.stdout)
+	}
 	if len(rows) != 3 {
 		t.Fatalf("status listed %d jobs, want 3", len(rows))
 	}
@@ -96,7 +82,10 @@ func TestStatusOneJobOnly(t *testing.T) {
 	if got.code != ExitOK {
 		t.Fatalf("status import = %d\n%s%s", got.code, got.stdout, got.stderr)
 	}
-	rows := decodeStatusRows(t, got.stdout)
+	var rows []map[string]any
+	if err := json.Unmarshal([]byte(got.stdout), &rows); err != nil {
+		t.Fatalf("a pipe got no JSON array: %v\n%s", err, got.stdout)
+	}
 	if len(rows) != 1 || rows[0]["job"] != "import" {
 		t.Fatalf("rows = %v, want only import", rows)
 	}

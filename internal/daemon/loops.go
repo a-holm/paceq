@@ -74,10 +74,17 @@ type reapSweeper interface {
 }
 
 // reaperLoop sweeps for expired run leases while this instance holds the
-// reaper role lease. The lease decides who sweeps; the ticker decides when.
-// Losing leadership cancels the sweep body, which is how two daemons that can
-// both see the rows stay one reaper.
-func reaperLoop(ctx context.Context, d loops, every time.Duration, sweeper reapSweeper) error {
+// reaper role lease, and carries the periodic reconciliation safety net
+// (issue #62) inside the same leadership. The lease decides who sweeps; the
+// ticker decides when; the reconciler runs on its own cadence so a 30 second
+// safety net is not dragged to the reaper's faster clock. A nil reconciler
+// keeps the old shape for tests.
+func reaperLoop(ctx context.Context, d loops, every time.Duration, sweeper reapSweeper,
+	reconcileEvery time.Duration, rec func(context.Context) error,
+) error {
+	var lastReconciled clock.Mono
+	haveReconciled := false
+
 	return loop(ctx, d, "reaper", every, notify.TopicCancelRequested, func(ctx context.Context) error {
 		reaped, err := sweeper.ReapExpiredRuns(ctx)
 		if err != nil {
@@ -87,6 +94,17 @@ func reaperLoop(ctx context.Context, d loops, every time.Duration, sweeper reapS
 			d.log.Info("reaped an expired run",
 				"run", r.ID, "state", r.State, "epoch", r.LeaseEpoch)
 		}
+		if rec == nil || reconcileEvery <= 0 {
+			return nil
+		}
+		if haveReconciled && d.clk.Since(lastReconciled) < reconcileEvery {
+			return nil
+		}
+		if err := rec(ctx); err != nil {
+			return err
+		}
+		lastReconciled = d.clk.Mark()
+		haveReconciled = true
 		return nil
 	})
 }

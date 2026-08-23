@@ -11,8 +11,8 @@ import (
 	"github.com/a-holm/paceq/internal/faults"
 	"github.com/a-holm/paceq/internal/leases"
 	"github.com/a-holm/paceq/internal/logsink"
-	"github.com/a-holm/paceq/internal/model"
 	"github.com/a-holm/paceq/internal/notify"
+	"github.com/a-holm/paceq/internal/reconcile"
 	"github.com/a-holm/paceq/internal/scheduler"
 	"github.com/a-holm/paceq/internal/store"
 )
@@ -39,6 +39,37 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 	}
 	faults.Point("M2:serve:after_migration")
 
+	// The health gate, before anything writes: a database already in a state
+	// the code cannot reason about must not be mutated further. Only the
+	// critical subset refuses; ordinary drift is full fsck's business later.
+	// It runs before StartSession so a refusal preserves BootChanged() for
+	// the next attempt after the operator fixes the state.
+	violations, err := st.QuickFsck(ctx)
+	if err != nil {
+		_ = st.Close()
+		return fmt.Errorf("serve: the startup health check failed: %w", err)
+	}
+	if summary := reconcile.CriticalViolationSummary(violations); summary != "" {
+		_ = st.Close()
+		return fmt.Errorf("serve: startup refused: %s; run \"paceq fsck --repair\" "+
+			"and confirm manually before starting", summary)
+	}
+
+	// The gap is captured BEFORE StartSession closes the stale row. After
+	// StartSession the only open session is our own fresh one, whose
+	// LastSeenAt is just now, making every gap read zero. Reading the
+	// prior session's last heartbeat here means the outage row explains
+	// real downtime, not runtime.
+	var gapFrom time.Time
+	prevSession := ""
+	if prevSess, found, err := st.OpenSession(ctx); err != nil {
+		_ = st.Close()
+		return fmt.Errorf("serve: %w", err)
+	} else if found {
+		gapFrom = prevSess.LastSeenAt
+		prevSession = prevSess.ID
+	}
+
 	sess, err := st.StartSession(ctx, cfg.Version)
 	if err != nil {
 		_ = st.Close()
@@ -47,20 +78,31 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 	log.Info("session opened", "session", sess.ID, "pid", sess.PID,
 		"boot_changed", st.BootChanged())
 
-	// The recovery call point. Runs left running by a dead executor converge
-	// through the existing engine recovery: wait out the dead lease, close
-	// its steps as lost, requeue through lease_expired. M2-07 replaces this
-	// with the full R0-R11 reconciliation, including the gap detection that
-	// writes synthetic ticks for the outage.
-	if err := recoverInterruptedRuns(ctx, st, cfg, clk); err != nil {
-		_ = st.Close()
-		return fmt.Errorf("serve: %w", err)
-	}
-
+	// The bus exists before reconciliation so the sweep's release notice has
+	// somewhere to go; the loops that subscribe come later.
 	bus := notify.New()
 	if cfg.DisableNotifyBus {
 		bus = notify.Disabled()
 	}
+
+	// Startup reconciliation (M2-07) replaces the old per-run recovery call
+	// that sat here: one whole-state sweep over everything the crash left -
+	// orphaned process groups, runs still marked running, ticks never
+	// finished - and the outages row that explains the downtime gap. Nothing
+	// else in this process is running yet, so there is nobody to race.
+	if err := reconcile.OnStartup(ctx, st, reconcile.Options{
+		Clock:            clk,
+		Log:              log,
+		SessionID:        sess.ID,
+		SessionStartedAt: sess.StartedAt,
+		GapFrom:          gapFrom,
+		PrevSessionID:    prevSession,
+		Wake:             func() { bus.Notify(notify.TopicRunQueued) },
+	}); err != nil {
+		_ = st.Close()
+		return fmt.Errorf("serve: %w", err)
+	}
+
 	statuses := newStatuses(func() time.Time { return clk.Now() })
 	d := loops{clk: clk, bus: bus, status: statuses, log: log}
 
@@ -117,24 +159,32 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 	launch(grp.ctx, nil, func(c context.Context) error {
 		return eng.RunLeaseRenewals(c)
 	})
+	// The reaper owns expired-lease sweeps under its fenced role lease; the
+	// 30 second reconciliation safety net rides along inside the same
+	// leadership, so the two sweeps that touch the same rows can never run
+	// as concurrent actors. Losing leadership cancels both underneath it.
 	launch(grp.ctx, nil, func(c context.Context) error {
-		// One reaper at a time, decided by the role lease; whoever loses
-		// leadership has its sweep cancelled underneath it. The loop body is
-		// the ordinary loop shape, so the log carries its start line like
-		// every other loop's.
 		return leases.RunAsLeader(c, st, leases.Options{
 			Name:   "reaper",
 			Holder: cfg.owner(),
 			Clock:  clk,
 			Log:    log,
 		}, func(body context.Context, _ int64) error {
-			return reaperLoop(body, d, cfg.reapEvery(), eng)
+			return reaperLoop(body, d, cfg.reapEvery(), eng,
+				cfg.reconcileEvery(), func(rc context.Context) error {
+					return reconcile.Periodic(rc, st, reconcile.Options{
+						Clock:            clk,
+						Log:              log,
+						SessionID:        sess.ID,
+						SessionStartedAt: sess.StartedAt,
+					})
+				})
 		})
 	})
 	launch(grp.ctx, nil, func(c context.Context) error {
 		return janitorLoop(c, d, tickEvery)
 	})
-	stopHealth := startHealthEndpoint(cfg, statuses, log, st)
+	stopHealth := startHealthEndpoint(cfg, statuses, log)
 	launch(grp.ctx, nil, func(c context.Context) error {
 		return heartbeatLoop(c, d, cfg.heartbeatEvery(), st, sess.ID)
 	})
@@ -215,28 +265,4 @@ func stopCause(loopErr error, gctx context.Context) error {
 		return loopErr
 	}
 	return gctx.Err()
-}
-
-// recoverInterruptedRuns converges everything a crashed executor left behind,
-// using the same recovery the crash harness proves.
-func recoverInterruptedRuns(ctx context.Context, st *store.Store, cfg Config, clk clock.Clock) error {
-	filter := store.RunFilter{States: []string{string(model.RunRunning)}}
-	running, err := st.ListRuns(ctx, filter)
-	if err != nil {
-		return err
-	}
-	if len(running) == 0 {
-		return nil
-	}
-	log := cfg.logger()
-	eng := newEngine(cfg, st, clk)
-	for _, r := range running {
-		state, err := eng.Recover(ctx, r.ID)
-		if err != nil {
-			return err
-		}
-		log.Info("recovered a run left running by an earlier executor",
-			"run", r.ID, "state", state)
-	}
-	return nil
 }

@@ -26,9 +26,14 @@ import (
 var stateUpdatePattern = regexp.MustCompile(`UPDATE\s+(runs|steps)\b`)
 
 // transitionFiles are the only files in the module allowed to match it.
+// inject.go is the deliberate exception: its whole purpose is fault
+// injection for the negative proofs, writing broken rows on purpose so
+// fsck can name them. Its writes carry nolint:fencing markers the
+// fencing test requires, and nothing outside a test may call it.
 var transitionFiles = map[string]bool{
 	"internal/store/transitions.go": true,
 	"internal/store/runlease.go":    true,
+	"internal/store/inject.go":      true,
 }
 
 func TestStateUpdatesStayInTheTransitionLayer(t *testing.T) {

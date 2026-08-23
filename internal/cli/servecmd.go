@@ -18,6 +18,7 @@ import (
 // the packaging milestone.
 type serveFlags struct {
 	jobsDir      string
+	socket       string
 	workers      int
 	drainTimeout time.Duration
 	noNotifyBus  bool
@@ -50,6 +51,7 @@ another serve, or any command that writes, is refused with exit 6.`,
 		}),
 	}
 	cmd.Flags().StringVar(&f.jobsDir, "jobs-dir", "jobs", "directory the scheduler reads job files from")
+	cmd.Flags().StringVar(&f.socket, "socket", "", "unix socket for the health endpoints (empty: disabled until M2-08)")
 	cmd.Flags().IntVar(&f.workers, "workers", 0, "runs executed at once (0: one per CPU)")
 	cmd.Flags().DurationVar(&f.drainTimeout, "drain-timeout", 30*time.Second, "how long running steps may finish on a stop")
 	cmd.Flags().BoolVar(&f.noNotifyBus, "no-notify-bus", false,
@@ -70,20 +72,11 @@ func runServe(ctx context.Context, env Env, g *globals, f serveFlags) error {
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sigs)
 
-	// The socket is on by default at the resolved path: the daemon exists
-	// so that clients can reach it (M2-08). --socket none, from the flag or
-	// from PACEQ_SOCKET, turns the listener off entirely.
-	setting := resolveSocket(g, env, stateDir)
-	socketPath := setting.path
-	if setting.off {
-		socketPath = ""
-	}
-
 	cfg := daemon.Config{
 		Version:          version,
 		StateDir:         stateDir,
 		JobsDir:          f.jobsDir,
-		SocketPath:       socketPath,
+		SocketPath:       f.socket,
 		Workers:          f.workers,
 		DrainTimeout:     f.drainTimeout,
 		DisableNotifyBus: f.noNotifyBus,

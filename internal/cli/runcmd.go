@@ -15,10 +15,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/a-holm/paceq/internal/api"
 	"github.com/a-holm/paceq/internal/diag"
 	"github.com/a-holm/paceq/internal/engine"
-	"github.com/a-holm/paceq/internal/id"
 	"github.com/a-holm/paceq/internal/logsink"
 	"github.com/a-holm/paceq/internal/model"
 	"github.com/a-holm/paceq/internal/reason"
@@ -89,10 +87,6 @@ func runRun(ctx context.Context, env Env, g *globals, out *ui, jobName string, f
 	if err != nil {
 		return err
 	}
-	paramPairs, mapErr := paramsMap(f.params)
-	if mapErr != nil {
-		return mapErr
-	}
 
 	// The executor runs detached from the caller's context. An interrupt
 	// must reach the database as a cancellation request rather than cut a
@@ -101,16 +95,10 @@ func runRun(ctx context.Context, env Env, g *globals, out *ui, jobName string, f
 	execCtx, hardStop := context.WithCancel(context.WithoutCancel(ctx))
 	defer hardStop()
 
-	plan := planWrite(execCtx, env, g)
-	if plan.err != nil {
-		return plan.err
+	s, err := store.OpenState(execCtx, stateDir, store.Options{Clock: clkOf(env)})
+	if err != nil {
+		return err
 	}
-	if plan.client != nil {
-		defer func() { _ = plan.client.Close() }()
-		return runSocketRun(execCtx, env, g, out, plan.client, stateDir, jobName, paramPairs, hardStop)
-	}
-
-	s := plan.st
 	defer func() { _ = s.Close() }()
 
 	actor := cliActor()
@@ -204,116 +192,6 @@ func runRun(ctx context.Context, env Env, g *globals, out *ui, jobName string, f
 	return nil
 }
 
-// runSocketRun is the daemon-up half of `paceq run`: the run is queued over
-// the socket, the daemon's own executor carries it out, and this process
-// polls the read-only pool until the run ends. The exit codes are the ones
-// the local path hands out, so a cron line cannot tell the two apart.
-func runSocketRun(ctx context.Context, env Env, g *globals, out *ui, client *api.Client,
-	stateDir, jobName string, params map[string]string, hardStop func(),
-) error {
-	runID, err := client.CreateRun(ctx, jobName, params)
-	if err != nil {
-		var wire *api.WireError
-		if errors.As(err, &wire) {
-			return wireFailure(env, wire)
-		}
-		return internalError("could not reach the daemon", err)
-	}
-
-	// Signals become durable cancellation requests on the same wire: the
-	// first asks, the second stops waiting the hard way, exactly like the
-	// local executor's contract.
-	sigs := make(chan os.Signal, 2)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-	defer signal.Stop(sigs)
-	cancelRequested := false
-	go func() {
-		select {
-		case <-sigs:
-			if !cancelRequested {
-				cancelRequested = true
-				_ = client.CancelRun(context.WithoutCancel(ctx), runID, "interrupted")
-				return
-			}
-			hardStop()
-		case <-ctx.Done():
-		}
-	}()
-
-	say(out, "run %s  job %s", runID, jobName)
-
-	ro, err := store.OpenReadOnly(context.WithoutCancel(ctx),
-		filepath.Join(stateDir, store.DatabaseFileName), store.Options{Clock: clkOf(env)})
-	if err != nil {
-		return err
-	}
-	defer func() { _ = ro.Close() }()
-
-	clk := clkOf(env)
-	ticker := clk.NewTicker(50 * time.Millisecond)
-	defer ticker.Stop()
-
-	var detail store.RunDetail
-	for {
-		detail, err = ro.GetRun(context.WithoutCancel(ctx), runID)
-		switch {
-		case err == nil && terminalRunState(detail.State):
-			// fall through to the report
-		case errors.Is(err, store.ErrRunNotFound) || errors.Is(err, id.ErrInvalid):
-			return notFoundError(
-				fmt.Sprintf("the daemon queued %s but no such run can be read", runID),
-				err.Error(),
-				"paceq doctor  checks the installation")
-		default:
-			select {
-			case <-ctx.Done():
-				return interruptedError(ctx.Err())
-			case <-ticker.C:
-				continue
-			}
-		}
-		break
-	}
-
-	if err := writeRunRecord(out, detail); err != nil {
-		return err
-	}
-
-	duration := durationOf(detail.StartedAt, detail.FinishedAt)
-	switch {
-	case detail.State == string(model.RunCancelled):
-		return &Error{
-			code: ExitInterrupted,
-			what: "the run was cancelled before it finished",
-			next: []string{
-				"nothing was left half written: every change paceq makes is one transaction",
-				"paceq logs " + detail.ID + "  shows how far it got",
-			},
-		}
-	case detail.State == string(model.RunFailed):
-		return &Error{
-			code: ExitRunFailed,
-			what: fmt.Sprintf("the job failed after %s: %s", duration, outcomeText(detail.ReasonCode, detail.ReasonData)),
-			next: []string{
-				"paceq logs " + detail.ID + "  shows the output of every step",
-				"paceq error " + detail.ReasonCode + "  explains that code in full",
-			},
-		}
-	}
-
-	say(out, "%s run %s  ok  %s", out.symbols.ok, detail.ID, duration)
-	return nil
-}
-
-// terminalRunState says whether a run state ends the wait.
-func terminalRunState(state string) bool {
-	switch model.RunState(state) {
-	case model.RunSucceeded, model.RunFailed, model.RunCancelled:
-		return true
-	}
-	return false
-}
-
 // say writes one progress line to stderr. Progress is never data: a pipe of
 // run records stays parseable with these on.
 func say(out *ui, format string, args ...any) {
@@ -332,38 +210,25 @@ func cliActor() string {
 // object a run carries. Values are strings: parameters that need structure
 // belong in the job file until a real case says otherwise.
 func paramsJSON(pairs []string) (string, error) {
-	params, err := paramsMap(pairs)
-	if err != nil {
-		return "", err
-	}
-	if len(params) == 0 {
-		return "", nil
-	}
-	encoded, err := json.Marshal(params)
-	if err != nil {
-		return "", internalError("could not encode the parameters", err)
-	}
-	return string(encoded), nil
-}
-
-// paramsMap is paramsJSON without the encoding, for callers that hand the
-// parameters to the socket client instead.
-func paramsMap(pairs []string) (map[string]string, error) {
 	if len(pairs) == 0 {
-		return nil, nil
+		return "", nil
 	}
 	params := make(map[string]string, len(pairs))
 	for _, pair := range pairs {
 		name, value, found := strings.Cut(pair, "=")
 		if !found || name == "" {
-			return nil, usageError(
+			return "", usageError(
 				fmt.Sprintf("--param %q is not a name=value pair", pair),
 				"write it as --param name=value",
 			)
 		}
 		params[name] = value
 	}
-	return params, nil
+	encoded, err := json.Marshal(params)
+	if err != nil {
+		return "", internalError("could not encode the parameters", err)
+	}
+	return string(encoded), nil
 }
 
 // unknownJobError is the exit 3 refusal, with the did you mean that teaches
@@ -412,20 +277,13 @@ type runDetailRecord struct {
 }
 
 type runEnvelope struct {
-	Run      runDetailRecord `json:"run"`
-	DaemonUp *bool           `json:"daemon_up,omitempty"`
+	Run runDetailRecord `json:"run"`
 }
 
 // writeRunRecord puts the finished run on stdout in JSON mode. It is written
 // for failures too: a script that branches on the exit code often wants the
 // reason beside it, and stderr carries the words for people.
 func writeRunRecord(out *ui, detail store.RunDetail) error {
-	return writeRunRecordField(out, detail, nil)
-}
-
-// writeRunRecordField is writeRunRecord with an optional daemon_up field for
-// the envelope. Nil keeps the document exactly as it was before dual mode.
-func writeRunRecordField(out *ui, detail store.RunDetail, daemonUp *bool) error {
 	if out.mode != modeJSON {
 		return nil
 	}
@@ -456,7 +314,7 @@ func writeRunRecordField(out *ui, detail store.RunDetail, daemonUp *bool) error 
 			LogPath:    step.LogPath,
 		})
 	}
-	return out.json(runEnvelope{Run: record, DaemonUp: daemonUp})
+	return out.json(runEnvelope{Run: record})
 }
 
 // outcomeText is a reason code as a sentence fragment. The failed step's name

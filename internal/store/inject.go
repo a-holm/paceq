@@ -165,3 +165,73 @@ WHERE state IN ('succeeded', 'failed', 'cancelled') LIMIT 1`)
 	}
 	return "run " + runID, nil
 }
+
+// InjectDuplicateRunKey plants I3: one job whose run_key names two runs.
+// There is no UNIQUE index to dodge on purpose, because this invariant lives
+// in application law, not in the schema; that is exactly why the health check
+// has to re-read it at startup.
+func (s *Store) InjectDuplicateRunKey(ctx context.Context) (string, error) {
+	var subject string
+	err := s.withTx(ctx, func(tx *sql.Tx) error {
+		var (
+			baseID  string
+			job     string
+			version string
+			key     = "planted-duplicate-run-key"
+		)
+		if err := tx.QueryRow(`SELECT id, job_name, job_version_id FROM runs
+ORDER BY created_at LIMIT 1`).Scan(&baseID, &job, &version); err != nil {
+			return fmt.Errorf("inject a duplicate run key: %w", err)
+		}
+		// nolint:fencing: this is fault injection for the fsck negative
+		// proof, not engine state: the planted duplicate key must exist
+		// unfenced so fsck can name it.
+		if _, err := tx.Exec(`UPDATE runs SET run_key = (SELECT ?) WHERE id = ?`, key, baseID); err != nil {
+			return fmt.Errorf("inject a duplicate run key: %w", err)
+		}
+		twin := baseID + "-twin"
+		if _, err := tx.Exec(`INSERT INTO runs (id, job_name, job_version_id, origin,
+state, available_at, run_key, created_at, updated_at)
+VALUES (?, ?, ?, 'manual', 'queued', 0, ?, 1, 1)`,
+			twin, job, version, key); err != nil {
+			return fmt.Errorf("inject a duplicate run key: %w", err)
+		}
+		subject = "job " + job + " run_key " + key
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return subject, nil
+}
+
+// InjectDependencyCycle plants I9: two steps of one run pointing at each
+// other, so no order of execution can ever be legal. Like the duplicate run
+// key, nothing in the schema forbids it; only the health check can see it.
+func (s *Store) InjectDependencyCycle(ctx context.Context) (string, error) {
+	var subject string
+	err := s.withTx(ctx, func(tx *sql.Tx) error {
+		var runID, a, b string
+		if err := tx.QueryRow(`SELECT r.id,
+MIN(CASE WHEN s.idx <= s2.idx THEN s.name ELSE s2.name END),
+MAX(CASE WHEN s.idx <= s2.idx THEN s2.name ELSE s.name END)
+FROM runs r
+JOIN steps s ON s.run_id = r.id
+JOIN steps s2 ON s2.run_id = r.id AND s.name < s2.name
+GROUP BY r.id LIMIT 1`).Scan(&runID, &a, &b); err != nil {
+			return fmt.Errorf("inject a dependency cycle: %w", err)
+		}
+		for _, e := range [][2]string{{a, b}, {b, a}} {
+			if _, err := tx.Exec(`INSERT OR IGNORE INTO step_deps (run_id, step_name, depends_on)
+VALUES (?, ?, ?)`, runID, e[0], e[1]); err != nil {
+				return fmt.Errorf("inject a dependency cycle: %w", err)
+			}
+		}
+		subject = "run " + runID
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return subject, nil
+}

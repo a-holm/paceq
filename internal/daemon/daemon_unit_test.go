@@ -55,6 +55,20 @@ func (r *recLog) named(msg string) []map[string]any {
 	return out
 }
 
+// indexes returns the record positions of every line with this msg, in the
+// order they were logged. Order assertions read off this list.
+func (r *recLog) indexes(msg string) []int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []int
+	for i, m := range r.records {
+		if m["msg"] == msg {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
 type writerFunc struct {
 	fn func([]byte) (int, error)
 }

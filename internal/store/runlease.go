@@ -427,6 +427,15 @@ type ReapOptions struct {
 
 	// Limit caps the sweep. Zero means reapLimit.
 	Limit int
+
+	// IgnoreLease widens the sweep from "leases that expired" to "every
+	// running run". It exists for startup reconciliation after a machine
+	// restart (#62): a changed boot id proves every child process dead, so
+	// lease_expires_at has stopped being evidence about anything and waiting
+	// it out would be pure delay. Nothing else may set it. The decision arms
+	// are the same either way; only candidate selection changes, and the
+	// fencing token still rises in every arm.
+	IgnoreLease bool
 }
 
 // ReapedRun is one run the reaper took, with where it went.
@@ -449,6 +458,15 @@ WHERE state = 'running'
 	AND lease_expires_at <= ?1
 ORDER BY lease_expires_at
 LIMIT ?2`
+
+// reapAllRunningSQL is the boot sweep's candidate list: every running row, no
+// lease predicate at all. A changed boot id is stronger evidence than any
+// expiry timestamp (issue #62), and the partial index on running state keeps
+// the scan bounded to exactly the rows the sweep means to take.
+const reapAllRunningSQL = `SELECT id FROM runs
+WHERE state = 'running'
+ORDER BY lease_expires_at
+LIMIT ?1`
 
 // ReapExpiredRuns takes every run whose lease expired past the skew allowance
 // and decides its fate in the one transaction: a cancellation request on a
@@ -482,7 +500,17 @@ func (s *Store) ReapExpiredRuns(ctx context.Context, opt ReapOptions) ([]ReapedR
 
 	var out []ReapedRun
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
-		rows, err := tx.Query(reapCandidatesSQL, cut, limit)
+		// Candidate selection is the only place the two sweeps differ. The
+		// ordinary reaper trusts lease expiry plus skew; the boot sweep
+		// trusts nothing but the running state, because its caller holds
+		// boot-changed proof that every holder died with the machine.
+		query := reapCandidatesSQL
+		args := []any{cut, limit}
+		if opt.IgnoreLease {
+			query = reapAllRunningSQL
+			args = []any{limit}
+		}
+		rows, err := tx.Query(query, args...)
 		if err != nil {
 			return fmt.Errorf("find expired run leases: %w", err)
 		}
