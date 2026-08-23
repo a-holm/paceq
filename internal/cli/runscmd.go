@@ -146,7 +146,8 @@ func runRunsList(ctx context.Context, env Env, g *globals, out *ui, f runsListFl
 	for _, row := range rows {
 		widths.id = max(widths.id, len(row.ID))
 		widths.job = max(widths.job, len(row.JobName))
-		widths.state = max(widths.state, len(row.State))
+		st := listState(row)
+		widths.state = max(widths.state, len(st))
 		widths.started = max(widths.started, len(relAge(now, row.CreatedAt)))
 	}
 	for _, row := range rows {
@@ -163,7 +164,7 @@ func runRunsList(ctx context.Context, env Env, g *globals, out *ui, f runsListFl
 			mark,
 			pad(row.ID, widths.id),
 			pad(row.JobName, widths.job),
-			pad(row.State, widths.state),
+			pad(listState(row), widths.state),
 			pad(relAge(now, row.CreatedAt), widths.started),
 			runOutcome(row))
 	}
@@ -181,20 +182,33 @@ type runListRow struct {
 	StartedAt  string `json:"started_at,omitempty"`
 	FinishedAt string `json:"finished_at,omitempty"`
 	DurationMS int64  `json:"duration_ms,omitempty"`
+
+	// The deferral facts (#68): a deferred run is queued but held
+	// for the future, and a script reading --json sees why and what
+	// blocked it.
+	DeferReason string `json:"defer_reason,omitempty"`
+	ReasonData  string `json:"reason_data,omitempty"`
+	AvailableAt string `json:"available_at,omitempty"`
 }
 
 func newListRow(row store.RunSummary) runListRow {
-	return runListRow{
-		ID:         row.ID,
-		Job:        row.JobName,
-		Origin:     row.Origin,
-		State:      row.State,
-		ReasonCode: row.ReasonCode,
-		CreatedAt:  rfc3339(row.CreatedAt),
-		StartedAt:  rfc3339(row.StartedAt),
-		FinishedAt: rfc3339(row.FinishedAt),
-		DurationMS: millisBetween(row.StartedAt, row.FinishedAt),
+	r := runListRow{
+		ID:          row.ID,
+		Job:         row.JobName,
+		Origin:      row.Origin,
+		State:       row.State,
+		ReasonCode:  row.ReasonCode,
+		CreatedAt:   rfc3339(row.CreatedAt),
+		StartedAt:   rfc3339(row.StartedAt),
+		FinishedAt:  rfc3339(row.FinishedAt),
+		DurationMS:  millisBetween(row.StartedAt, row.FinishedAt),
+		DeferReason: row.DeferReason,
+		ReasonData:  row.ReasonData,
 	}
+	if !row.AvailableAt.IsZero() {
+		r.AvailableAt = rfc3339(row.AvailableAt)
+	}
+	return r
 }
 
 // runOutcome is the text column of the table: why the run ended, as words.
@@ -206,6 +220,16 @@ func runOutcome(row store.RunSummary) string {
 		return entry.Short
 	}
 	return row.ReasonCode
+}
+
+// listState is the state column of the table, with the deferral facts folded in
+// when the row is queued but held for the future: a human sees "deferred (reason)"
+// where a machine sees the state alone.
+func listState(row store.RunSummary) string {
+	if row.DeferReason != "" {
+		return "deferred"
+	}
+	return row.State
 }
 
 func newRunsShowCmd(env Env, g *globals) *cobra.Command {
