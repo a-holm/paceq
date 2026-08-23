@@ -13,6 +13,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -154,7 +155,7 @@ func main() {
 		if path == "" {
 			die("write-output: PACEQ_OUTPUT is not set")
 		}
-		f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0600)
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
 		if err != nil {
 			die("write-output: %v", err)
 		}
@@ -194,8 +195,79 @@ func main() {
 		}
 		fmt.Println(string(out))
 
+	case "sensor-ok":
+		// A sensor that found work: one cursor, one trigger. Reads stdin to
+		// prove the contract object was delivered, then answers.
+		readStdinOrDie()
+		fmt.Print(`{"cursor":"c9","triggers":[{"run_key":"k1","params":{"p":1}}]}`)
+
+	case "sensor-skip":
+		readStdinOrDie()
+		fmt.Print(`{"skip_reason":"no new files"}`)
+
+	case "sensor-skip-and-triggers":
+		// The contract's both-set corner: triggers must win.
+		fmt.Print(`{"skip_reason":"fallback text","triggers":[{"run_key":"k-trig"}]}`)
+
+	case "sensor-invalid-json":
+		fmt.Print("this is not json at all")
+
+	case "sensor-empty":
+		// Exit 0 with no stdout: silence means skip with a fixed reason.
+
+	case "sensor-stderr-tag":
+		// A valid trigger payload with a known marker on stderr, so the host
+		// can prove the 4 KiB tail is carried.
+		fmt.Fprint(os.Stderr, "SENSOR_STDERR_MARKER")
+		readStdinOrDie()
+		fmt.Print(`{"triggers":[{"run_key":"stderr-k"}]}`)
+
+	case "sensor-env-dump":
+		// Write the whole environment to the named file so a test can assert
+		// the deny by default contract and the PACEQ_ keys precisely. Exit 0.
+		env := map[string]string{}
+		for _, kv := range os.Environ() {
+			k, v, _ := strings.Cut(kv, "=")
+			env[k] = v
+		}
+		out, err := json.Marshal(env)
+		if err != nil {
+			die("sensor-env-dump: %v", err)
+		}
+		if err := os.WriteFile(arg(args, 0), out, 0o600); err != nil {
+			die("sensor-env-dump: %v", err)
+		}
+
+	case "sensor-track":
+		// Append a start marker with the sensor's name, sleep, then append an
+		// end marker. The host reconstructs how many evaluations of one name
+		// (or how many total) overlapped in time, which is what proves the
+		// serialization and the global semaphore from observation, not from
+		// reading the runtime's internals.
+		path, dur := arg(args, 0), arg(args, 1)
+		d, err := time.ParseDuration(dur)
+		if err != nil {
+			die("sensor-track: %v", err)
+		}
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			die("sensor-track: %v", err)
+		}
+		fmt.Fprintf(f, "start %s %d\n", os.Getenv("PACEQ_SENSOR"), time.Now().UnixNano())
+		time.Sleep(d)
+		fmt.Fprintf(f, "end %s %d\n", os.Getenv("PACEQ_SENSOR"), time.Now().UnixNano())
+		_ = f.Close()
+
 	default:
 		die("unknown mode %q", mode)
+	}
+}
+
+// readStdinOrDie reads all of stdin; a sensor that cannot read its input is a
+// broken run, which the host wants to see.
+func readStdinOrDie() {
+	if _, err := io.ReadAll(os.Stdin); err != nil {
+		die("stdin: %v", err)
 	}
 }
 
