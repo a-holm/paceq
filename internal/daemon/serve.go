@@ -13,6 +13,7 @@ import (
 	"github.com/a-holm/paceq/internal/logsink"
 	"github.com/a-holm/paceq/internal/model"
 	"github.com/a-holm/paceq/internal/notify"
+	"github.com/a-holm/paceq/internal/scheduler"
 	"github.com/a-holm/paceq/internal/store"
 )
 
@@ -63,6 +64,14 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 	statuses := newStatuses(func() time.Time { return clk.Now() })
 	d := loops{clk: clk, bus: bus, status: statuses, log: log}
 
+	// The scheduler owns the schedule decisions under its fenced role lease;
+	// the loop below only wakes it and marks the health surface.
+	schedSrc, err := scheduler.New(scheduler.Config{Store: st, Clock: clk, Holder: sess.ID, Log: log})
+	if err != nil {
+		_ = st.Close()
+		return fmt.Errorf("serve: %w", err)
+	}
+
 	// The executors answer to their own context, not to the group's: a stop
 	// must be able to let the intake die first while process groups are
 	// still draining, which is the whole two phase idea.
@@ -92,7 +101,7 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 	tickEvery := cfg.tickInterval()
 
 	launch(intakeCtx, intakeAck(), func(c context.Context) error {
-		return schedulerLoop(c, d, tickEvery, nil) // M2-05 wires the source seam
+		return schedulerLoop(c, d, tickEvery, schedSrc)
 	})
 	launch(grp.ctx, nil, func(c context.Context) error {
 		return sensorLoop(c, d, tickEvery)

@@ -179,11 +179,12 @@ func (s *Store) DueSchedules(ctx context.Context, nowMilli int64, max int) ([]Sc
 // lands when this pass is the first to claim the fire-time, and affects zero
 // rows otherwise. There is no SELECT first, so there is no window between
 // seeing a free fire-time and taking it. RowsAffected zero is the follower
-// answer, not an error.
+// answer, not an error. A triggered evaluation carries its trigger count from
+// birth; skips and errors stay childless.
 const claimTickSQL = `INSERT INTO ticks
 (id, source_kind, source_name, scheduled_for, started_at, last_started_at,
- outcome, reason_code, reason_text, reason_data)
-VALUES (?, 'schedule', ?, ?, ?, ?, ?, ?, ?, ?)
+ outcome, reason_code, reason_text, reason_data, trigger_count)
+VALUES (?, 'schedule', ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(source_kind, source_name, scheduled_for) DO NOTHING`
 
 // coalesceSkipSQL folds one more identical skipped evaluation into the
@@ -265,6 +266,15 @@ type TickResult struct {
 	Run Run
 }
 
+// triggerCountOf says whether the claimed evaluation owns a trigger: only a
+// triggered outcome does.
+func triggerCountOf(outcome string) int {
+	if outcome == OutcomeTriggered {
+		return 1
+	}
+	return 0
+}
+
 // materializeTick claims one fire-time end to end. The order inside the
 // transaction is the write model's: claim first, then the consequences, then
 // progress, and every consequence aborts together when any statement refuses.
@@ -343,6 +353,7 @@ func (s *Store) MaterializeTick(ctx context.Context, in TickInput) (TickResult, 
 		res, err := tx.Exec(claimTickSQL,
 			tickID, sourceName, fireAt.UnixMilli(), at, at, outcome,
 			nullIfEmpty(string(reasonCode)), nullIfEmpty(in.ReasonText), nullIfEmpty(in.ReasonData),
+			triggerCountOf(outcome),
 		)
 		faults.Point("M2:tick:after_tick_before_run")
 		written, err := res.RowsAffected()
@@ -489,6 +500,69 @@ VALUES (?, ?, ?, ?, 'schedule', ?, 'queued', ?, ?, '{}', 0, 1, ?, ?)`,
 		return Run{}, err
 	}
 	return run, nil
+}
+
+// TickView is one recorded schedule tick as a reader wants it: what fired,
+// what it became, and why it did not.
+type TickView struct {
+	ScheduledFor time.Time // zero when the tick carries no fire-time
+	Outcome      string
+	ReasonCode   string
+	RepeatCount  int
+	TriggerCount int
+}
+
+// ScheduleTicks lists one schedule's recorded ticks, oldest fire-time first.
+// This is the read side of everything MaterializeTick writes, and the table
+// explain (M5-01) will read.
+func (s *Store) ScheduleTicks(ctx context.Context, jobName, name string) ([]TickView, error) {
+	rows, err := s.r.QueryContext(ctx, `SELECT scheduled_for, outcome,
+COALESCE(reason_code, ''), repeat_count, trigger_count
+FROM ticks WHERE source_kind = 'schedule' AND source_name = ?
+ORDER BY scheduled_for`, jobName+"/"+name)
+	if err != nil {
+		return nil, fmt.Errorf("list ticks of schedule %s/%s: %w", jobName, name, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []TickView
+	for rows.Next() {
+		var v TickView
+		var fire *int64
+		if err := rows.Scan(&fire, &v.Outcome, &v.ReasonCode, &v.RepeatCount, &v.TriggerCount); err != nil {
+			return nil, fmt.Errorf("scan a tick of schedule %s/%s: %w", jobName, name, err)
+		}
+		if fire != nil {
+			v.ScheduledFor = time.UnixMilli(*fire).UTC()
+		}
+		out = append(out, v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list ticks of schedule %s/%s: %w", jobName, name, err)
+	}
+	return out, nil
+}
+
+// ScheduleCursor returns a schedule's progress stamps: last_tick_at (nil when
+// the schedule has never been evaluated) and next_tick_at.
+func (s *Store) ScheduleCursor(ctx context.Context, jobName, name string) (*time.Time, time.Time, error) {
+	var lastRaw sql.NullInt64
+	var next int64
+	err := s.r.QueryRowContext(ctx,
+		`SELECT last_tick_at, next_tick_at FROM schedules WHERE job_name = ? AND name = ?`,
+		jobName, name).Scan(&lastRaw, &next)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, time.Time{}, fmt.Errorf("read the cursor of schedule %s/%s: %w", jobName, name, ErrNotFound)
+	}
+	if err != nil {
+		return nil, time.Time{}, fmt.Errorf("read the cursor of schedule %s/%s: %w", jobName, name, err)
+	}
+	var last *time.Time
+	if lastRaw.Valid {
+		t := time.UnixMilli(lastRaw.Int64).UTC()
+		last = &t
+	}
+	return last, time.UnixMilli(next).UTC(), nil
 }
 
 // scanTargets and finalize turn one row into one ScheduleRow. last_tick_at is
