@@ -45,7 +45,8 @@ func TestOneStopSignalDrainsTheRunningWork(t *testing.T) {
 
 	detail := readRun(t, ws, runID)
 	if detail.Run.State != string(model.RunQueued) {
-		t.Errorf("the interrupted run is %s, want queued", detail.Run.State)
+		t.Errorf("the interrupted run is %s, want queued\ndaemon stderr:\n%s",
+			detail.Run.State, p.stderrSnapshot())
 	}
 	if detail.Run.DeferReason != model.DeferReasonAfterShutdown {
 		t.Errorf("defer_reason is %q, want %q", detail.Run.DeferReason, model.DeferReasonAfterShutdown)
@@ -55,15 +56,18 @@ func TestOneStopSignalDrainsTheRunningWork(t *testing.T) {
 	}
 	step := detail.Steps[0]
 	if step.State != string(model.StepPending) {
-		t.Errorf("the interrupted step is %s, want pending", step.State)
+		t.Errorf("the interrupted step is %s, want pending\ndaemon stderr:\n%s",
+			step.State, p.stderrSnapshot())
 	}
 	// The executor's StartStep spent attempt 1; the handback restores it,
 	// because a daemon restart is nobody's fault (05 section 3.2).
 	if step.Attempt != 0 {
-		t.Errorf("attempt is %d after the drain, want the pre-execution 0", step.Attempt)
+		t.Errorf("attempt is %d after the drain, want the pre-execution 0\n"+
+			"daemon stderr:\n%s", step.Attempt, p.stderrSnapshot())
 	}
 	if step.ReasonCode != string(reason.RUNInterruptedShutdown) {
-		t.Errorf("the step says %q, want %q", step.ReasonCode, reason.RUNInterruptedShutdown)
+		t.Errorf("the step says %q, want %q\ndaemon stderr:\n%s",
+			step.ReasonCode, reason.RUNInterruptedShutdown, p.stderrSnapshot())
 	}
 
 	s := openReadOnly(t, ws)
@@ -82,8 +86,8 @@ func TestOneStopSignalDrainsTheRunningWork(t *testing.T) {
 		}
 	}
 	if !sawInterrupt || !sawDrained {
-		t.Fatalf("the shutdown events are incomplete: interrupt=%v drained=%v in %+v",
-			sawInterrupt, sawDrained, events)
+		t.Fatalf("the shutdown events are incomplete: interrupt=%v drained=%v in %+v"+
+			"\ndaemon stderr:\n%s", sawInterrupt, sawDrained, events, p.stderrSnapshot())
 	}
 
 	sess, ok, err := s.LatestSession(t.Context())
