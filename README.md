@@ -15,6 +15,7 @@ cron and systemd timers fire and forget: no history, no status, and nothing to a
 - [SCOPE.md](SCOPE.md): who paceq is for, what it will never do through 1.0, and the gate a feature request has to pass.
 - [SECURITY.md](SECURITY.md): the threat model, what has to be right from day one, what we explicitly do not defend against, and how to report a vulnerability.
 - [docs/guarantees.md](docs/guarantees.md): the guarantees, the non-guarantees, the invariants, and what `synchronous=NORMAL` costs.
+- [docs/reference/sensor-contract.md](docs/reference/sensor-contract.md): the frozen sensor subprocess contract, from a one liner's environment to the stdout cap.
 
 ## Planning
 
