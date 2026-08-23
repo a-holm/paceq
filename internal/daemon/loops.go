@@ -44,6 +44,7 @@ type loops struct {
 	bus    *notify.Bus
 	status *statuses
 	log    *slog.Logger
+	heart  *Heart
 }
 
 // schedulerLoop owns the schedule decisions. In this milestone it ticks,
@@ -54,7 +55,11 @@ func schedulerLoop(ctx context.Context, d loops, every time.Duration, src Schedu
 		if src == nil {
 			return nil
 		}
-		return src.Tick(ctx)
+		err := src.Tick(ctx)
+		if d.heart != nil {
+			d.heart.Beat()
+		}
+		return err
 	})
 }
 
