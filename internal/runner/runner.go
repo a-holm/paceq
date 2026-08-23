@@ -168,6 +168,7 @@ func Run(ctx context.Context, s Spec) (Result, error) {
 
 	pgid := cmd.Process.Pid // the child led its own group since Setpgid
 	esc.setGroup(pgid)
+	releaseGroup := registerGroup(pgid)
 
 	// The deadline watcher starts only once the process exists; before that a
 	// refusal or a spawn failure is the whole story. Run waits for it before
@@ -185,6 +186,7 @@ func Run(ctx context.Context, s Spec) (Result, error) {
 
 	waitErr := cmd.Wait()
 	finishedAt := clk.Now().UnixMilli()
+	releaseGroup()
 	releaseCoreLimit()
 	esc.stop()
 	<-watcherDone

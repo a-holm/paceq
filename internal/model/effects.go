@@ -27,6 +27,12 @@ const (
 	EffectIncCrashCount EffectKind = "inc_crash_count"
 	// EffectIncAttempt opens the next attempt of a step.
 	EffectIncAttempt EffectKind = "inc_attempt"
+	// EffectRestoreAttempt takes an interrupted attempt's increment back off
+	// the step. Only the shutdown drain uses it: the attempt never got to
+	// produce a verdict, so the retry budget it would have spent stays
+	// unspent. It is deliberately distinct from EffectIncAttempt so no caller
+	// can "restore" an attempt nothing opened.
+	EffectRestoreAttempt EffectKind = "restore_attempt"
 	// EffectSetNextAttemptAt and EffectSetAvailableAt write the time a retry
 	// or a deferred run becomes runnable. The model names the column; the
 	// caller computes the value, because that is backoff (M1-09) and a clock.

@@ -138,6 +138,7 @@ func newRoot(env Env) *cobra.Command {
 		newValidateCmd(env, &g),
 		newApplyCmd(env, &g),
 		newRunCmd(env, &g),
+		newServeCmd(env, &g),
 		newRunsCmd(env, &g),
 		newStatusCmd(env, &g),
 		newFsckCmd(env, &g),

@@ -19,6 +19,36 @@ func sysProcAttr() *syscall.SysProcAttr {
 // and two concurrent Starts would otherwise restore different values.
 var coreLimitMu sync.Mutex
 
+// activeGroups holds the group id of every child this process started and has
+// not reaped yet. It is what a hard stop needs: the second signal cannot walk
+// runs and engines, it has to reach every group at once through one call.
+var activeGroups sync.Map // pgid int -> struct{}
+
+// registerGroup records a live process group and returns the function that
+// takes it back off. Run registers as soon as the child exists and releases
+// after Wait, so the registry never names a group whose leader is reaped.
+func registerGroup(pgid int) (release func()) {
+	activeGroups.Store(pgid, struct{}{})
+	var once sync.Once
+	return func() {
+		once.Do(func() { activeGroups.Delete(pgid) })
+	}
+}
+
+// KillAllProcessGroups signals every registered group. Delivery failures are
+// ignored on purpose: ESRCH only means the group is already gone, which is
+// the outcome a hard stop wants anyway. It is called from the second-signal
+// path immediately before exit, so nothing here may block.
+func KillAllProcessGroups(sig syscall.Signal) {
+	activeGroups.Range(func(key, _ any) bool {
+		pgid, ok := key.(int)
+		if ok {
+			_ = killProcessGroup(-pgid, sig)
+		}
+		return true
+	})
+}
+
 // zeroCoreLimit drops RLIMIT_CORE to zero around the fork and exec, so a
 // crashing job cannot write a core file full of daemon secrets. Rlimits are
 // inherited across exec, which is what makes the window work: the child

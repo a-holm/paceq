@@ -892,6 +892,98 @@ func (s *Store) RequeueCrashedRun(ctx context.Context, runID string) error {
 	})
 }
 
+// InterruptStepForShutdown puts one running step back to pending with its
+// attempt restored (05 section 3.2, point 4): the attempt was cut short by the
+// daemon's own stop, produced no verdict, and must not spend the retry budget.
+// The step becomes runnable again at once, so the next executor claims it
+// without ceremony.
+//
+// The machine refuses anything that is not a running step, and the event row
+// names code, which for a daemon drain is RUN_INTERRUPTED_SHUTDOWN.
+func (s *Store) InterruptStepForShutdown(ctx context.Context, runID, name string, code reason.Code) error {
+	now := s.clk.Now().UTC()
+
+	return s.withTx(ctx, func(tx *sql.Tx) error {
+		step, err := readStepTx(tx, runID, name)
+		if err != nil {
+			return err
+		}
+		cur, err := model.ParseStepState(step.State)
+		if err != nil {
+			return err
+		}
+
+		state, effects, err := model.NextStepState(cur, model.EvShutdownDrain, model.Guards{
+			ReasonCode: string(code),
+		})
+		if err != nil {
+			return fmt.Errorf("interrupt step %s of run %s: %w", name, runID, err)
+		}
+
+		return finishTransition(tx, "interrupt_step", func() error {
+			_, err := tx.Exec(`UPDATE steps SET state = 'pending',
+				attempt = attempt - 1,
+				reason_code = ?, next_attempt_at = ?, finished_at = NULL,
+				duration_ms = NULL
+				WHERE run_id = ? AND name = ? AND state = 'running'`,
+				string(code), now.UnixMilli(), runID, name)
+			return err
+		}, tx, RunEvent{
+			RunID: runID, StepName: name, At: now, Kind: emitKind(effects),
+			FromState: string(cur), ToState: string(state),
+			ReasonCode: string(code),
+			DetailJSON: `{"why":"daemon_stop"}`,
+		})
+	})
+}
+
+// RequeueRunAfterDrain hands a claimed run back to the queue at a clean stop.
+// It is the mirror of RequeueCrashedRun: here the caller still holds the lease
+// it is giving up, so the guard is inverted, and no crash is counted, because
+// the executor left on purpose.
+//
+// The epoch still rises, so any writer from the drained attempt stays fenced
+// out, and available_at moves to now so the next executor can claim at once.
+func (s *Store) RequeueRunAfterDrain(ctx context.Context, runID string) error {
+	now := s.clk.Now().UTC()
+
+	return s.withTx(ctx, func(tx *sql.Tx) error {
+		run, err := readRunTx(tx, runID)
+		if err != nil {
+			return err
+		}
+		cur, err := model.ParseRunState(run.State)
+		if err != nil {
+			return err
+		}
+
+		held := !run.LeaseExpiresAt.IsZero() && run.LeaseExpiresAt.After(now)
+		state, effects, err := model.NextRunState(cur, model.EvShutdownDrain, model.Guards{
+			LeaseValid: held,
+		})
+		if err != nil {
+			return fmt.Errorf("drain run %s: %w", runID, err)
+		}
+		if state != model.RunQueued {
+			return fmt.Errorf("drain run %s: the machine sent a running run to %s", runID, state)
+		}
+
+		return finishTransition(tx, "requeue_drained", func() error {
+			_, err := tx.Exec(`UPDATE runs SET state = 'queued',
+				lease_owner = NULL, lease_expires_at = NULL,
+				lease_epoch = lease_epoch + 1,
+				defer_reason = ?, available_at = ?, updated_at = ?
+				WHERE id = ? AND state = 'running'`,
+				model.DeferReasonAfterShutdown, now.UnixMilli(), now.UnixMilli(), runID)
+			return err
+		}, tx, RunEvent{
+			RunID: runID, At: now, Kind: emitKind(effects),
+			FromState: string(cur), ToState: string(state),
+			DetailJSON: `{"defer_reason":"` + model.DeferReasonAfterShutdown + `"}`,
+		})
+	})
+}
+
 // The fault injection writes. Fsck's negative proofs (#75) plant broken rows
 // behind the machines' backs, and these five statements are the only doors
 // for that: each is named for the exact corruption it writes, and nothing in

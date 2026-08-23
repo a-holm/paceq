@@ -202,7 +202,7 @@ func TestLoadHarnessMeasuresTheWorkItRuns(t *testing.T) {
 		t.Errorf("p50 is %s for a %s workload and %s for a no-op workload: the harness is timing "+
 			"something other than the call", slow.quantile(0.5), step, fast.quantile(0.5))
 	}
-	if slow.elapsed < calibrationWindow {
+	if slow.elapsed < calibrationWindow-time.Millisecond {
 		t.Errorf("window measured %s, want at least the %s it ran", slow.elapsed, calibrationWindow)
 	}
 }

@@ -90,6 +90,9 @@ func TestTerminalFlagsFollowTheWriteRule(t *testing.T) {
 	notTerminal := map[Code]bool{
 		RUNQueuedConcurrency: true,
 		STEPRetryScheduled:   true,
+		// The drain interrupt: work goes back to pending with no attempt
+		// spent, so nothing about the run or the step has ended.
+		RUNInterruptedShutdown: true,
 	}
 	for _, e := range All() {
 		want := !notTerminal[e.Code]

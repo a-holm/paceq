@@ -190,6 +190,47 @@ func (s *Store) OpenSession(ctx context.Context) (Session, bool, error) {
 	return found, ok, nil
 }
 
+// LatestSession is the most recent session row, open or closed. It is how an
+// operator or the health surface asks "who ran here last, and how did it
+// end": a closed row carries its stop_reason, an open one means the process
+// died without saying goodbye.
+func (s *Store) LatestSession(ctx context.Context) (Session, bool, error) {
+	var found Session
+	ok := false
+	err := s.withRead(ctx, func(ctx context.Context, r reader) error {
+		var (
+			boot     sql.NullString
+			started  int64
+			lastSeen int64
+			stopped  sql.NullInt64
+			reason   sql.NullString
+		)
+		err := r.QueryRowContext(ctx, `SELECT id, version, boot_id, pid, started_at,
+last_seen_at, stopped_at, stop_reason
+  FROM daemon_sessions
+ ORDER BY started_at DESC
+ LIMIT 1`).Scan(&found.ID, &found.Version, &boot, &found.PID, &started,
+			&lastSeen, &stopped, &reason)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("read the latest session: %w", err)
+		}
+		found.BootID = boot.String
+		found.StartedAt = time.UnixMilli(started).UTC()
+		found.LastSeenAt = time.UnixMilli(lastSeen).UTC()
+		found.StoppedAt = timeOrZero(stopped)
+		found.StopReason = reason.String
+		ok = true
+		return nil
+	})
+	if err != nil {
+		return Session{}, false, err
+	}
+	return found, ok, nil
+}
+
 // bootIdentity is the machine's boot id, or the empty string when the platform
 // does not offer one. Losing it is a degradation, not a failure: paceq then
 // falls back to lease expiry as its only evidence that a process is gone, which
