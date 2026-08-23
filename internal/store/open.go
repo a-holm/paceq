@@ -92,6 +92,11 @@ type Store struct {
 	// it is atomic rather than a plain bool.
 	bootChanged atomic.Bool
 
+	// onCommit runs after every successful write transaction commit. It is
+	// nil in production; only package tests set it, to count real commits
+	// where the batch heartbeat proof needs them.
+	onCommit func()
+
 	// lock is the state directory claim, held when the store was opened through
 	// OpenState. Close releases it.
 	lock *StateLock

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/a-holm/paceq/internal/faults"
 	"github.com/a-holm/paceq/internal/model"
 	"github.com/a-holm/paceq/internal/reason"
 )
@@ -218,6 +219,11 @@ func claimTx(tx *sql.Tx, spec ClaimSpec, now, expires time.Time, limit int, out 
 	if err := rows.Close(); err != nil {
 		return fmt.Errorf("close the claimed rows: %w", err)
 	}
+
+	// The claim statement has executed but nothing is committed, which is
+	// exactly the window the crash harness kills in (#75): a process lost
+	// here rolls back to queued and loses nothing.
+	faults.Point("M1:transition:after_update:claim")
 
 	for _, cl := range *out {
 		if err := appendRunEvent(tx, RunEvent{
@@ -726,6 +732,8 @@ func failRunningStepsTx(tx *sql.Tx, runID string, now time.Time, terminal bool) 
 		if state == model.StepPending {
 			nextAttempt = now.UnixMilli()
 		}
+		// nolint:fencing: the sweep transaction already proved this run's
+		// lease expired past the skew; steps carry no token of their own.
 		if _, err := tx.Exec(`UPDATE steps SET
 			state = ?, reason_code = ?, reason_data = '{}',
 			finished_at = ?,
@@ -770,6 +778,8 @@ func cancelRunningStepsTx(tx *sql.Tx, runID string, now time.Time) error {
 		if err != nil {
 			return fmt.Errorf("cancel the step %s of run %s: %w", step.Name, runID, err)
 		}
+		// nolint:fencing: the same sweep transaction proved this run's lease
+		// dead before deciding the cancel; steps carry no token of their own.
 		if _, err := tx.Exec(`UPDATE steps SET
 			state = 'cancelled', reason_code = ?, reason_data = '{}',
 			finished_at = ?,

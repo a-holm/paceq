@@ -7,6 +7,7 @@ import (
 
 	"github.com/a-holm/paceq/internal/clock"
 	"github.com/a-holm/paceq/internal/notify"
+	"github.com/a-holm/paceq/internal/store"
 )
 
 // The loop bodies. Each one is the same shape on purpose (05 section 3.2):
@@ -66,11 +67,26 @@ func sensorLoop(ctx context.Context, d loops, every time.Duration) error {
 	})
 }
 
-// reaperLoop is the M2-06 placeholder for lease expiry sweeps. Until the
-// reaper SQL lands, a crashed executor's runs converge through the startup
-// recovery instead.
-func reaperLoop(ctx context.Context, d loops, every time.Duration) error {
-	return loop(ctx, d, "reaper", every, notify.TopicCancelRequested, func(context.Context) error {
+// reapSweeper is what the reaper loop needs of the engine. The interface
+// keeps the loop testable without SQLite.
+type reapSweeper interface {
+	ReapExpiredRuns(ctx context.Context) ([]store.ReapedRun, error)
+}
+
+// reaperLoop sweeps for expired run leases while this instance holds the
+// reaper role lease. The lease decides who sweeps; the ticker decides when.
+// Losing leadership cancels the sweep body, which is how two daemons that can
+// both see the rows stay one reaper.
+func reaperLoop(ctx context.Context, d loops, every time.Duration, sweeper reapSweeper) error {
+	return loop(ctx, d, "reaper", every, notify.TopicCancelRequested, func(ctx context.Context) error {
+		reaped, err := sweeper.ReapExpiredRuns(ctx)
+		if err != nil {
+			return err
+		}
+		for _, r := range reaped {
+			d.log.Info("reaped an expired run",
+				"run", r.ID, "state", r.State, "epoch", r.LeaseEpoch)
+		}
 		return nil
 	})
 }

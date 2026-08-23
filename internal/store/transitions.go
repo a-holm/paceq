@@ -38,7 +38,7 @@ type LeaseInput struct {
 	// not a decoration.
 	Owner string
 
-	// TTL is how long the claim lasts. Zero means DefaultLeaseTTL.
+	// TTL is how long the claim lasts. Zero means DefaultRunLeaseTTL.
 	TTL time.Duration
 }
 
@@ -61,6 +61,9 @@ func (s *Store) RequestCancel(ctx context.Context, runID, by, why string) (Cance
 	var out CancelRequest
 
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
+		// nolint:fencing: a cancellation request belongs to whoever asks,
+		// not to whoever holds the lease; the flag is monotonic and the
+		// holder is the one who acts on it.
 		result, err := tx.Exec(`UPDATE runs SET
 			cancel_requested_at = COALESCE(cancel_requested_at, ?),
 			cancel_requested_by = COALESCE(cancel_requested_by, ?),
@@ -637,6 +640,9 @@ func skipPendingStepsTx(tx *sql.Tx, runID string, now time.Time, code string) er
 			return fmt.Errorf("skip step %s of run %s: %w", name, runID, err)
 		}
 		if err := finishTransition(tx, "skip_pending", func() error {
+			// nolint:fencing: the caller's transaction already checked the
+			// holder's token, or the run is queued and has no lease to check;
+			// steps carry no token of their own.
 			_, err := tx.Exec(`UPDATE steps SET state = 'skipped', finished_at = ?,
 				reason_code = ?, reason_data = '{}'
 			WHERE run_id = ? AND name = ? AND state = 'pending'`,
@@ -925,6 +931,9 @@ func (s *Store) DrainRun(ctx context.Context, runID string, ref LeaseRef, code r
 				return fmt.Errorf("interrupt step %s of run %s: %w", step.Name, runID, err)
 			}
 			if err := finishTransition(tx, "interrupt_step", func() error {
+				// nolint:fencing: this transaction read the row and matched the
+				// caller's owner and token before writing; the run update below
+				// carries the same CAS, so a stale handback writes nothing.
 				_, err := tx.Exec(`UPDATE steps SET state = 'pending',
 					attempt = attempt - 1,
 					reason_code = ?, next_attempt_at = ?, finished_at = NULL,
@@ -997,6 +1006,8 @@ func (s *Store) DrainRun(ctx context.Context, runID string, ref LeaseRef, code r
 
 // plantStepPendingTx flips one step of a terminal run back to pending: the
 // row I2 exists for.
+//
+// nolint:fencing: the fault injector's whole job is a deliberate unfenced lie.
 func plantStepPendingTx(tx *sql.Tx, runID, step string) error {
 	_, err := tx.Exec(`UPDATE steps SET state = 'pending', reason_code = NULL
 WHERE run_id = ? AND name = ?`, runID, step)
@@ -1005,6 +1016,8 @@ WHERE run_id = ? AND name = ?`, runID, step)
 
 // plantFirstSucceededStepFailedTx marks a run's first succeeded step failed
 // while the run still says succeeded: the disagreement I10 exists for.
+//
+// nolint:fencing: the fault injector's whole job is a deliberate unfenced lie.
 func plantFirstSucceededStepFailedTx(tx *sql.Tx, runID string) error {
 	_, err := tx.Exec(`UPDATE steps SET state = 'failed'
 WHERE run_id = ? AND state = 'succeeded'`, runID)
@@ -1013,6 +1026,8 @@ WHERE run_id = ? AND state = 'succeeded'`, runID)
 
 // plantStepFinishedBeforeStartedTx moves every finished step's end before
 // its beginning: the shape I13 refuses.
+//
+// nolint:fencing: the fault injector's whole job is a deliberate unfenced lie.
 func plantStepFinishedBeforeStartedTx(tx *sql.Tx) error {
 	_, err := tx.Exec(`UPDATE steps SET finished_at = started_at - 1
 WHERE started_at IS NOT NULL AND finished_at IS NOT NULL`)
@@ -1023,6 +1038,8 @@ WHERE started_at IS NOT NULL AND finished_at IS NOT NULL`)
 // future and clears its defer_reason: a run held back that says no more why.
 // The CHECK constraint refuses this shape, so the caller lifts the checks
 // around the call.
+//
+// nolint:fencing: the fault injector's whole job is a deliberate unfenced lie.
 func plantUnexplainedDeferralTx(tx *sql.Tx, runID string) error {
 	_, err := tx.Exec(`UPDATE runs SET available_at = created_at + 3600000,
 		defer_reason = NULL WHERE id = ?`, runID)
@@ -1031,6 +1048,8 @@ func plantUnexplainedDeferralTx(tx *sql.Tx, runID string) error {
 
 // plantUnexplainedTerminalRunTx clears a terminal run's reason code: the
 // catalogue rule swept along with the invariants.
+//
+// nolint:fencing: the fault injector's whole job is a deliberate unfenced lie.
 func plantUnexplainedTerminalRunTx(tx *sql.Tx, runID string) error {
 	_, err := tx.Exec(`UPDATE runs SET reason_code = '' WHERE id = ?`, runID)
 	return err

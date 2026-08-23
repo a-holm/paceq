@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/a-holm/paceq/internal/engine"
 	"github.com/a-holm/paceq/internal/store"
 )
 
@@ -22,6 +23,7 @@ const (
 	defaultDrainTimeout   = 30 * time.Second
 	defaultTickInterval   = 1 * time.Second
 	defaultHeartbeatEvery = 10 * time.Second
+	defaultReapEvery      = engine.DefaultReapInterval
 )
 
 // Config is everything Serve needs beyond the state directory. The zero value
@@ -66,9 +68,30 @@ type Config struct {
 	// forward. Zero means 10s.
 	HeartbeatEvery time.Duration
 
-	// LeaseTTL is the lease an executor claims per run. Zero means the
-	// store's default. Tests shorten it; production should not.
+	// LeaseTTL is the lease an executor claims per run. Zero means sixty
+	// seconds, renewed every twenty by the daemon's renewal loop. Tests
+	// shorten it; production should not.
 	LeaseTTL time.Duration
+
+	// RenewInterval overrides how often held leases renew. Zero means a
+	// third of the ttl.
+	RenewInterval time.Duration
+
+	// ClockSkewAllowance is how long past the expiry the reaper waits before
+	// it takes a run. Zero means ten seconds.
+	ClockSkewAllowance time.Duration
+
+	// RequeueBackoff is how long a reaped run waits before it is due again.
+	// Zero means thirty seconds.
+	RequeueBackoff time.Duration
+
+	// ReapEvery is how often the reaper sweep looks for expired leases.
+	// Zero means ten seconds.
+	ReapEvery time.Duration
+
+	// MaxCrashCount is the poison quarantine line for runs that keep dying
+	// with their executor. Zero means five.
+	MaxCrashCount int
 
 	// Owner names the claim holder in the database. Empty means serve:<pid>.
 	Owner string
@@ -140,5 +163,12 @@ func (c Config) leaseTTL() time.Duration {
 	if c.LeaseTTL > 0 {
 		return c.LeaseTTL
 	}
-	return store.DefaultLeaseTTL
+	return store.DefaultRunLeaseTTL
+}
+
+func (c Config) reapEvery() time.Duration {
+	if c.ReapEvery > 0 {
+		return c.ReapEvery
+	}
+	return defaultReapEvery
 }

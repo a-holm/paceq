@@ -56,7 +56,9 @@ func (e *Engine) Recover(ctx context.Context, runID string) (string, error) {
 			continue
 		}
 		outcome := storeStepOutcomeLost(now, e.Owner)
-		if err := e.Store.RecordStepOutcome(ctx, runID, step.Name, outcome); err != nil {
+		// Recovery writes without a holder on purpose: the lease is dead,
+		// which the store verifies inside the same transaction.
+		if err := e.Store.RecordStepOutcome(ctx, runID, step.Name, outcome, store.LeaseRef{}); err != nil {
 			return "", fmt.Errorf("recover step %s of run %s: %w", step.Name, runID, err)
 		}
 	}

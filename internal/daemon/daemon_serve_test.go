@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/a-holm/paceq/internal/clock"
-	"github.com/a-holm/paceq/internal/engine"
 	"github.com/a-holm/paceq/internal/model"
 	"github.com/a-holm/paceq/internal/reason"
 	"github.com/a-holm/paceq/internal/store"
@@ -54,15 +53,22 @@ func seedClaimedRunningRun(t *testing.T, st *store.Store) string {
 	if err != nil {
 		t.Fatalf("materialise: %v", err)
 	}
-	if _, err := st.ClaimRun(ctx, res.Run.ID,
+	if _, _, err := st.ClaimRun(ctx, res.Run.ID,
 		store.LeaseInput{Owner: "serve:test", TTL: 5 * time.Minute}); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if err := st.StartStep(ctx, res.Run.ID, "only"); err != nil {
+	if err := st.StartStep(ctx, res.Run.ID, "only",
+		store.LeaseRef{Owner: "serve:test", Epoch: 1}); err != nil {
 		t.Fatalf("start step: %v", err)
 	}
 	return res.Run.ID
 }
+
+// stubRunOK is a run driver that reports success and nothing else; the drain
+// tests only need the pool's handback half.
+type stubRunOK struct{}
+
+func (stubRunOK) ExecuteRun(context.Context, string) (string, error) { return "succeeded", nil }
 
 // TestReleaseForDrainHandsEverythingBack is the unit half of acceptance
 // criterion 4: steps go to pending with the attempt restored, the event names
@@ -72,8 +78,13 @@ func TestReleaseForDrainHandsEverythingBack(t *testing.T) {
 	st := openServeStore(t, clk)
 	runID := seedClaimedRunningRun(t, st)
 
-	p := newExecutorPool(st, &engine.Engine{Store: st}, slog.Default(), 1)
-	if err := p.releaseForDrain(context.Background(), runID); err != nil {
+	drainer := storeDrainer{
+		st:   st,
+		ref:  store.LeaseRef{Owner: "serve:test", Epoch: 1},
+		held: true,
+	}
+	p := newExecutorPool(stubRunOK{}, drainer, slog.Default(), 1)
+	if err := p.handBackWhenOwed(context.Background(), runID); err != nil {
 		t.Fatalf("release for drain: %v", err)
 	}
 
@@ -140,8 +151,9 @@ func TestReleaseForDrainIgnoresARunWeNeverClaimed(t *testing.T) {
 		t.Fatalf("materialise: %v", err)
 	}
 
-	p := newExecutorPool(st, &engine.Engine{Store: st}, slog.Default(), 1)
-	if err := p.releaseForDrain(context.Background(), res.Run.ID); err != nil {
+	drainer := storeDrainer{st: st, ref: store.LeaseRef{Owner: "serve:test", Epoch: 1}, held: false}
+	p := newExecutorPool(stubRunOK{}, drainer, slog.Default(), 1)
+	if err := p.handBackWhenOwed(context.Background(), res.Run.ID); err != nil {
 		t.Fatalf("release on an unclaimed run must be a no-op, got %v", err)
 	}
 	detail, _ := st.GetRun(context.Background(), res.Run.ID)
@@ -316,7 +328,7 @@ func TestServeRestartConvergesWhatACrashLeftRunning(t *testing.T) {
 	}
 
 	runID := seedRunHeldByADeadExecutor(t, cfg.StateDir, clk)
-	clk.Advance(2 * store.DefaultLeaseTTL) // the dead executor's lease lapses
+	clk.Advance(2 * store.DefaultRunLeaseTTL) // the dead executor's lease lapses
 
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
@@ -425,11 +437,12 @@ func seedRunHeldByADeadExecutor(t *testing.T, stateDir string, clk clock.Clock) 
 	if err != nil {
 		t.Fatalf("materialise: %v", err)
 	}
-	if _, err := st.ClaimRun(ctx, run.ID,
-		store.LeaseInput{Owner: "dead-executor", TTL: store.DefaultLeaseTTL}); err != nil {
+	if _, _, err := st.ClaimRun(ctx, run.ID,
+		store.LeaseInput{Owner: "dead-executor", TTL: 30 * time.Second}); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if err := st.StartStep(ctx, run.ID, "only"); err != nil {
+	if err := st.StartStep(ctx, run.ID, "only",
+		store.LeaseRef{Owner: "dead-executor", Epoch: 1}); err != nil {
 		t.Fatalf("start the step: %v", err)
 	}
 	return run.ID

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,6 +38,34 @@ func internalLeaseStore(t *testing.T) (*Store, *clock.Fake) {
 // retry origin names which attempt of the logical job this run is. The
 // external API has no way to write that column, so this half of the reaper's
 // decision is proved from inside the package.
+
+// The claim and the reap sweep must both read their partial indexes, or every
+// scheduler decision and every reaper tick scans the runs table instead. The
+// plans are asked against the same SQL constants production uses.
+
+func TestClaimQueryPlansThroughTheClaimIndex(t *testing.T) {
+	s, _ := internalLeaseStore(t)
+
+	plan := queryPlan(t, s, claimRunsSQL, "exec-1", int64(1000), int64(61_000), 5)
+	if !strings.Contains(plan, "idx_runs_claim") {
+		t.Fatalf("the claim does not read idx_runs_claim:\n%s", plan)
+	}
+	if strings.Contains(plan, "SCAN runs") {
+		t.Fatalf("the claim scans the runs table:\n%s", plan)
+	}
+}
+
+func TestReaperQueryPlansThroughTheReaperIndex(t *testing.T) {
+	s, _ := internalLeaseStore(t)
+
+	plan := queryPlan(t, s, reapCandidatesSQL, int64(500), 10)
+	if !strings.Contains(plan, "idx_runs_reaper") {
+		t.Fatalf("the reap sweep does not read idx_runs_reaper:\n%s", plan)
+	}
+	if strings.Contains(plan, "SCAN runs") {
+		t.Fatalf("the reap sweep scans the runs table:\n%s", plan)
+	}
+}
 
 func TestReaperFailsARunWhoseAttemptBudgetIsSpent(t *testing.T) {
 	ctx := context.Background()
