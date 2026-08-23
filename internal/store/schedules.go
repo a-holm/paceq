@@ -355,6 +355,10 @@ func (s *Store) MaterializeTick(ctx context.Context, in TickInput) (TickResult, 
 			nullIfEmpty(string(reasonCode)), nullIfEmpty(in.ReasonText), nullIfEmpty(in.ReasonData),
 			triggerCountOf(outcome),
 		)
+		if err != nil {
+			return fmt.Errorf("claim the fire-time %s for schedule %s: %w",
+				fireAt.Format(time.RFC3339), sourceName, err)
+		}
 		faults.Point("M2:tick:after_tick_before_run")
 		written, err := res.RowsAffected()
 		if err != nil {

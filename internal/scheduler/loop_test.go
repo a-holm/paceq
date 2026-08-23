@@ -2,7 +2,6 @@ package scheduler_test
 
 import (
 	"context"
-	"errors"
 	"io"
 	"log/slog"
 	"testing"
@@ -19,8 +18,6 @@ import (
 // when nothing is due, survive one broken schedule, explain every skip,
 // advance the cursor into the future, and stop between transactions when
 // leadership is lost.
-
-var errScripted = errors.New("scripted refusal")
 
 // scriptedStore records every call so a test can hold the loop to exactly
 // the reads and writes its scenario allows.
