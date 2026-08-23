@@ -54,6 +54,13 @@ func Probe(path, clientVersion string) error {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		// A 404 on the probe path means somebody is listening but not
+		// serving this protocol: an older daemon from before M2-08, or a
+		// stranger's socket that passed the stat checks. Nobody home for
+		// our purposes, so the caller falls back rather than refuses.
+		if resp.StatusCode == http.StatusNotFound {
+			return fmt.Errorf("%w: nothing serves this protocol on %s", ErrNoDaemon, path)
+		}
 		code, message := readCodeAndMessage(decodeLoose(resp.Body))
 		if code == "" {
 			code = codeVersionMismatch
@@ -139,8 +146,9 @@ func (c *Client) CancelRun(ctx context.Context, runID, reason string) error {
 // ApplyReport is the applied/unchanged/failed report, shaped like the CLI's
 // own JSON report so a renderer can consume either without translation.
 type ApplyReport struct {
-	Applied []ApplyEntry       `json:"applied"`
-	Failed  []ApplyWireFailure `json:"failed"`
+	Applied   []ApplyEntry       `json:"applied"`
+	Unchanged []ApplyEntry       `json:"unchanged"`
+	Failed    []ApplyWireFailure `json:"failed"`
 }
 
 // ApplyEntry is one job file that landed or was already there.
@@ -182,8 +190,7 @@ func (c *Client) Apply(ctx context.Context, paths []string) (ApplyReport, error)
 	if err := json.Unmarshal(raw, &wire); err != nil {
 		return ApplyReport{}, fmt.Errorf("the apply report is not shaped like the contract: %w", err)
 	}
-	report := ApplyReport{Applied: append(wire.Applied, wire.Unchanged...), Failed: wire.Failed}
-	return report, nil
+	return ApplyReport{Applied: wire.Applied, Unchanged: wire.Unchanged, Failed: wire.Failed}, nil
 }
 
 // call performs one request and decodes one JSON object answer. A non-2xx

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/a-holm/paceq/internal/api"
 	"github.com/a-holm/paceq/internal/clock"
 	"github.com/a-holm/paceq/internal/model"
 	"github.com/a-holm/paceq/internal/reason"
@@ -259,7 +260,7 @@ func TestHealthEndpointServesWithoutTheDatabase(t *testing.T) {
 	sts := newStatuses(func() time.Time { return time.Unix(0, 0).UTC() })
 	sts.mark("scheduler")
 
-	stop := startHealthEndpoint(cfg, sts, cfg.Logger)
+	stop := startHealthEndpoint(cfg, sts, cfg.Logger, nil)
 	if stop == nil {
 		t.Fatal("a configured socket did not start the endpoints")
 	}
@@ -300,8 +301,11 @@ func TestHealthEndpointServesWithoutTheDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat the socket: %v", err)
 	}
-	if mode := info.Mode().Perm(); mode&0o077 != 0 {
-		t.Errorf("the socket is %#o, want no access for group or other", mode)
+	// M2-08 sets the mode to 0660 on purpose (the group bits are for the
+	// systemd RuntimeDirectory story of M2-11); only the other-bits are
+	// forbidden outright.
+	if mode := info.Mode().Perm(); mode != api.SocketMode {
+		t.Errorf("the socket is %#o, want %#o", mode, api.SocketMode)
 	}
 }
 

@@ -72,6 +72,13 @@ func Routes() []Route {
 			Registered: true,
 		},
 		{
+			Name:       "readyz",
+			Method:     "GET",
+			Pattern:    "/readyz",
+			Purpose:    "the readiness facts under the pre-M2-08 path, kept for the operators and tests that already poll it",
+			Registered: true,
+		},
+		{
 			Name:       "livez",
 			Method:     "GET",
 			Pattern:    "/livez",

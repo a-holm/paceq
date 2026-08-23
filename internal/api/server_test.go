@@ -249,6 +249,7 @@ func TestTheRouteTableIsTheWholeSurface(t *testing.T) {
 		"POST /v1/runs/{id}/cancel": true,
 		"POST /v1/apply":            true,
 		"GET /v1/healthz":           true,
+		"GET /readyz":               true,
 		"GET /livez":                true,
 	}
 	for pattern := range want {

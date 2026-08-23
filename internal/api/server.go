@@ -139,6 +139,7 @@ func newMux(deps Deps) *http.ServeMux {
 		"cancel-run": deps.handleCancelRun,
 		"apply":      deps.handleApply,
 		"healthz":    deps.handleHealthz,
+		"readyz":     deps.handleHealthz,
 		"livez":      deps.handleLivez,
 	}
 	mux := http.NewServeMux()

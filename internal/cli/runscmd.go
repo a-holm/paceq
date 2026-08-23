@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/a-holm/paceq/internal/api"
 	"github.com/a-holm/paceq/internal/id"
 	"github.com/a-holm/paceq/internal/model"
 	"github.com/a-holm/paceq/internal/reason"
@@ -31,8 +32,120 @@ Without a subcommand this prints help. Every listing is newest first, walks
 backwards with --before, and reads through the read only pool, so history is
 there while another process writes new runs.`,
 	}
-	cmd.AddCommand(newRunsListCmd(env, g), newRunsShowCmd(env, g))
+	cmd.AddCommand(newRunsListCmd(env, g), newRunsShowCmd(env, g), newRunsCancelCmd(env, g))
 	return cmd
+}
+
+// runsCancelFlags carries the optional reason a cancellation records.
+type runsCancelFlags struct {
+	reason string
+}
+
+func newRunsCancelCmd(env Env, g *globals) *cobra.Command {
+	var f runsCancelFlags
+	cmd := &cobra.Command{
+		Use:   "cancel <run>",
+		Short: "Ask for one run to be stopped, durably",
+		Long: `Record that this run should stop. The request lands in the database
+before anything is killed: whoever holds the lease observes it and does
+the stopping, so the history always agrees with what happened.
+
+With the daemon up the request travels over its socket and the daemon's
+own writer records it (actor api). With the daemon down the command takes
+the state lock itself and writes directly (actor cli).`,
+		Args: exactArgs(1, "one run id or prefix"),
+		RunE: runArgsE(env, g, func(ctx context.Context, out *ui, args []string) error {
+			return runRunsCancel(ctx, env, g, out, args[0], f)
+		}),
+	}
+	cmd.Flags().StringVar(&f.reason, "reason", "", "why the run should stop, kept beside the request")
+	return cmd
+}
+
+// runRunsCancel resolves the dual-mode transport first, then records the
+// request through whichever writer won.
+func runRunsCancel(ctx context.Context, env Env, g *globals, out *ui, runArg string, f runsCancelFlags) error {
+	stateDir, err := g.stateDir(env)
+	if err != nil {
+		return err
+	}
+	dbPath := filepath.Join(stateDir, store.DatabaseFileName)
+	if _, err := os.Stat(dbPath); errors.Is(err, fs.ErrNotExist) {
+		return notFoundError(
+			fmt.Sprintf("there is no paceq state at %s", stateDir),
+			stateDir,
+			"paceq init  creates a project with its state directory",
+			"run the command inside the project directory, or pass --db")
+	}
+
+	plan := planWrite(ctx, env, g)
+	if plan.err != nil {
+		return plan.err
+	}
+	setting := resolveSocket(g, env, stateDir)
+
+	var viaSocket bool
+	switch {
+	case plan.client != nil:
+		viaSocket = true
+		if err := plan.client.CancelRun(ctx, runArg, f.reason); err != nil {
+			var wire *api.WireError
+			if errors.As(err, &wire) {
+				return wireFailure(env, wire)
+			}
+			return internalError("could not reach the daemon", err)
+		}
+		defer func() { _ = plan.client.Close() }()
+	case plan.st != nil:
+		if _, err := plan.st.RequestCancel(ctx, runArg, cliActor(), f.reason); err != nil {
+			return cancelRefusal(ctx, plan.st, runArg, err)
+		}
+		defer func() { _ = plan.st.Close() }()
+	default:
+		return internalError("writer resolution produced neither transport", errors.New("empty plan"))
+	}
+
+	ro, err := store.OpenReadOnly(ctx, dbPath, store.Options{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = ro.Close() }()
+	detail, err := ro.GetRun(ctx, runArg)
+	if err != nil {
+		return notFoundError(
+			fmt.Sprintf("no run matches %q", runArg),
+			"the ids of finished runs, shortest first: any prefix names a run as soon as it can",
+			"check the id: paceq explains it on every failure it reports")
+	}
+	if out.mode == modeJSON {
+		down := noteDaemon(setting, env, out)
+		var field *bool
+		if probed := !setting.off && setting.path != ""; probed {
+			field = daemonField(down, probed)
+		}
+		return writeRunRecordField(out, detail, field)
+	}
+	out.print("%s cancel requested for run %s  job %s  (%s)",
+		out.symbols.ok, detail.ID, detail.JobName, map[bool]string{true: "via daemon", false: "directly"}[viaSocket])
+	return nil
+}
+
+// cancelRefusal maps the direct path's store refusals for a cancel.
+func cancelRefusal(ctx context.Context, st *store.Store, runArg string, err error) error {
+	switch {
+	case errors.Is(err, store.ErrRunNotFound):
+		return notFoundError(
+			fmt.Sprintf("no run matches %q", runArg),
+			"the ids of finished runs, shortest first: any prefix names a run as soon as it can",
+			"check the id: paceq explains it on every failure it reports")
+	case errors.Is(err, id.ErrInvalid):
+		return notFoundError(
+			fmt.Sprintf("no run matches %q", runArg),
+			err.Error(),
+			"an id is 26 characters from 0123456789ABCDEFGHJKMNPQRSTVWXYZ; any prefix of one works")
+	default:
+		return internalError("could not record the cancellation", err)
+	}
 }
 
 type runsListFlags struct {
@@ -135,6 +248,11 @@ func runRunsList(ctx context.Context, env Env, g *globals, out *ui, f runsListFl
 		for _, row := range rows {
 			doc = append(doc, newListRow(row))
 		}
+		setting := resolveSocket(g, env, stateDir)
+		down := noteDaemon(setting, env, out)
+		if probed := !setting.off && setting.path != ""; probed {
+			return out.json(runListEnvelope{DaemonUp: daemonField(down, probed), Runs: doc})
+		}
 		return out.json(doc)
 	}
 	if len(rows) == 0 {
@@ -181,6 +299,13 @@ type runListRow struct {
 	StartedAt  string `json:"started_at,omitempty"`
 	FinishedAt string `json:"finished_at,omitempty"`
 	DurationMS int64  `json:"duration_ms,omitempty"`
+}
+
+// runListEnvelope wraps the listing when a socket was explicitly named, for
+// the same reason status wraps: the numbers should say where they came from.
+type runListEnvelope struct {
+	DaemonUp *bool        `json:"daemon_up,omitempty"`
+	Runs     []runListRow `json:"runs"`
 }
 
 func newListRow(row store.RunSummary) runListRow {
@@ -277,7 +402,13 @@ func runRunsShow(ctx context.Context, env Env, g *globals, out *ui, runArg strin
 	}
 
 	if out.mode == modeJSON {
-		return writeRunRecord(out, detail)
+		setting := resolveSocket(g, env, stateDir)
+		down := noteDaemon(setting, env, out)
+		var field *bool
+		if probed := !setting.off && setting.path != ""; probed {
+			field = daemonField(down, probed)
+		}
+		return writeRunRecordField(out, detail, field)
 	}
 	mark := out.symbols.arrow
 	switch model.RunState(detail.State) {

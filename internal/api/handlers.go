@@ -1,6 +1,8 @@
 package api
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -157,10 +159,10 @@ func (d Deps) handleApply(w http.ResponseWriter, r *http.Request) {
 	var (
 		inputs    []store.JobVersionInput
 		failed    []failedFile
-		hashByJob = map[string]string{}
+		metaByJob = map[string]jobFileMeta{}
 	)
 	for _, path := range req.Paths {
-		job, _, diags := spec.LoadFile(path)
+		job, source, diags := spec.LoadFile(path)
 		if diags.HasErrors() {
 			first := diags[0]
 			for _, entry := range diags {
@@ -173,6 +175,7 @@ func (d Deps) handleApply(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		canonical := spec.Canonical(job)
+		sum := sha256.Sum256(source.Bytes)
 		inputs = append(inputs, store.JobVersionInput{
 			JobName:       job.Name,
 			Description:   job.Description,
@@ -181,7 +184,11 @@ func (d Deps) handleApply(w http.ResponseWriter, r *http.Request) {
 			SpecHash:      spec.Hash(canonical),
 			SpecJSON:      string(canonical),
 		})
-		hashByJob[job.Name] = path
+		metaByJob[job.Name] = jobFileMeta{
+			file:      path,
+			specHash:  spec.Hash(canonical),
+			sourceSHA: hex.EncodeToString(sum[:]),
+		}
 	}
 
 	report := map[string]any{
@@ -199,10 +206,13 @@ func (d Deps) handleApply(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for _, result := range results {
+			meta := metaByJob[result.JobName]
 			entry := map[string]any{
-				"job":     result.JobName,
-				"file":    hashByJob[result.JobName],
-				"version": result.Version,
+				"job":         result.JobName,
+				"file":        meta.file,
+				"version":     result.Version,
+				"spec_hash":   meta.specHash,
+				"file_sha256": meta.sourceSHA,
 			}
 			if result.Created {
 				entryKeyAppend(report, "applied", entry)
@@ -212,6 +222,13 @@ func (d Deps) handleApply(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, report)
+}
+
+// jobFileMeta is what the apply report says about one parsed file.
+type jobFileMeta struct {
+	file      string
+	specHash  string
+	sourceSHA string
 }
 
 // entryKeyAppend grows one list inside the report map.
