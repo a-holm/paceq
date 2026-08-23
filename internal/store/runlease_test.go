@@ -21,7 +21,7 @@ import (
 func aMultiRun(t *testing.T, s *store.Store, n int) []string {
 	t.Helper()
 
-	aCanonicalJob(t, s, "nightly", singleStepSpec)
+	aCanonicalJob(t, s, "nightly", batchSpec)
 	var ids []string
 	for i := 0; i < n; i++ {
 		out, err := s.MaterializeManualTrigger(context.Background(), store.ManualTriggerInput{

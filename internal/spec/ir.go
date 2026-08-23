@@ -214,6 +214,8 @@ func irSchedules(val any) ([]Schedule, error) {
 				s.Cron, err = text(val, where+".cron")
 			case "timezone":
 				s.Timezone, err = text(val, where+".timezone")
+			case "overlap":
+				s.Overlap, err = irOverlap(val, where)
 			default:
 				err = fmt.Errorf("unexpected key %q in %s", key, where)
 			}
@@ -225,6 +227,20 @@ func irSchedules(val any) ([]Schedule, error) {
 		out = append(out, s)
 	}
 	return out, nil
+}
+
+// irOverlap reads the overlap policy back. The canonical writer emits the key
+// only when the policy is not the default, so an old document without the key
+// reads as skip and a future one cannot smuggle in another value.
+func irOverlap(val any, where string) (string, error) {
+	s, err := text(val, where+".overlap")
+	if err != nil {
+		return "", err
+	}
+	if s != OverlapSkip && s != OverlapQueue {
+		return "", fmt.Errorf("%s.overlap is %q, want %q or %q", where, s, OverlapSkip, OverlapQueue)
+	}
+	return s, nil
 }
 
 func irSensors(val any) ([]Sensor, error) {

@@ -213,6 +213,13 @@ type RunSummary struct {
 	CreatedAt  time.Time
 	StartedAt  time.Time
 	FinishedAt time.Time
+
+	// The deferral facts (#68): available_at decides whether a queued row
+	// reads as deferred, defer_reason names why it waits, and reason_data
+	// carries the blocking run id the display points at.
+	AvailableAt time.Time
+	DeferReason string
+	ReasonData  string
 }
 
 // RunFilter narrows a listing. The zero filter lists the newest runs of every
@@ -493,7 +500,8 @@ func (s *Store) ListRuns(ctx context.Context, f RunFilter) ([]RunSummary, error)
 	}
 	args = append(args, limit)
 
-	query := `SELECT id, job_name, origin, state, reason_code, created_at, started_at, finished_at
+	query := `SELECT id, job_name, origin, state, reason_code,
+available_at, defer_reason, reason_data, created_at, started_at, finished_at
 FROM runs`
 	if len(where) > 0 {
 		query += "\nWHERE " + strings.Join(where, " AND ")
@@ -507,20 +515,26 @@ FROM runs`
 			return fmt.Errorf("list runs: %w", err)
 		}
 		defer func() { _ = rows.Close() }()
-
 		for rows.Next() {
 			var (
 				sum        RunSummary
 				reason     sql.NullString
+				deferRed   sql.NullString
+				reasonData sql.NullString
 				createdAt  int64
 				startedAt  sql.NullInt64
 				finishedAt sql.NullInt64
+				availAt    int64
 			)
 			if err := rows.Scan(&sum.ID, &sum.JobName, &sum.Origin, &sum.State, &reason,
+				&availAt, &deferRed, &reasonData,
 				&createdAt, &startedAt, &finishedAt); err != nil {
 				return fmt.Errorf("scan a run: %w", err)
 			}
 			sum.ReasonCode = reason.String
+			sum.DeferReason = deferRed.String
+			sum.ReasonData = reasonData.String
+			sum.AvailableAt = time.UnixMilli(availAt).UTC()
 			sum.CreatedAt = time.UnixMilli(createdAt).UTC()
 			sum.StartedAt = timeOrZero(startedAt)
 			sum.FinishedAt = timeOrZero(finishedAt)

@@ -96,7 +96,10 @@ func runStatus(ctx context.Context, env Env, g *globals, out *ui, args []string)
 			mark = out.symbols.arrow
 		}
 		state := row.State
-		if mark == out.symbols.fail || mark == out.symbols.warn {
+		if row.DeferReason != "" {
+			state = "deferred"
+			mark = out.symbols.warn
+		} else if mark == out.symbols.fail || mark == out.symbols.warn {
 			state += " " + shortReason(row.ReasonCode)
 		}
 		out.print("%s %s  %s  %s ago  %s  %d/%d",
@@ -123,6 +126,12 @@ type statusRow struct {
 	DurationMS int64  `json:"duration_ms,omitempty"`
 	StepsTotal int    `json:"steps_total,omitempty"`
 	StepsDone  int    `json:"steps_done,omitempty"`
+
+	// The deferral facts (#68): a deferred newest run means the job
+	// is waiting for a concurrency slot.
+	DeferReason string `json:"defer_reason,omitempty"`
+	ReasonData  string `json:"reason_data,omitempty"`
+	AvailableAt string `json:"available_at,omitempty"`
 }
 
 func newStatusRow(row store.JobRunSummary) statusRow {
@@ -139,6 +148,11 @@ func newStatusRow(row store.JobRunSummary) statusRow {
 	out.DurationMS = millisBetween(row.StartedAt, row.FinishedAt)
 	out.StepsTotal = row.StepsTotal
 	out.StepsDone = row.StepsDone
+	out.DeferReason = row.DeferReason
+	out.ReasonData = row.ReasonData
+	if !row.AvailableAt.IsZero() {
+		out.AvailableAt = rfc3339(row.AvailableAt)
+	}
 	return out
 }
 

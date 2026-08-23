@@ -453,7 +453,11 @@ func applyJob(t *testing.T, s *store.Store, sc Scenario, appendBin, effectFile s
 		step += fmt.Sprintf(`,"retry":{"max":%d}`, sc.RetryMax)
 	}
 	step += "}"
-	spec := fmt.Sprintf(`{"schema":"paceq.job.v1","name":%q,"max_concurrent":1,`+
+	// The ceiling is generous on purpose (#68): these rows probe crash
+	// windows of the tick chain and of execution, not admission control,
+	// and the manual run this child seeds must not stand the tick row's
+	// fire-time down before its window is ever reached.
+	spec := fmt.Sprintf(`{"schema":"paceq.job.v1","name":%q,"max_concurrent":200,`+
 		`"timeout_ms":60000,"steps":[%s]}`, jobName, step)
 
 	if _, _, err := s.UpsertJobVersion(context.Background(), store.JobVersionInput{

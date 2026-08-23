@@ -94,6 +94,16 @@ func reaperLoop(ctx context.Context, d loops, every time.Duration, sweeper reapS
 			d.log.Info("reaped an expired run",
 				"run", r.ID, "state", r.State, "epoch", r.LeaseEpoch)
 		}
+		if len(reaped) > 0 {
+			// Every reap frees a slot or requeues a run; both are facts
+			// the dispatcher should hear about now rather than at its
+			// next tick (#68).
+			d.bus.Notify(notify.TopicRunQueued)
+		}
+
+		// The periodic reconciliation safety net (#62) rides the same
+		// reaper leadership on its own cadence. A nil reconciler keeps
+		// the loop to pure reaping.
 		if rec == nil || reconcileEvery <= 0 {
 			return nil
 		}

@@ -13,6 +13,13 @@ const DeferReasonAfterCrash = "reconciled_after_crash"
 // every ordinary restart look like a failing run.
 const DeferReasonAfterShutdown = "requeued_after_shutdown"
 
+// DeferReasonConcurrency is what a run materialised under overlap: queue says
+// about itself: it was born queued, but every concurrency slot of its job was
+// already held, so available_at points into the future and this reason names
+// why (#68). It lives beside the other two defer reasons so all three words
+// the schema's CHECK and fsck I14 look for come from one file.
+const DeferReasonConcurrency = "concurrency"
+
 // NextRunState is the run machine, and the only place that decides what a run
 // may do next. It reads nothing but its arguments: no database, no clock, no
 // package level state, so the same three inputs always give the same three

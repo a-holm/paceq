@@ -235,11 +235,18 @@ func canonicalRetry(r *Retry) canonicalObject {
 func canonicalSchedules(schedules []Schedule) canonicalArray {
 	out := make(canonicalArray, 0, len(schedules))
 	for _, schedule := range schedules {
-		out = append(out, canonicalObject{
+		object := canonicalObject{
 			{"name", canonicalText(schedule.Name)},
 			{"cron", canonicalText(schedule.Cron)},
 			{"timezone", canonicalText(schedule.Timezone)},
-		})
+		}
+		// overlap is left out at the default, so every schedule written
+		// before the key existed keeps its hash. A schedule that says
+		// nothing overlaps like skip, in the file and in the document.
+		if schedule.Overlap != "" && schedule.Overlap != OverlapSkip {
+			object = append(object, canonicalMember{"overlap", canonicalText(schedule.Overlap)})
+		}
+		out = append(out, object)
 	}
 	return out
 }

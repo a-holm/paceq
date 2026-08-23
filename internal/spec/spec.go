@@ -126,12 +126,33 @@ type Retry struct {
 
 // Schedule is a cron expression and the zone it is read in. It parses and
 // validates here and activates in M2: the expression itself is checked by the
-// cron parser that arrives with the scheduler.
+// cron parser that arrives with the scheduler. Overlap says what a firing
+// does when the job's max_concurrent is already held: "skip" (the default)
+// stands down, "queue" defers the run into the future.
 type Schedule struct {
 	Name     string
 	Cron     string
 	Timezone string
+	Overlap  string
 }
+
+const (
+	// OverlapSkip stands a tick down when the concurrency limit is held. It
+	// is the default, because the user paceq replaces is flock -n, which
+	// skips too: the least surprising behaviour, except the stand-down is
+	// recorded with its reason instead of vanishing.
+	OverlapSkip = "skip"
+
+	// OverlapQueue materialises the run anyway, deferred: queued with
+	// available_at in the future and defer_reason set, so it starts when a
+	// slot frees instead of being dropped.
+	OverlapQueue = "queue"
+)
+
+// DefaultOverlap is OverlapSkip. Like DefaultMaxConcurrent this is a product
+// decision, not a technical one, and it is spelled out here so both ends of
+// the decode read it from one place.
+const DefaultOverlap = OverlapSkip
 
 // Sensor is an external trigger. It parses and validates here and activates in
 // M3-01, which is also where the type names and their own fields land.

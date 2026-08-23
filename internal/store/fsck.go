@@ -21,6 +21,7 @@ import (
 //   - I11 The fencing token never falls: the lease_epoch values recorded in
 //         a run's event history are non-decreasing and end at the row's own
 //         epoch.
+//   - I12 No job runs more than max_concurrent allows (#68).
 //   - I13 Timestamps are monotone: created <= started <= finished, and no
 //         stamp sits at zero where one exists at all.
 //   - I14 A queued run held for the future carries its defer reason.
@@ -344,6 +345,15 @@ ORDER BY run_id, id`)
 			})
 		}
 	}
+
+	// I12: no job runs more than its ceiling allows (#68). The admission
+	// control and the claim both enforce this on the way in; the sweep
+	// catches what a hand edit, a future writer or a bug let through.
+	active, err := s.ActiveRunViolations(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, active...)
 
 	// The reason code rule, swept along with everything else.
 	unexplained, err := s.UnexplainedReasons(ctx)

@@ -17,7 +17,7 @@ var (
 	jobFields      = []string{"name", "description", "env", "env_file", "inherit_env", "workdir", "timeout", "max_concurrent", "steps", "schedules", "sensors"}
 	stepFields     = []string{"name", "run", "shell", "workdir", "timeout", "retry", "needs"}
 	retryFields    = []string{"max", "backoff", "initial", "max_delay", "jitter"}
-	scheduleFields = []string{"name", "cron", "timezone"}
+	scheduleFields = []string{"name", "cron", "timezone", "overlap"}
 	sensorFields   = []string{"name", "type", "interval"}
 )
 
@@ -349,7 +349,7 @@ func (d *decoder) schedules(node ast.Node) []Schedule {
 			continue
 		}
 
-		schedule := Schedule{Timezone: DefaultTimezone}
+		schedule := Schedule{Timezone: DefaultTimezone, Overlap: DefaultOverlap}
 		seen := d.fields(mapping, "a schedule", scheduleFields, func(key string, value ast.Node) {
 			switch key {
 			case "name":
@@ -358,6 +358,8 @@ func (d *decoder) schedules(node ast.Node) []Schedule {
 				schedule.Cron = d.text(value, where+" cron")
 			case "timezone":
 				schedule.Timezone = d.timezone(value, where)
+			case "overlap":
+				schedule.Overlap = d.oneOf(value, where+" overlap", OverlapSkip, OverlapQueue)
 			}
 		})
 		if !seen["name"] {

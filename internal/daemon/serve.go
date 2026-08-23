@@ -120,6 +120,11 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 	execCtx, stopExec := context.WithCancel(context.WithoutCancel(ctx))
 	eng := newEngine(cfg, st, clk)
 	pool := newExecutorPool(eng, eng, log, cfg.workerCount())
+	// A run leaving the pool frees its concurrency slot; the dispatcher
+	// hears about it at once, so a deferred run starts on the release
+	// rather than on the next tick (#68). A disabled bus drops the wake
+	// and the ticker carries it alone, like every other topic.
+	pool.afterRun = func() { bus.Notify(notify.TopicRunQueued) }
 
 	grp := newGroup(ctx)
 	intakeCtx, stopIntake := context.WithCancel(grp.ctx)
