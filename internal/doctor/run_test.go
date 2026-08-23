@@ -135,7 +135,7 @@ func TestHealthyInstallationHasNoFailures(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"state directory", "disk space", "database", "write lock",
+		"state directory", "disk space", "sandbox", "database", "write lock",
 		"journal mode", "schema version", "auto_vacuum", "time zone",
 	} {
 		f := find(t, report, want)

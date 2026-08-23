@@ -92,6 +92,8 @@ func Run(ctx context.Context, dir string, opt Options) Report {
 	r.add(dirFinding)
 	r.add(checkDiskSpace(nearestExisting(dir), opt.Free))
 
+	r.add(CheckSandbox())
+
 	switch dirState {
 	case stateMissing:
 		// Nothing else can be answered, and every answer would repeat the one

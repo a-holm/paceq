@@ -55,7 +55,7 @@ func TestDoctorReportsWhatTheIssueAsksFor(t *testing.T) {
 		t.Fatalf("paceq doctor = %d, want %d\n%s", got.code, ExitOK, got.stderr)
 	}
 	for _, want := range []string{
-		"paceq", "state directory", "database", "journal mode", "schema version",
+		"paceq", "state directory", "sandbox", "database", "journal mode", "schema version",
 		"auto_vacuum", "write lock", "disk space", "time zone",
 		filepath.Join(dir, ".paceq", store.DatabaseFileName),
 	} {
