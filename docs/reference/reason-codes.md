@@ -29,6 +29,7 @@ Codes stored in the ticks table, one row per evaluation that was due.
 | `TICK_MISSED_DAEMON_DOWN` | no daemon was running (gap detection) | yes | - |
 | `TICK_MISSED_LEASE_LOST` | another instance held the lease | yes | - |
 | `TICK_SKIPPED_CATCHUP_DISABLED` | the due tick was discarded, catchup is off | yes | - |
+| `TICK_SKIPPED_CATCHUP_LAST_ONLY` | older due ticks were discarded, catchup is last | yes | - |
 | `TICK_SKIPPED_CATCHUP_WINDOW` | the due tick is older than the catchup window | yes | `scheduled_for`, `window_ms` |
 | `TICK_SKIPPED_CONCURRENCY` | a concurrency ceiling is reached | yes | `limit`, `scope` |
 | `TICK_SKIPPED_DST_DUPLICATE` | the local time happens twice (fall back) | yes | `local_time` |
@@ -199,6 +200,20 @@ when the daemon comes back.
 What to do next:
 - set catchup to last or all on the schedule if late runs are wanted
 - a long outage with catchup off shows up here as a block of skipped ticks
+
+### TICK_SKIPPED_CATCHUP_LAST_ONLY
+
+older due ticks were discarded, catchup is last. [tick level, ends the object]
+
+Several ticks came due while nothing could run them, and the schedule has
+catchup set to last, so only the most recent moment was kept and the older
+ones were thrown away. One missed stretch becomes one fresh run instead of a
+burst playing catch-up, and this row is where the discarded moments are
+recorded.
+
+What to do next:
+- set catchup to all on the schedule if the missed moments should all run
+- a long outage with catchup on last shows up here as one run plus a block of these rows
 
 ### TICK_SKIPPED_CATCHUP_WINDOW
 
