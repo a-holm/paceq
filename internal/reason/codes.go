@@ -93,6 +93,7 @@ var (
 	// beside exit 0 is information, not a verdict.
 	STEPOutputInvalid   = stepCode("OUTPUT_INVALID")
 	STEPOutputTruncated = stepCode("OUTPUT_TRUNCATED")
+	STEPOutputCollision = stepCode("OUTPUT_COLLISION")
 
 	LEASEAcquired  = leaseCode("ACQUIRED")
 	LEASELost      = leaseCode("LOST")
@@ -650,6 +651,20 @@ func newCatalog() map[Code]Entry {
 				"a step that regularly hits a bound should emit fewer, smaller references",
 			},
 			DataKeys: []string{"bound", "limit"},
+		},
+		{
+			Code:  STEPOutputCollision,
+			Level: LevelStep,
+			Short: "two upstream steps published one name",
+			Explanation: "Two steps of this run published an artifact under the same name. The run " +
+				"keeps exactly one row per name, and the winner is deterministic: the step latest " +
+				"in the spec order holds the name. The loser's reference is named here so nothing " +
+				"disappears without a trace.",
+			Remedy: []string{
+				"rename one of the colliding artifacts so both survive",
+				"if the collision is intended, the later step owns the name and this warning is the record",
+			},
+			DataKeys: []string{"name", "winner", "loser"},
 		},
 		{
 			Code:  STEPRetryScheduled,

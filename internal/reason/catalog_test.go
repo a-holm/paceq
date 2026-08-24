@@ -95,6 +95,7 @@ func TestTerminalFlagsFollowTheWriteRule(t *testing.T) {
 		// end a step whose command exited 0.
 		STEPOutputInvalid:   true,
 		STEPOutputTruncated: true,
+		STEPOutputCollision: true,
 		STEPRetryScheduled:  true,
 		// The drain interrupt: work goes back to pending with no attempt
 		// spent, so nothing about the run or the step has ended.

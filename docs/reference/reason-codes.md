@@ -82,6 +82,7 @@ Codes stored on the steps table, one row per step of a run.
 | `STEP_FAILED_SIGNAL` | killed by a signal | yes | `cancelled`, `exit_code`, `signal` |
 | `STEP_FAILED_SPAWN` | the command never started | yes | `argv0`, `errno`, `workdir` |
 | `STEP_FAILED_TIMEOUT` | killed at the deadline | yes | `timeout_ms` |
+| `STEP_OUTPUT_COLLISION` | two upstream steps published one name | no | `name`, `winner`, `loser` |
 | `STEP_OUTPUT_INVALID` | output had lines that could not be read | no | `count`, `first_line` |
 | `STEP_OUTPUT_TRUNCATED` | output was cut off at a bound | no | `bound`, `limit` |
 | `STEP_RETRIES_EXHAUSTED` | failed with no retries left | yes | `attempt`, `max_attempts` |
@@ -645,6 +646,21 @@ What to do next:
 - a step that always needs just over its timeout is telling you its input grew
 
 Promised reason_data keys: timeout_ms.
+
+### STEP_OUTPUT_COLLISION
+
+two upstream steps published one name. [step level]
+
+Two steps of this run published an artifact under the same name. The run
+keeps exactly one row per name, and the winner is deterministic: the step
+latest in the spec order holds the name. The loser's reference is named here
+so nothing disappears without a trace.
+
+What to do next:
+- rename one of the colliding artifacts so both survive
+- if the collision is intended, the later step owns the name and this warning is the record
+
+Promised reason_data keys: name, winner, loser.
 
 ### STEP_OUTPUT_INVALID
 
