@@ -297,7 +297,7 @@ func copyArtifactRefsTx(tx *sql.Tx, srcRunID, newRunID string, reuse []string, a
 	}
 	query := `SELECT COALESCE(step_name, ''), name, uri, size_bytes, checksum, meta_json
 FROM artifacts WHERE run_id = ? AND step_name IN (` + strings.Join(marks, ",") + `)
-ORDER BY created_at, id`
+ORDER BY created_at, id` // #nosec G202 - the concatenated segment adds only "?" placeholder marks, never user data; every value is parameter-bound via args
 	rows, err := tx.Query(query, args...)
 	if err != nil {
 		return fmt.Errorf("read the artifacts of run %s: %w", srcRunID, err)
