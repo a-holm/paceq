@@ -208,6 +208,17 @@ var catalogue = map[string]explanation{
 			"to stop a job running, remove its schedule rather than setting a concurrency of zero",
 		},
 	},
+	spec.CodeBadMaxParallel: {
+		Code:  spec.CodeBadMaxParallel,
+		Title: "max_parallel is not a number of steps",
+		Explanation: "max_parallel is how many steps of one run may be in flight at once, and " +
+			"the lowest it goes is 1. The default is 4. A number over the ceiling is refused " +
+			"here, at the door, so the engine never has to read a nonsense limit.",
+		Next: []string{
+			"max_parallel: 4",
+			"set it to 1 if you want the steps of a run to strictly serialise",
+		},
+	},
 	spec.CodeUnknownField: {
 		Code:  spec.CodeUnknownField,
 		Title: "the field is not one paceq knows",
@@ -280,6 +291,18 @@ var catalogue = map[string]explanation{
 			"order they are written.",
 		Next: []string{
 			"the message lists the steps this job does have, and suggests the nearest name",
+		},
+	},
+	spec.CodeCycle: {
+		Code:  spec.CodeCycle,
+		Title: "the steps depend on each other in a circle",
+		Explanation: "Each step in a needs loop waits on a step that waits on it, so none of " +
+			"them can ever start. The message names the loop as a path of arrows, and a " +
+			"dependency edge always has to point backwards: at a step that has already " +
+			"finished, never at one that is still waiting.",
+		Next: []string{
+			"the diagnostic prints the loop it found, e.g. extract -> transform -> extract",
+			"break the loop by making the last step not wait on the first",
 		},
 	},
 	spec.CodeUnknownTimezone: {

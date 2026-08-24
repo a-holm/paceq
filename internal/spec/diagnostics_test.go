@@ -153,6 +153,12 @@ func TestTheCaretLandsUnderWhatWentWrong(t *testing.T) {
 			code:  spec.CodeBadConcurrency,
 			under: "0",
 		},
+		{
+			name:  "max_parallel points at the number",
+			src:   "name: report\nmax_parallel: 0\nsteps:\n  - name: only\n    run: [\"/bin/true\"]\n",
+			code:  spec.CodeBadMaxParallel,
+			under: "0",
+		},
 	}
 
 	for _, tc := range cases {

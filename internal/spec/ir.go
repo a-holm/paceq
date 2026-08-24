@@ -28,7 +28,7 @@ func FromIR(data []byte) (*Job, error) {
 		return nil, fmt.Errorf("the canonical document is %T, want an object", root)
 	}
 
-	j := &Job{}
+	j := &Job{MaxConcurrent: DefaultMaxConcurrent, MaxParallel: DefaultMaxParallel}
 	seenSchema, seenName := false, false
 	err := eachMember(object, func(key string, val any) error {
 		var err error
@@ -71,6 +71,12 @@ func FromIR(data []byte) (*Job, error) {
 				return err
 			}
 			j.MaxConcurrent = int(n)
+		case "max_parallel":
+			n, err := wholeNumber(val, "max_parallel")
+			if err != nil {
+				return err
+			}
+			j.MaxParallel = int(n)
 		case "env":
 			if j.Env, err = textMap(val, "env"); err != nil {
 				return err

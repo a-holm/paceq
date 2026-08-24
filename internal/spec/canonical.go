@@ -174,6 +174,12 @@ func canonicalJob(j *Job) canonicalObject {
 		{"max_concurrent", canonicalNumber(j.MaxConcurrent)},
 		{"steps", canonicalSteps(j.Steps)},
 	}
+	// max_parallel is left out at the default, the same way overlap is: a
+	// job written before the field existed keeps its hash, and a job that
+	// says nothing means the default just as much as one that spells it out.
+	if j.MaxParallel != DefaultMaxParallel {
+		object = append(object, canonicalMember{"max_parallel", canonicalNumber(j.MaxParallel)})
+	}
 	object = appendText(object, "description", j.Description)
 	object = appendText(object, "env_file", j.EnvFile)
 	object = appendText(object, "workdir", j.Workdir)

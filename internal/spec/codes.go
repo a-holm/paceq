@@ -42,6 +42,10 @@ const (
 	CodeTimeoutTooLong = "PQ1021"
 	// CodeBadConcurrency is max_concurrent below one.
 	CodeBadConcurrency = "PQ1030"
+	// CodeBadMaxParallel is max_parallel outside 1..MaxParallelHi. The field
+	// is the per-run semaphore M4-02 reads, so it is validated here, at the
+	// door, the same way max_concurrent is.
+	CodeBadMaxParallel = "PQ1031"
 	// CodeUnknownField is a field name paceq does not know, with the nearest
 	// one it does.
 	CodeUnknownField = "PQ1040"
@@ -58,6 +62,9 @@ const (
 	CodeDuplicateStep = "PQ2001"
 	// CodeUnknownNeed is a needs entry naming a step that does not exist.
 	CodeUnknownNeed = "PQ2002"
+	// CodeCycle is a needs graph that loops: one step, somewhere in the graph,
+	// needs a step that needs it back, so no step in the loop can ever start.
+	CodeCycle = "PQ2003"
 	// CodeUnknownTimezone is a schedule zone the time zone database does not
 	// have.
 	CodeUnknownTimezone = "PQ2010"
@@ -114,6 +121,7 @@ func Codes() []string {
 		CodeBadDuration,
 		CodeTimeoutTooLong,
 		CodeBadConcurrency,
+		CodeBadMaxParallel,
 		CodeUnknownField,
 		CodeDuplicateKey,
 		CodeMergeKey,
@@ -121,6 +129,7 @@ func Codes() []string {
 		CodeTooManyProblems,
 		CodeDuplicateStep,
 		CodeUnknownNeed,
+		CodeCycle,
 		CodeUnknownTimezone,
 		CodeShell,
 		CodeInheritEnv,

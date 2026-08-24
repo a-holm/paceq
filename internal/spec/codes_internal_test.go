@@ -74,6 +74,7 @@ func TestCodesUseTheSeriesTheyBelongTo(t *testing.T) {
 	semantic := map[string]bool{
 		CodeDuplicateStep:   true,
 		CodeUnknownNeed:     true,
+		CodeCycle:           true,
 		CodeUnknownTimezone: true,
 	}
 	warning := map[string]bool{CodeShell: true, CodeInheritEnv: true}

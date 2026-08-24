@@ -337,6 +337,39 @@ func (d *decoder) maxConcurrent(node ast.Node) int {
 	return int(value)
 }
 
+// maxParallel has its own function because its ceiling carries a reason worth
+// stating: this is the field that becomes the per-run semaphore in M4-02, and
+// the same gate max_concurrent uses applies to it. A number outside 1..64 is
+// refused here, at the door, so the engine never has to read a nonsense limit.
+func (d *decoder) maxParallel(node ast.Node) int {
+	resolved, ok := d.resolve(node, "max_parallel")
+	if !ok {
+		return DefaultMaxParallel
+	}
+	value, isNumber := integerValue(resolved)
+	if !isNumber {
+		written, _ := scalarText(resolved)
+		d.error(CodeBadMaxParallel, position(resolved),
+			fmt.Sprintf("max_parallel is %q, and it is a whole number", written),
+			fmt.Sprintf("It is how many steps of one run may run at once:\n\n    max_parallel: %d", DefaultMaxParallel))
+		return DefaultMaxParallel
+	}
+	if value < 1 {
+		d.error(CodeBadMaxParallel, position(resolved),
+			fmt.Sprintf("max_parallel is %d, and the lowest it goes is 1", value),
+			"There is no value that means \"never run any step in parallel\". Set it to 1,\n"+
+				"the floor, if you want the steps of a run to strictly serialise.")
+		return DefaultMaxParallel
+	}
+	if value > int64(MaxParallelHi) {
+		d.error(CodeBadMaxParallel, position(resolved),
+			fmt.Sprintf("max_parallel is %d, and paceq allows at most %d", value, MaxParallelHi),
+			fmt.Sprintf("Pick a number between 1 and %d.", MaxParallelHi))
+		return DefaultMaxParallel
+	}
+	return int(value)
+}
+
 // timeout reads a duration field. fallback is what an unreadable value falls
 // back to, so the rest of the file is still checked against something sensible.
 func (d *decoder) timeout(node ast.Node, fallback time.Duration) time.Duration {
@@ -461,6 +494,8 @@ func (d *decoder) crossCheck(job *Job) {
 		}
 	}
 
+	d.checkCycles(job.Steps)
+
 	sensorNames := make(map[string]int, len(job.Sensors))
 	for i, sensor := range job.Sensors {
 		if d.stopped {
@@ -517,6 +552,38 @@ func (d *decoder) needPosition(step, need int) diag.Position {
 		return d.stepPos[step].needs[need]
 	}
 	return d.stepPosition(step)
+}
+
+// checkCycles runs after every step is known to exist, so the only problem
+// left in the graph is a loop. A loop means each step in it waits on a step
+// that waits on it, so none of them can ever start; the diagnostic names the
+// steps it goes around, so the reader can find it in the file. The position
+// points at the first named step, which is the one the loop comes back to.
+func (d *decoder) checkCycles(steps []Step) {
+	if d.stopped {
+		return
+	}
+	_, cycle := TopoOrder(steps)
+	if cycle == "" {
+		return
+	}
+	subject := cycle
+	if line := strings.Index(subject, " -> "); line >= 0 {
+		subject = subject[:line]
+	}
+	where := -1
+	for i, step := range steps {
+		if step.Name == subject {
+			where = i
+			break
+		}
+	}
+	d.error(CodeCycle, d.stepPosition(where),
+		fmt.Sprintf("the steps depend on each other in a circle: %s", cycle),
+		"Every step in that list waits on one before to start, so none of them can:\\n"+
+			"    "+cycle+"\\n\\n"+
+			"One of them must stop waiting on the one after it. A dependency has to point\\n"+
+			"backwards, at a step that has already finished.")
 }
 
 // scalarText is the value of a scalar node as the text the file carries.
