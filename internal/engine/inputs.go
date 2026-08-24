@@ -61,15 +61,6 @@ func (e *Engine) prepareStepInputs(ctx context.Context, stateDir, runID, step st
 	return "null", path, nil
 }
 
-// inputCollisionFact is one losing claim as the event detail carries it.
-// The wire keys are the catalog's DataKeys, lowercase, so a reader of the
-// event sees the same words the reason entry promises.
-type inputCollisionFact struct {
-	Name   string `json:"name"`
-	Winner string `json:"winner"`
-	Loser  string `json:"loser"`
-}
-
 // logInputCollisions records the losing claims of the merge as a warning on
 // the step (#13). The merged document itself stays silent: the frozen wire
 // shape carries values, not history, so the event log is where the history
@@ -79,13 +70,9 @@ func (e *Engine) logInputCollisions(ctx context.Context, runID, step string, col
 	if len(collisions) == 0 {
 		return nil
 	}
-	facts := make([]inputCollisionFact, 0, len(collisions))
-	for _, c := range collisions {
-		facts = append(facts, inputCollisionFact{Name: c.Name, Winner: c.Winner, Loser: c.Loser})
-	}
 	detail, err := json.Marshal(struct {
-		Collisions []inputCollisionFact `json:"collisions"`
-	}{Collisions: facts})
+		Collisions []store.InputCollision `json:"collisions"`
+	}{Collisions: collisions})
 	if err != nil {
 		return fmt.Errorf("encode the input collisions of %s in run %s: %w", step, runID, err)
 	}
