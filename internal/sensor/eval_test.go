@@ -211,6 +211,54 @@ func TestDenyByDefaultEnv(t *testing.T) {
 	}
 }
 
+// TestContractEnvAllKeys pins the frozen v0.1 contract end to end: the eight
+// PACEQ_ keys the reference doc promises are all set on the sensor's
+// environment, matching the inbound JSON fields one for one
+// (docs/reference/sensor-contract.md lines 21-33).
+func TestContractEnvAllKeys(t *testing.T) {
+	env, err := buildEnv(baseSpec(t, "true"), inp())
+	if err != nil {
+		t.Fatalf("buildEnv: %v", err)
+	}
+	got := map[string]string{}
+	for _, kv := range env {
+		k, v, _ := strings.Cut(kv, "=")
+		got[k] = v
+	}
+	want := map[string]string{
+		"PACEQ_SENSOR":       "dropzone",
+		"PACEQ_JOB":          "import-file",
+		"PACEQ_CURSOR":       "2026-08-21/03-11-02.csv",
+		"PACEQ_LAST_TICK_AT": "1761040800000",
+		"PACEQ_NOW":          "1761040860000",
+		"PACEQ_MAX_TRIGGERS": "100",
+		"PACEQ_DEADLINE_MS":  "1761040890000",
+		"PACEQ_DRY_RUN":      "0",
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Fatalf("contract env %s = %q, want %q", k, got[k], v)
+		}
+	}
+}
+
+// TestContractEnvKeysReserved proves the reservation guarantee the doc makes:
+// the PACEQ_ prefix is fully reserved, so a sensor may not override any of
+// the eight contract keys in its declared environment (lines 54-55).
+func TestContractEnvKeysReserved(t *testing.T) {
+	keys := []string{
+		"PACEQ_SENSOR", "PACEQ_JOB", "PACEQ_CURSOR", "PACEQ_LAST_TICK_AT",
+		"PACEQ_NOW", "PACEQ_MAX_TRIGGERS", "PACEQ_DEADLINE_MS", "PACEQ_DRY_RUN",
+	}
+	for _, key := range keys {
+		s := baseSpec(t, "true")
+		s.Env = map[string]string{key: "override"}
+		if _, err := buildEnv(s, inp()); err == nil {
+			t.Fatalf("declared env was allowed to override reserved key %s", key)
+		}
+	}
+}
+
 // TestTimeoutKillsTheWholeGroup proves the hard timeout ends a hanging sensor
 // and its whole process group, grandchildren that ignore SIGTERM included.
 func TestTimeoutKillsTheWholeGroup(t *testing.T) {

@@ -23,7 +23,10 @@ var contractKeys = map[string]bool{
 	"PACEQ_SENSOR":       true,
 	"PACEQ_JOB":          true,
 	"PACEQ_CURSOR":       true,
+	"PACEQ_LAST_TICK_AT": true,
+	"PACEQ_NOW":          true,
 	"PACEQ_MAX_TRIGGERS": true,
+	"PACEQ_DEADLINE_MS":  true,
 	"PACEQ_DRY_RUN":      true,
 }
 
@@ -45,7 +48,10 @@ func buildEnv(s Spec, in Input) ([]string, error) {
 		"PACEQ_SENSOR":       in.Sensor,
 		"PACEQ_JOB":          in.Job,
 		"PACEQ_CURSOR":       cursorOrEmpty(in.Cursor), // the empty string is the no-cursor form
+		"PACEQ_LAST_TICK_AT": strconv.FormatInt(tickOrZero(in.LastTickAt), 10),
+		"PACEQ_NOW":          strconv.FormatInt(in.Now, 10),
 		"PACEQ_MAX_TRIGGERS": strconv.Itoa(in.MaxTriggers),
+		"PACEQ_DEADLINE_MS":  strconv.FormatInt(in.DeadlineMS, 10),
 		"PACEQ_DRY_RUN":      boolMap[in.DryRun],
 	}
 	for k, v := range contract {
@@ -78,4 +84,14 @@ func cursorOrEmpty(c *string) string {
 		return ""
 	}
 	return *c
+}
+
+// tickOrZero renders the nullable last_tick_at as its env form: an integer is
+// itself, and null becomes "0", the no-tick form in the same spirit as the
+// empty string for the cursor.
+func tickOrZero(t *int64) int64 {
+	if t == nil {
+		return 0
+	}
+	return *t
 }
