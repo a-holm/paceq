@@ -241,8 +241,12 @@ func TestBootChangeProvesEveryDeathAndSkipsTheSweep(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the run back: %v", err)
 	}
-	if detail.Run.State != "queued" {
-		t.Fatalf("the run is %s after the restart, want queued immediately, lease unexpired or not", detail.Run.State)
+	// The reaper requeued the run, which closed its only step as lost
+	// (STEP_FAILED_EXECUTOR_LOST). M4-03's reconciler then converges the
+	// run to the state that step leaves: a run with a failed step is failed
+	// (I10), not queued behind a step that can never run again.
+	if detail.Run.State != "failed" {
+		t.Fatalf("the run is %s after the restart, want converged to failed (its step died with the old executor)", detail.Run.State)
 	}
 
 	rows, err := w.store.Outages(w.ctx)

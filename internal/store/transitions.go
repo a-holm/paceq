@@ -277,7 +277,7 @@ type StepOutcome struct {
 }
 
 // RecordStepOutcome applies one event to one step. The machine decides
-// whether the step may take it and what the transition demands; this writes
+// whether the step may take the transition and what it demands; this writes
 // the verdict, its log facts and its event in one transaction. A step that
 // fails with attempts left goes back to pending for its next attempt: parked
 // at next_attempt_at when the caller attached a RetryPlan, runnable again at
@@ -353,7 +353,7 @@ func (s *Store) RecordStepOutcome(ctx context.Context, runID, name string, out S
 			truncated = 1
 		}
 
-		return finishTransition(tx, "record_outcome", func() error {
+		if err := finishTransition(tx, "record_outcome", func() error {
 			_, err := tx.Exec(`UPDATE steps SET state = ?, reason_code = ?, reason_data = ?,
 				exit_code = ?, signal = ?,
 				finished_at = CASE WHEN ? THEN ? ELSE finished_at END,
@@ -361,7 +361,7 @@ func (s *Store) RecordStepOutcome(ctx context.Context, runID, name string, out S
 					ELSE ? - started_at END,
 				log_path = ?, log_bytes = ?, log_truncated = ?, error_tail = ?,
 				next_attempt_at = ?
-			WHERE run_id = ? AND name = ? AND state = ?`,
+				WHERE run_id = ? AND name = ? AND state = ?`,
 				string(state), nullIfEmpty(string(rowReason)), rowDetail,
 				exitCode, signal,
 				state != model.StepPending, finishedAt.UnixMilli(),
@@ -377,8 +377,258 @@ func (s *Store) RecordStepOutcome(ctx context.Context, runID, name string, out S
 			FromState: string(cur), ToState: string(state),
 			ReasonCode: string(rowReason),
 			DetailJSON: rowDetail,
-		})
+		}); err != nil {
+			return err
+		}
+		// M4-03: a step that just failed with retry exhausted closes the
+		// whole graph that depended on it. The skip is part of THIS
+		// transaction, committed atomically with the failure, so no
+		// observer ever sees the failed step with its dependants still
+		// pending.
+		if state == model.StepFailed {
+			if err := propagateSkipTx(tx, runID, name, step.Attempt, finishedAt); err != nil {
+				return fmt.Errorf("propagate the failure of %s of run %s: %w", name, runID, err)
+			}
+		}
+		return nil
 	})
+}
+
+// propagateSkipTx settles every pending step that transitively needs the
+// failed step as skipped, inside the caller's transaction. It is what a failed
+// step must never do: leave a dependant waiting forever, or let one run
+// against output that never arrived.
+//
+// The closure is computed over the frozen step_deps edges with a recursive
+// CTE. It uses UNION, not UNION ALL, so a diamond (a step reachable through
+// two paths) appears exactly once and the recursion terminates. A diamond
+// reached through two paths is written exactly once, never twice. A direct
+// direct dependant of the failure reads STEP_SKIPPED_UPSTREAM_FAILED on its
+// row and event; anything reached through another skip reads
+// STEP_SKIPPED_UPSTREAM_SKIPPED, because the skip closed it, not the
+// failure. Both carry the failed step in reason_data so explain can walk
+// straight back to the root.
+func propagateSkipTx(tx *sql.Tx, runID, failedStep string, attempt int, now time.Time) error {
+	rows, err := tx.Query(`WITH RECURSIVE closure(step_name) AS (
+			SELECT step_name FROM step_deps WHERE run_id = ? AND depends_on = ?
+			UNION
+			SELECT d.step_name FROM step_deps d
+				JOIN closure c ON d.depends_on = c.step_name
+				WHERE d.run_id = ?
+		)
+		SELECT s.name, s.idx,
+			EXISTS (SELECT 1 FROM step_deps direct
+				WHERE direct.run_id = s.run_id AND direct.step_name = s.name
+					AND direct.depends_on = ?) AS is_direct
+		FROM steps s
+		WHERE s.run_id = ? AND s.name IN (SELECT step_name FROM closure) AND s.state = 'pending'
+			ORDER BY s.idx`,
+		runID, failedStep, runID, failedStep, runID)
+	if err != nil {
+		return fmt.Errorf("close the downstream of %s in run %s: %w", failedStep, runID, err)
+	}
+	var skipped []struct {
+		name   string
+		direct bool
+	}
+	for rows.Next() {
+		var n string
+		var idx, isDirect int
+		if err := rows.Scan(&n, &idx, &isDirect); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("close the downstream of %s in run %s: %w", failedStep, runID, err)
+		}
+		skipped = append(skipped, struct {
+			name   string
+			direct bool
+		}{n, isDirect != 0})
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("close the downstream of %s in run %s: %w", failedStep, runID, err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close the downstream of %s in run %s: %w", failedStep, runID, err)
+	}
+
+	detail := fmt.Sprintf(`{"upstream":"%s","attempt":%d}`, failedStep, attempt)
+	for _, s := range skipped {
+		code := reason.STEPSkippedUpstreamSkipped
+		if s.direct {
+			code = reason.STEPSkippedUpstreamFailed
+		}
+		to, effects, err := model.NextStepState(model.StepPending, model.EvUpstreamFailed,
+			model.Guards{ReasonCode: string(code)})
+		if err != nil {
+			return fmt.Errorf("skip step %s in run %s: %w", s.name, runID, err)
+		}
+		if err := finishTransition(tx, "skip_propagation", func() error {
+			// nolint:fencing: the caller's transaction already checked the
+			// holder's token; steps carry no token of their own.
+			_, err := tx.Exec(`UPDATE steps SET state = 'skipped', finished_at = ?,
+				reason_code = ?, reason_data = ?
+				WHERE run_id = ? AND name = ? AND state = 'pending'`,
+				now.UnixMilli(), string(code), detail, runID, s.name)
+			return err
+		}, tx, RunEvent{
+			RunID: runID, StepName: s.name, At: now, Kind: emitKind(effects),
+			FromState: string(model.StepPending), ToState: string(to),
+			ReasonCode: string(code),
+			DetailJSON: detail,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ReconcileRunStates drives every run whose steps have all ended but whose own
+// row still says non-terminal to the state those steps aggregate to. It is the
+// crash backstop (M4-03): an executor that died between its final step verdict
+// and the run verdict leaves a run stranded as running over terminal steps,
+// and this closes it on restart.
+//
+// It is idempotent. A run that is already terminal, or whose aggregate is
+// still running, is skipped; the second pass changes nothing. It also never
+// reaches a run a live executor is still driving: a run whose lease has not
+// expired still belongs to a process that may be about to finish it.
+func (s *Store) ReconcileRunStates(ctx context.Context) error {
+	now := s.clk.Now().UTC()
+	return s.withTx(ctx, func(tx *sql.Tx) error {
+		type stranded struct {
+			state string
+			lease int64
+			steps []string
+		}
+		byRun := map[string]*stranded{}
+		rows, err := tx.Query(`SELECT r.id, r.state, COALESCE(r.lease_expires_at, 0),
+			COALESCE(s.state, '')
+		FROM runs r LEFT JOIN steps s ON s.run_id = r.id
+		ORDER BY r.id, s.idx`)
+		if err != nil {
+			return fmt.Errorf("reconcile run states: %w", err)
+		}
+		for rows.Next() {
+			var id, runState, stepState string
+			var lease int64
+			if err := rows.Scan(&id, &runState, &lease, &stepState); err != nil {
+				_ = rows.Close()
+				return fmt.Errorf("reconcile run states: %w", err)
+			}
+			p, ok := byRun[id]
+			if !ok {
+				p = &stranded{state: runState, lease: lease}
+				byRun[id] = p
+			}
+			if stepState != "" {
+				p.steps = append(p.steps, stepState)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("reconcile run states: %w", err)
+		}
+		if err := rows.Close(); err != nil {
+			return fmt.Errorf("reconcile run states: %w", err)
+		}
+
+		for id, p := range byRun {
+			cur, err := model.ParseRunState(p.state)
+			if err != nil {
+				return fmt.Errorf("reconcile run %s: %w", id, err)
+			}
+			if cur.IsTerminal() {
+				continue
+			}
+			// A live lease is a live decision; leave it to the executor.
+			if p.lease > now.UnixMilli() {
+				continue
+			}
+			var aggSteps []model.StepState
+			for _, st := range p.steps {
+				aggSteps = append(aggSteps, model.StepState(st))
+			}
+			agg := model.RunAggregate(aggSteps)
+			if agg == model.RunRunning {
+				// Still work open: nothing to converge.
+				continue
+			}
+			if err := finalizeReconciledRunTx(tx, id, cur, agg, now); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// finalizeReconciledRunTx closes a stranded run to the aggregate its steps
+// already point at. The reason matches the step facts: a failed run names the
+// first failed step, a succeeded run says so, and a cancelled run says so. The
+// run_events row notes the recovery so explain can tell a clean finish from a
+// reconciliation.
+func finalizeReconciledRunTx(tx *sql.Tx, runID string, cur model.RunState, agg model.RunState, now time.Time) error {
+	var (
+		code  reason.Code
+		data  string
+		event string
+	)
+	switch agg {
+	case model.RunFailed:
+		code = reason.RUNFailedStep
+		data = `{"step":` + `"` + firstFailedStepName(tx, runID) + `"}`
+		event = "run.failed"
+	case model.RunCancelled:
+		code = reason.RUNCancelledManual
+		data = "{}"
+		event = "run.cancelled"
+	default:
+		code = reason.RUNSucceeded
+		data = "{}"
+		event = "run.succeeded"
+	}
+
+	if err := finishTransition(tx, "reconcile_run", func() error {
+		// nolint:fencing: reconcile owns the run wholesale; it only touches a
+		// row whose lease is gone, and it takes the lease away as part of the
+		// close, so there is no live holder whose token could be walked over.
+		result, err := tx.Exec(`UPDATE runs SET state = ?, reason_code = ?, reason_data = ?,
+			finished_at = ?, lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+			WHERE id = ? AND state NOT IN ('succeeded', 'failed', 'cancelled')`,
+			string(agg), string(code), data, now.UnixMilli(), now.UnixMilli(), runID)
+		if err != nil {
+			return err
+		}
+		written, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if written == 0 {
+			return fmt.Errorf("reconcile run %s: %w", runID, ErrLeaseLost)
+		}
+		return nil
+	}, tx, RunEvent{
+		RunID: runID, At: now, Kind: event,
+		FromState: string(cur), ToState: string(agg),
+		ReasonCode: string(code),
+		DetailJSON: data,
+	}); err != nil {
+		return fmt.Errorf("reconcile run %s: %w", runID, err)
+	}
+	return nil
+}
+
+// firstFailedStepName names the first failed step of a run, in spec order.
+func firstFailedStepName(tx *sql.Tx, runID string) string {
+	var name string
+	err := tx.QueryRow(`SELECT name FROM steps
+		WHERE run_id = ? AND state = 'failed' ORDER BY idx LIMIT 1`, runID).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "unknown"
+	}
+	if err != nil {
+		return "unknown"
+	}
+	return name
 }
 
 // FinishReason is how a run ends: the reason code the machine validated and

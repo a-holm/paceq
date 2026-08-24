@@ -44,6 +44,11 @@ func seedRun(t *testing.T, s *store.Store, job, versionID string, steps []store.
 		t.Fatalf("claim run %s: %v", run.ID, err)
 	}
 	for i, step := range steps {
+		// M4-03: after a step fails, its downstream closure is already
+		// skipped, so the fixture must not try to start or record them.
+		if failFirst && i > 0 {
+			break
+		}
 		if err := s.StartStep(ctx, run.ID, step.Name, store.LeaseRef{Owner: "test", Epoch: 1}); err != nil {
 			t.Fatalf("start %s of run %s: %v", step.Name, run.ID, err)
 		}

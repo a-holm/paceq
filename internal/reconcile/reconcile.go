@@ -201,6 +201,14 @@ func OnStartup(ctx context.Context, st *store.Store, opts Options) error {
 	}
 	faults.Point("M2:reconcile:after_reap")
 
+	// R2b: converge runs whose steps have all ended but whose row still says
+	// otherwise. An executor killed between its final step verdict and the run
+	// verdict leaves exactly that shape, and this closes it (M4-03). The pass
+	// is idempotent and skips any run a live lease still belongs to.
+	if err := st.ReconcileRunStates(ctx); err != nil {
+		return fmt.Errorf("startup reconciliation could not converge the run states: %w", err)
+	}
+
 	// R4: close evaluations the dying daemon left open. The cutoff is this
 	// session's start, so anything opened since belongs to us and stays.
 	closed, err := st.FailHangingTicks(ctx, opts.SessionStartedAt)
@@ -253,6 +261,10 @@ func Periodic(ctx context.Context, st *store.Store, opts Options) error {
 	}
 	for _, r := range reaped {
 		log.Info("reaped an expired run", "run", r.ID, "state", r.State, "epoch", r.LeaseEpoch)
+	}
+
+	if err := st.ReconcileRunStates(ctx); err != nil {
+		return fmt.Errorf("periodic reconciliation could not converge the run states: %w", err)
 	}
 
 	if err := sweepProcesses(ctx, st, &opts); err != nil {
