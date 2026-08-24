@@ -38,7 +38,7 @@ export GOFLAGS += -buildvcs=false
 CROSS_TARGETS := linux/amd64 linux/arm64 darwin/arm64
 
 .PHONY: all build test gate bench fuzz fmt fmt-check vet staticcheck lint gosec govulncheck \
-	tidy-check cross test-scratch ci fixture-change hooks clean
+	tidy-check cross test-scratch sensors-examples ci fixture-change hooks clean
 
 all: build
 
@@ -136,6 +136,26 @@ test-scratch:
 	fi; \
 	echo "test-scratch: Europe/Oslo resolves inside FROM scratch, next tick $$out"
 
+# The example sensors (issue #14, M3-07) are shell, not Go, so they get their
+# own gate: every script must parse under `sh -n`, and `shellcheck` runs when
+# it is installed. The behaviour half lives in Go tests (examples/sensors and
+# internal/store), which `make test` already runs. shellcheck is absent on
+# some developer machines, so it skips loudly there, exactly like
+# test-scratch skips without docker; CI installs it and always runs it.
+SENSOR_SCRIPTS := $(wildcard examples/sensors/*.sh examples/sensors/bin/*)
+sensors-examples:
+	@for f in $(SENSOR_SCRIPTS); do \
+		sh -n "$$f" || { echo "sh -n failed for $$f"; exit 1; }; \
+	done
+	@echo "sensors-examples: $(words $(SENSOR_SCRIPTS)) scripts parse under sh -n"
+	@if ! command -v shellcheck >/dev/null 2>&1; then \
+		echo "SKIP sensors-examples/shellcheck: shellcheck not installed"; \
+	else \
+		shellcheck $(SENSOR_SCRIPTS); \
+	fi
+	@$(GO) test ./examples/sensors/ -count=1
+	@$(GO) test ./internal/store/ -run 'TestExampleSensorProductionPath' -count=1
+
 # Gold standard fixtures are expectations, not code: a commit that edits one
 # must carry a FIXTURE-CHANGE: line with the reason (plan 04 section 8 point
 # 2). The same check runs as a GitHub Actions job on every pull request. It is
@@ -144,7 +164,7 @@ test-scratch:
 fixture-change:
 	scripts/check-fixture-change.sh origin/main HEAD
 
-ci: fmt-check vet staticcheck gosec govulncheck tidy-check test gate fuzz build test-scratch cross
+ci: fmt-check vet staticcheck gosec govulncheck tidy-check test gate fuzz build test-scratch sensors-examples cross
 
 hooks:
 	git config core.hooksPath .githooks

@@ -1,0 +1,37 @@
+#!/bin/sh
+# sqlite3 - a test double for the sqlite3 CLI, for the example sensors in CI.
+#
+# It understands exactly the query the sql-watermark example runs:
+#   sqlite3 -noheader <db> "SELECT <col> FROM <table>
+#           WHERE <col> > <cursor> ORDER BY <col> LIMIT <max>;"
+# and answers from a fixture file instead of a live database, so the example
+# runs with no installed sqlite3 and no network.
+#
+# The fixture is $SQLITE_STUB_DB: a plain text file with one id per line.
+# Only integer ids are modelled, which is all the example's cursor strategy
+# needs; the cursor and limit are read out of the SQL text.
+#
+# This is a test fixture, not a product surface. Keep it minimal.
+
+set -eu
+
+db="${SQLITE_STUB_DB:?SQLITE_STUB_DB is required}"
+
+# The sensor calls `sqlite3 -noheader <db> "<sql>"`; the SQL is the last
+# argument, whatever flags came before it.
+for arg in "$@"; do sql="$arg"; done
+
+# The WHERE clause is "WHERE id > <cursor>"; the LIMIT is "LIMIT <max>".
+cursor=$(printf '%s' "$sql" | sed 's/.*> *\([0-9][0-9]*\).*/\1/' | head -1)
+max=$(printf '%s' "$sql" | sed 's/.*LIMIT *\([0-9][0-9]*\).*/\1/I' | head -1)
+[ -n "$cursor" ] || cursor=0
+[ -n "$max" ] || max=1000000000
+
+n=0
+while read -r id; do
+  [ -z "$id" ] && continue
+  if [ "$id" -gt "$cursor" ] && [ "$n" -lt "$max" ]; then
+    printf '%s\n' "$id"
+    n=$((n + 1))
+  fi
+done < "$db"

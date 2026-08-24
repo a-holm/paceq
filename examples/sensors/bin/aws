@@ -1,0 +1,40 @@
+#!/bin/sh
+# aws - a test double for `aws s3 ls`, for the example sensors in CI.
+#
+# The real command talks to a service; this stub talks to a directory, so the
+# s3-listing example runs with no network and no installed AWS CLI. The
+# bucket is the directory named in $WATCH_BUCKET (or S3_STUB_ROOT/<bucket>).
+#
+# It understands exactly the call the example makes:
+#   aws s3 ls s3://<bucket> --recursive
+# and prints, for every file under that directory, a line in the same shape
+# the real tool prints (DATE TIME SIZE KEY), with the key relative to the
+# bucket. Ordering, like the real `--recursive`, is lexicographic by key.
+#
+# This is a test fixture, not a product surface. Keep it minimal.
+
+set -eu
+
+root="${S3_STUB_ROOT:?S3_STUB_ROOT is required}"
+
+# Parse `s3://bucket --recursive` into the bucket name.
+for arg in "$@"; do
+  case "$arg" in
+    s3://*)
+      bucket=${arg#s3://}
+      ;;
+  esac
+done
+bucket_dir="$root/$bucket"
+
+if [ ! -d "$bucket_dir" ]; then
+  exit 0
+fi
+
+find "$bucket_dir" -type f | sort | while read -r f; do
+  rel=${f#"$bucket_dir"/}
+  size=$(stat -c %s "$f")
+  mtime=$(stat -c %Y "$f")
+  date=$(date -u -d "@$mtime" '+%Y-%m-%d %H:%M:%S')
+  printf '%s %10s %s\n' "$date" "$size" "$rel"
+done
