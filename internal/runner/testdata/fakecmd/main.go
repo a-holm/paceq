@@ -283,6 +283,19 @@ func main() {
 		fmt.Fprintln(f, `{"artifact":{"name":"output-path","uri":`+strconv.Quote(path)+`}}`)
 		f.Close()
 
+	case "write-named-output":
+		name, uri := arg(args, 0), arg(args, 1)
+		path := os.Getenv("PACEQ_OUTPUT")
+		if path == "" {
+			die("write-named-output: PACEQ_OUTPUT is not set")
+		}
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			die("write-named-output: %v", err)
+		}
+		fmt.Fprintln(f, `{"artifact":{"name":`+strconv.Quote(name)+`,"uri":`+strconv.Quote(uri)+`}}`)
+		f.Close()
+
 	case "write-broken-output":
 		path := os.Getenv("PACEQ_OUTPUT")
 		if path == "" {
@@ -312,6 +325,29 @@ func main() {
 		fmt.Fprintln(f, `{"artifact":{"name":"doomed","uri":"/doomed"}}`)
 		f.Close()
 		os.Exit(code)
+
+	case "write-big-output":
+		// Several param lines, each inside every bound, that together push
+		// the merged $PACEQ_INPUTS past its 128 KiB inline bound.
+		chunks, err := strconv.Atoi(arg(args, 0))
+		if err != nil || chunks < 1 {
+			die("write-big-output: bad chunk count %q", arg(args, 0))
+		}
+		path := os.Getenv("PACEQ_OUTPUT")
+		if path == "" {
+			die("write-big-output: PACEQ_OUTPUT is not set")
+		}
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			die("write-big-output: %v", err)
+		}
+		defer f.Close()
+		blob := strings.Repeat("x", 24*1024)
+		for i := 0; i < chunks; i++ {
+			if _, err := fmt.Fprintf(f, "{\"params\":{\"blob%d\":%q}}\n", i, blob); err != nil {
+				die("write-big-output: %v", err)
+			}
+		}
 
 	case "publish-input-uri":
 		// The two-step handoff: read the merged upstream references out of
@@ -360,6 +396,35 @@ func main() {
 		if strings.Contains(raw, sub) || strings.Contains(fileRaw, sub) {
 			fmt.Printf("inputs leaked %q\n", sub)
 			os.Exit(8)
+		}
+
+	case "inputs-file-holds":
+		// The spilled variant of the contract: $PACEQ_INPUTS must be the
+		// literal null, the file must carry the merged document, and the
+		// named reference must still be in it.
+		name, uri := arg(args, 0), arg(args, 1)
+		if raw := os.Getenv("PACEQ_INPUTS"); raw != "null" {
+			die("inputs-file-holds: PACEQ_INPUTS is %d bytes, want the literal null once spilled", len(raw))
+		}
+		p := os.Getenv("PACEQ_INPUTS_FILE")
+		if p == "" {
+			die("inputs-file-holds: PACEQ_INPUTS_FILE is not set")
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			die("inputs-file-holds: %v", err)
+		}
+		var inputs struct {
+			Artifacts map[string]struct {
+				URI string `json:"uri"`
+			} `json:"artifacts"`
+		}
+		if err := json.Unmarshal(b, &inputs); err != nil {
+			die("inputs-file-holds: the spilled file is not JSON: %v", err)
+		}
+		ref, ok := inputs.Artifacts[name]
+		if !ok || ref.URI != uri {
+			die("inputs-file-holds: artifacts[%q] = %+v, want uri %q", name, ref, uri)
 		}
 
 	default:

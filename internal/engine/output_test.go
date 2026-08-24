@@ -161,3 +161,74 @@ func TestExecuteRunGivesALaterStepACollidingName(t *testing.T) {
 		}
 	}
 }
+
+// The injection half: the downstream step's environment carries the merged
+// upstream closure, and only that.
+
+func TestExecuteRunHandsUpstreamReferencesToTheDownstreamStep(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	runID := f.aQueuedRun(t, []string{"produce", "consume"},
+		[]string{"write-output", "publish-input-uri seen out.txt"},
+		map[string]string{"consume": "produce"}, 30_000)
+
+	if state := f.mustFinish(t, runID); state != "succeeded" {
+		t.Fatalf("run ended %s, want succeeded", state)
+	}
+	detail, err := f.Store.GetRun(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, st := range detail.Steps {
+		if st.Name != "consume" {
+			continue
+		}
+		for _, a := range st.Artifacts {
+			if a.Name == "seen" && a.URI != "file:///tmp/out.txt" {
+				t.Errorf("the downstream step saw uri %q, want the one produce published", a.URI)
+			}
+		}
+		found := false
+		for _, a := range st.Artifacts {
+			if a.Name == "seen" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("consume published %+v, want the seen reference read from $PACEQ_INPUTS", st.Artifacts)
+		}
+	}
+}
+
+func TestASideStepStaysInvisibleToItsNeighboursInputs(t *testing.T) {
+	f := newFixture(t)
+	runID := f.aQueuedRun(t, []string{"produce", "side", "consume"},
+		[]string{
+			"write-named-output mine /from-produce",
+			"write-named-output theirs /from-side",
+			"inputs-must-not-contain theirs",
+		},
+		map[string]string{"consume": "produce"}, 30_000)
+
+	if state := f.mustFinish(t, runID); state != "succeeded" {
+		t.Fatalf("run ended %s, want succeeded: the side step leaked into $PACEQ_INPUTS", state)
+	}
+}
+
+func TestExecuteRunSpillsOversizedInputsBesideTheAttempt(t *testing.T) {
+	f := newFixture(t)
+	// The producer's params push the merged document past 128 KiB, so the
+	// consumer must read it through $PACEQ_INPUTS_FILE with $PACEQ_INPUTS
+	// parked at the literal null, and still find produce's reference in it.
+	runID := f.aQueuedRun(t, []string{"produce", "consume"},
+		[]string{
+			"write-output",
+			"write-big-output 8",
+			"inputs-file-holds out.txt file:///tmp/out.txt",
+		},
+		map[string]string{"consume": "produce"}, 30_000)
+
+	if state := f.mustFinish(t, runID); state != "succeeded" {
+		t.Fatalf("run ended %s, want succeeded", state)
+	}
+}

@@ -292,6 +292,14 @@ func (e *Engine) runStep(ctx context.Context, d *drive, name string, h *heldRun)
 		return fail(err)
 	}
 
+	// The merged upstream references of the attempt (#13): read from the
+	// frozen graph before exec, outside any transaction. A spill to a
+	// file happens here too, while nothing is running.
+	inputsJSON, inputsFile, err := e.prepareStepInputs(ctx, e.StateDir, run.ID, name, attempt)
+	if err != nil {
+		return fail(err)
+	}
+
 	// The crash window between the committed start and the spawn. A
 	// process killed here leaves a running step whose command never ran,
 	// which is the safest window to recover: retrying cannot duplicate an
@@ -369,6 +377,8 @@ func (e *Engine) runStep(ctx context.Context, d *drive, name string, h *heldRun)
 		Timeout:    timeout,
 		Clock:      e.Clock,
 		OutputPath: outputPath,
+		InputsJSON: inputsJSON,
+		InputsFile: inputsFile,
 		Stdout:     crashOnFirstWrite(sink.Writer(logsink.StreamStdout), "M1:step:under_exec"),
 		Stderr:     sink.Writer(logsink.StreamStderr),
 		// The process baseline is the orphan sweep's evidence (issue #62):
