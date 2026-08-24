@@ -27,6 +27,17 @@ const (
 	batchSpec = `{"max_concurrent":200,"name":"nightly","schema":"paceq.job.v1",` +
 		`"steps":[{"name":"build","run":["/bin/true"],"shell":false}],"timeout_ms":3600000}`
 
+	// multiNeedSpec freezes a step with three distinct upstreams, so the
+	// production path has more than one edge to drop if it ever keeps only
+	// the first need of a step.
+	multiNeedSpec = `{"max_concurrent":1,"name":"pipeline","schema":"paceq.job.v1",` +
+		`"steps":[` +
+		`{"name":"extract","run":["/bin/true"],"shell":false},` +
+		`{"name":"transform","run":["/bin/true"],"shell":false},` +
+		`{"name":"summarize","run":["/bin/true"],"shell":false},` +
+		`{"name":"load","needs":["extract","transform","summarize"],"run":["/bin/true"],"shell":false}` +
+		`],"timeout_ms":3600000}`
+
 	diamondSpec = `{"max_concurrent":2,"name":"graph","schema":"paceq.job.v1",` +
 		`"steps":[` +
 		`{"name":"a","needs":["b"],"run":["/bin/true"],"shell":false},` +
@@ -186,6 +197,50 @@ func TestMaterializeManualTriggerFreezesStepsAndEdges(t *testing.T) {
 	b := steps.Steps[1]
 	if b.MaxAttempts != 1 {
 		t.Errorf("step b max_attempts = %d, want 1", b.MaxAttempts)
+	}
+}
+
+// TestMaterializeManualTriggerFreezesEveryEdgeOfAMultiNeedStep walks the
+// production path: the spec is read back out of job_versions.spec_json and
+// materialised by insertSteps, the same chain a schedule or a sensor fires.
+// A step that names three upstreams must freeze three step_deps rows; a
+// freeze path that keeps only a step's first need loses the other waits
+// silently, and no shipped test noticed. StepDeps orders by step_name,
+// depends_on, so the three edges of "load" come back sorted.
+func TestMaterializeManualTriggerFreezesEveryEdgeOfAMultiNeedStep(t *testing.T) {
+	ctx := context.Background()
+	s, _ := coreStore(t)
+	aCanonicalJob(t, s, "pipeline", multiNeedSpec)
+
+	out, err := s.MaterializeManualTrigger(ctx, store.ManualTriggerInput{JobName: "pipeline"})
+	if err != nil {
+		t.Fatalf("MaterializeManualTrigger: %v", err)
+	}
+
+	detail, err := s.GetRun(ctx, out.Run.ID)
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if len(detail.Steps) != 4 {
+		t.Fatalf("steps = %d, want 4", len(detail.Steps))
+	}
+
+	deps, err := s.StepDeps(ctx, out.Run.ID)
+	if err != nil {
+		t.Fatalf("StepDeps: %v", err)
+	}
+	want := []store.StepDep{
+		{RunID: out.Run.ID, StepName: "load", DependsOn: "extract"},
+		{RunID: out.Run.ID, StepName: "load", DependsOn: "summarize"},
+		{RunID: out.Run.ID, StepName: "load", DependsOn: "transform"},
+	}
+	if len(deps) != len(want) {
+		t.Fatalf("froze %d edges, want %d: %+v", len(deps), len(want), deps)
+	}
+	for i := range want {
+		if deps[i] != want[i] {
+			t.Errorf("edge %d = %+v, want %+v", i, deps[i], want[i])
+		}
 	}
 }
 
