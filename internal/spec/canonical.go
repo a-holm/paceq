@@ -180,6 +180,14 @@ func canonicalJob(j *Job) canonicalObject {
 	if j.MaxParallel != DefaultMaxParallel {
 		object = append(object, canonicalMember{"max_parallel", canonicalNumber(j.MaxParallel)})
 	}
+	if j.ConcurrencyKey != nil {
+		object = append(object, canonicalMember{"concurrency_key", canonicalConcurrencyKey(j.ConcurrencyKey)})
+	}
+	// on_conflict is left out at the default, exactly like overlap above: an
+	// explicit defer and no policy at all are one document and one hash.
+	if j.OnConflict != "" && j.OnConflict != DefaultOnConflict {
+		object = appendText(object, "on_conflict", j.OnConflict)
+	}
 	object = appendText(object, "description", j.Description)
 	object = appendText(object, "env_file", j.EnvFile)
 	object = appendText(object, "workdir", j.Workdir)
@@ -199,6 +207,19 @@ func canonicalJob(j *Job) canonicalObject {
 		object = append(object, canonicalMember{"sensors", canonicalSensors(j.Sensors)})
 	}
 	return object
+}
+
+// canonicalConcurrencyKey writes the key in the form the IR reads back.
+// Exactly one member rides along, because exactly one form is set.
+func canonicalConcurrencyKey(k *ConcurrencyKey) canonicalObject {
+	switch {
+	case k.FromRunKey:
+		return canonicalObject{{"from", canonicalText("run_key")}}
+	case k.Param != "":
+		return canonicalObject{{"param", canonicalText(k.Param)}}
+	default:
+		return canonicalObject{{"constant", canonicalText(k.Constant)}}
+	}
 }
 
 func canonicalSteps(steps []Step) canonicalArray {

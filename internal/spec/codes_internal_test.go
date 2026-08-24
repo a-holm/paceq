@@ -79,7 +79,7 @@ func TestCodesUseTheSeriesTheyBelongTo(t *testing.T) {
 		CodeDAGDepthLimit:   true,
 		CodeUnknownTimezone: true,
 	}
-	warning := map[string]bool{CodeShell: true, CodeInheritEnv: true}
+	warning := map[string]bool{CodeShell: true, CodeInheritEnv: true, CodeConcurrencyParamUnresolved: true}
 	// The sensor codes are a dedicated series: the sensor contract is frozen at
 	// v0.1, so its rules get number space of their own (PQ4xxx) rather than
 	// renting numbers in the shared parsing and schema series.

@@ -46,6 +46,10 @@ const (
 	// is the per-run semaphore M4-02 reads, so it is validated here, at the
 	// door, the same way max_concurrent is.
 	CodeBadMaxParallel = "PQ1031"
+	// CodeConcurrencyTemplating is a concurrency_key written with {{...}}.
+	// Templating is refused for all of 1.0; the message names the decision
+	// and the closed forms that exist instead.
+	CodeConcurrencyTemplating = "PQ1032"
 	// CodeUnknownField is a field name paceq does not know, with the nearest
 	// one it does.
 	CodeUnknownField = "PQ1040"
@@ -81,6 +85,11 @@ const (
 	// CodeInheritEnv is the warning that a job takes variables from the
 	// environment paceq itself was started in.
 	CodeInheritEnv = "W1002"
+
+	// CodeConcurrencyParamUnresolved is the warning that a job's
+	// concurrency key reads a trigger parameter: a fire without that
+	// parameter runs with no key at all, which means unlimited.
+	CodeConcurrencyParamUnresolved = "W1003"
 
 	// CodeSensorBadName is a sensor name that is missing or does not match
 	// NamePattern.
@@ -130,6 +139,7 @@ func Codes() []string {
 		CodeTimeoutTooLong,
 		CodeBadConcurrency,
 		CodeBadMaxParallel,
+		CodeConcurrencyTemplating,
 		CodeUnknownField,
 		CodeDuplicateKey,
 		CodeMergeKey,
@@ -143,6 +153,7 @@ func Codes() []string {
 		CodeUnknownTimezone,
 		CodeShell,
 		CodeInheritEnv,
+		CodeConcurrencyParamUnresolved,
 		CodeSensorBadName,
 		CodeSensorNameTaken,
 		CodeSensorKind,

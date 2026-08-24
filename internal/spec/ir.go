@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -77,6 +78,20 @@ func FromIR(data []byte) (*Job, error) {
 				return err
 			}
 			j.MaxParallel = int(n)
+		case "concurrency_key":
+			j.ConcurrencyKey, err = irConcurrencyKey(val)
+			if err != nil {
+				return err
+			}
+		case "on_conflict":
+			s, err := text(val, "on_conflict")
+			if err != nil {
+				return err
+			}
+			if s != OnConflictDefer && s != OnConflictSkip {
+				return fmt.Errorf("on_conflict is %q, want %q or %q", s, OnConflictDefer, OnConflictSkip)
+			}
+			j.OnConflict = s
 		case "env":
 			if j.Env, err = textMap(val, "env"); err != nil {
 				return err
@@ -340,6 +355,62 @@ func irSensorRun(val any, where string) ([]string, error) {
 		}
 	}
 	return items, nil
+}
+
+// irConcurrencyKey reads the key back. The closed grammar the file decoder
+// accepts is accepted here, and nothing else: these bytes are frozen versions,
+// so a shape this runtime never wrote is corruption, not syntax.
+func irConcurrencyKey(val any) (*ConcurrencyKey, error) {
+	const where = "concurrency_key"
+	if s, ok := val.(string); ok {
+		if strings.Contains(s, "{{") {
+			return nil, fmt.Errorf("%s is %q, and templating in key values does not exist", where, s)
+		}
+		if len(s) > MaxConcurrencyKeyLength {
+			return nil, fmt.Errorf("%s is %d characters, want at most %d", where, len(s), MaxConcurrencyKeyLength)
+		}
+		if s == "" {
+			return nil, fmt.Errorf("%s is an empty string", where)
+		}
+		return &ConcurrencyKey{Constant: s}, nil
+	}
+	object, ok := val.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("%s is %T, want a string or an object", where, val)
+	}
+	k := &ConcurrencyKey{}
+	err := eachMember(object, func(key string, v any) error {
+		switch key {
+		case "param":
+			s, err := text(v, where+".param")
+			if err != nil {
+				return err
+			}
+			if s == "" {
+				return fmt.Errorf("%s.param is empty, want a parameter name", where)
+			}
+			k.Param = s
+		case "from":
+			s, err := text(v, where+".from")
+			if err != nil {
+				return err
+			}
+			if s != "run_key" {
+				return fmt.Errorf("%s.from is %q, want %q", where, s, "run_key")
+			}
+			k.FromRunKey = true
+		default:
+			return fmt.Errorf("unexpected key %q in %s", key, where)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if (k.Param != "") == k.FromRunKey {
+		return nil, fmt.Errorf("%s carries exactly one of param or from", where)
+	}
+	return k, nil
 }
 
 // eachMember walks an object's members once. It exists so every reader above
