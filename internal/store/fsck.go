@@ -110,6 +110,49 @@ WHERE r.state IN ('succeeded', 'failed', 'cancelled')
 		return nil, fmt.Errorf("fsck I2: %w", err)
 	}
 
+	// I5: the attempt counter is tight within its budget. A step that
+	// claims a verdict with no attempt counted, or one whose counter ran
+	// past what its budget allows, was written behind the transition layer:
+	// starts increment, retries raise the budget, and nothing else touches
+	// either number (02 section 3.3). Running, succeeded and failed all
+	// imply an attempt began; cancelled and skipped do not, and neither
+	// does a pending step, because a clean drain parks one back at zero on
+	// purpose (05 section 3.2). This is the check a retry has to leave
+	// green: a reopen that reset attempts to zero while a verdict stood
+	// would read as an execution that never happened.
+	rows, err = s.r.QueryContext(ctx, `SELECT run_id, name, state, attempt, max_attempts FROM steps
+WHERE attempt < 0 OR attempt > max_attempts
+	OR (state IN ('running', 'succeeded', 'failed') AND attempt < 1)`)
+	if err != nil {
+		return nil, fmt.Errorf("fsck I5: %w", err)
+	}
+	for rows.Next() {
+		var runID, step, state string
+		var attempt, max int
+		if err := rows.Scan(&runID, &step, &state, &attempt, &max); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("fsck I5: %w", err)
+		}
+		detail := fmt.Sprintf("the step is %s but no attempt was counted", state)
+		if attempt > max {
+			detail = fmt.Sprintf("attempt %d is past the budget of %d", attempt, max)
+		} else if attempt < 0 {
+			detail = "the attempt counter is negative"
+		}
+		out = append(out, Violation{
+			Check:   "I5",
+			Subject: "run " + runID + " step " + step,
+			Detail:  detail,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, fmt.Errorf("fsck I5: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("fsck I5: %w", err)
+	}
+
 	// I8: a step that is running has every need succeeded. The claim
 	// predicate gates on the same predicate before any start, so a running
 	// step with an unmet need can only be drift (M4-03).

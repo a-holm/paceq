@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+
+	"github.com/a-holm/paceq/internal/id"
 )
 
 // Fault injection for the negative proofs. Fsck's checks are only worth what
@@ -287,4 +289,102 @@ VALUES (?, ?, ?, 'manual', 'running',
 		return "", err
 	}
 	return subject, nil
+}
+
+// The three helpers below stage and read the rows the replay proofs need.
+// Like everything else in this file they are for tests alone, and their names
+// say so. Production code writes artifacts only through a future runner
+// integration; nothing in the engine or the CLI may call any of these.
+
+// InjectArtifact plants one artifact row on a step of a run, so a test can
+// stage what a successful command produced before a replay copies it.
+func (s *Store) InjectArtifact(ctx context.Context, runID, stepName, name, uri, checksum string) error {
+	at := s.clk.Now().UTC().UnixMilli()
+	artID, err := id.New(s.clk.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("inject an artifact: %w", err)
+	}
+	res, err := s.w.ExecContext(ctx, `INSERT INTO artifacts
+(id, run_id, step_name, name, uri, size_bytes, checksum, created_at)
+VALUES (?, ?, ?, ?, ?, 12, ?, ?)`,
+		artID, runID, stepName, name, uri, checksum, at)
+	if err != nil {
+		return fmt.Errorf("inject an artifact: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return fmt.Errorf("inject an artifact: wrote %d rows", n)
+	}
+	return nil
+}
+
+// ArtifactRef is one staged or copied artifact reference, as the replay
+// proofs compare them: which step made it, what it is called, where the bytes
+// live and how they are fingerprinted. Content never moves; only these facts.
+type ArtifactRef struct {
+	RunID    string
+	StepName string
+	Name     string
+	URI      string
+	Checksum string
+}
+
+// ArtifactsOf lists one run's artifact references, oldest first. It reads;
+// nothing is written, and no state is touched.
+func (s *Store) ArtifactsOf(ctx context.Context, runID string) ([]ArtifactRef, error) {
+	rows, err := s.r.QueryContext(ctx, `SELECT run_id, COALESCE(step_name, ''), name, uri, COALESCE(checksum, '')
+FROM artifacts WHERE run_id = ? ORDER BY created_at, id`, runID)
+	if err != nil {
+		return nil, fmt.Errorf("list the artifacts of run %s: %w", runID, err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []ArtifactRef
+	for rows.Next() {
+		var a ArtifactRef
+		if err := rows.Scan(&a.RunID, &a.StepName, &a.Name, &a.URI, &a.Checksum); err != nil {
+			return nil, fmt.Errorf("list the artifacts of run %s: %w", runID, err)
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// InjectRunKey gives one finished run a dedup key as a sensor trigger would:
+// the key on the run row and its registration in the run_keys table. A test
+// stages both so a replay can prove it touches neither.
+func (s *Store) InjectRunKey(ctx context.Context, runID, sourceID, key string) error {
+	now := s.clk.Now().UTC()
+	return s.withTx(ctx, func(tx *sql.Tx) error {
+		// nolint:fencing: this is staging for the dedup proof, not engine
+		// state: the planted key must exist unfenced so the replay can be
+		// shown to leave it alone.
+		if _, err := tx.Exec(`UPDATE runs SET run_key = ? WHERE id = ?`, key, runID); err != nil {
+			return fmt.Errorf("inject a run key on %s: %w", runID, err)
+		}
+		if _, err := tx.Exec(`INSERT INTO run_keys (source_id, epoch, run_key, first_seen_at, run_id)
+VALUES (?, 1, ?, ?, ?)`, sourceID, key, now.UnixMilli(), runID); err != nil {
+			return fmt.Errorf("inject a run key on %s: %w", runID, err)
+		}
+		return nil
+	})
+}
+
+// RunKeysSnapshot reads the whole run_keys table as comparable lines. Two
+// snapshots taken either side of an operation prove byte for byte that the
+// table did not move.
+func (s *Store) RunKeysSnapshot(ctx context.Context) ([]string, error) {
+	rows, err := s.r.QueryContext(ctx, `SELECT source_id || '/' || epoch || '/' || run_key ||
+'/' || COALESCE(run_id, '') FROM run_keys ORDER BY source_id, epoch, run_key`)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot run_keys: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			return nil, fmt.Errorf("snapshot run_keys: %w", err)
+		}
+		out = append(out, line)
+	}
+	return out, rows.Err()
 }

@@ -987,13 +987,15 @@ func readRunTx(tx *sql.Tx, runID string) (Run, error) {
 		heartbeatAt                          sql.NullInt64
 		availableAt, createdAt, updatedAt    int64
 		leaseEpoch, crashCount               int64
+		replayOf                             sql.NullString
 	)
 	err := tx.QueryRow(`SELECT `+runColumns+` FROM runs WHERE id = ?`, runID).Scan(
 		&run.ID, &run.JobName, &run.JobVersionID, &trigger, &run.Origin,
 		&runKey, &run.State, &concurrency, &availableAt, &deferReason, &scheduledFor, &params,
 		&run.Attempt, &run.MaxAttempts, &leaseOwner, &leaseEpoch, &leaseExpiresAt,
 		&heartbeatAt, &cancelRequestedAt, &cancelBy, &cancelWhy, &reasonCode, &reasonText,
-		&reasonData, &failure, &crashCount, &createdAt, &startedAt, &finishedAt, &updatedAt)
+		&reasonData, &failure, &crashCount, &createdAt, &startedAt, &finishedAt, &updatedAt,
+		&replayOf)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Run{}, fmt.Errorf("look up run %q: %w", runID, ErrRunNotFound)
 	}
@@ -1009,6 +1011,7 @@ func readRunTx(tx *sql.Tx, runID string) (Run, error) {
 	run.ReasonText = reasonText.String
 	run.ReasonData = reasonData.String
 	run.Error = failure.String
+	run.ReplayOf = replayOf.String
 	run.LeaseOwner = leaseOwner.String
 	run.LeaseEpoch = leaseEpoch
 	run.LeaseExpiresAt = timeOrZero(leaseExpiresAt)
