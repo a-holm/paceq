@@ -33,11 +33,18 @@ type Sink interface {
 // goroutine so a hanging sensor never blocks a loop. It never writes to the
 // database; the Result travels to the Sink, which is M3-03's.
 //
+// It also owns the sensor-robustness state that must survive from one wake to
+// the next (M3-05): a circuit breaker per sensor and the truncation budget on
+// each Result. A tripped sensor stops being evaluated until it recovers on a
+// half-open probe or an operator resumes it, so the loop stops hammering a
+// service that is down. Truncation caps one tick to the sensor's
+// max_triggers_per_tick and schedules the remainder for the next wake.
+//
 // It is not a Go errgroup and does not own a goroutine of selector logic on
 // purpose: the daemon's loop shell already select-s on the context, the ticker
 // and the notify bus, and calls Step once per wake. The runtime only carries
-// state that must survive from one wake to the next (what is in flight) and
-// the bounded workers the evaluations share.
+// state that must survive from one wake to the next (what is in flight, what
+// is tripped) and the bounded workers the evaluations share.
 type Runtime struct {
 	source Source
 	sink   Sink
@@ -47,6 +54,17 @@ type Runtime struct {
 
 	maxParallel  int
 	drainTimeout time.Duration
+
+	// breakers owns one breaker per sensor name. The map is written only
+	// when a sensor first fails, so an all-healthy deployment never pays for
+	// a breaker it does not need.
+	breakers map[string]*Breaker
+	// breakerMax is the trip threshold shared by every breaker; zero means
+	// the default in backoff.go.
+	breakerMax int
+	// breakerCooldown is how long a tripped sensor stays down before a probe
+	// is admitted; zero means the backoff default (one hour).
+	breakerCooldown time.Duration
 
 	mu      sync.Mutex
 	active  map[string]struct{}
@@ -64,6 +82,13 @@ type RuntimeConfig struct {
 	DrainTimeout time.Duration
 	Clock        clock.Clock
 	Log          *slog.Logger
+
+	// BreakerMaxFailures is the circuit breaker trip threshold. Zero means
+	// the default in backoff.go.
+	BreakerMaxFailures int
+	// BreakerCooldown is how long a tripped sensor stays closed before a
+	// half-open probe. Zero means the backoff default (one hour).
+	BreakerCooldown time.Duration
 }
 
 // NewRuntime builds a runtime. A nil clock means the system clock; a nil log
@@ -86,25 +111,49 @@ func NewRuntime(ev *Evaluator, cfg RuntimeConfig) *Runtime {
 		drain = 30 * time.Second
 	}
 	return &Runtime{
-		source:       cfg.Source,
-		sink:         cfg.Sink,
-		ev:           ev,
-		clk:          clk,
-		log:          log,
-		maxParallel:  maxP,
-		drainTimeout: drain,
-		active:       make(map[string]struct{}),
-		permits:      make(chan struct{}, maxP),
+		source:          cfg.Source,
+		sink:            cfg.Sink,
+		ev:              ev,
+		clk:             clk,
+		log:             log,
+		maxParallel:     maxP,
+		drainTimeout:    drain,
+		breakers:        make(map[string]*Breaker),
+		breakerMax:      cfg.BreakerMaxFailures,
+		breakerCooldown: cfg.BreakerCooldown,
+		active:          make(map[string]struct{}),
+		permits:         make(chan struct{}, maxP),
 	}
 }
 
+// breakerFor returns the sensor's breaker, building it on first use with the
+// shared trip policy.
+func (rt *Runtime) breakerFor(name string) *Breaker {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if b, ok := rt.breakers[name]; ok {
+		return b
+	}
+	b := NewBreaker(BreakerConfig{
+		MaxFailures: rt.breakerMax,
+		Cooldown:    rt.breakerCooldown,
+		Clock:       rt.clk,
+	})
+	rt.breakers[name] = b
+	return b
+}
+
 // Step is one run of the loop seam: admit due sensors, claim the ones that
-// are not in flight, hand each a permit, and dispatch it to a goroutine. It
-// never blocks on a slow sensor, which is the whole point of running them off
-// the loop. A cancelled context is the shutdown signal: every dispatched
-// evaluation is already bound to it, so each one kills its own process group
-// and drains; Step waits for them so the daemon's loop returns only when no
-// sensor subprocess is left behind.
+// are not in flight and whose breaker admits them, hand each a permit, and
+// dispatch it to a goroutine. It never blocks on a slow sensor, which is the
+// whole point of running them off the loop. A cancelled context is the
+// shutdown signal: every dispatched evaluation is already bound to it, so
+// each one kills its own process group and drains; Step waits for them so the
+// daemon's loop returns only when no sensor subprocess is left behind.
+//
+// A sensor whose breaker is open (a tripped sensor inside its cooldown, or a
+// half-open probe already in flight) is left due for a later wake, exactly as
+// a sensor with no free permit is; it is never started.
 func (rt *Runtime) Step(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		rt.drain()
@@ -122,6 +171,9 @@ func (rt *Runtime) Step(ctx context.Context) error {
 			rt.drain()
 			return err
 		}
+		if !rt.breakerFor(spec.Name).Admit() {
+			continue // tripped: refuse work until the cooldown offers a probe
+		}
 		if !rt.claim(spec.Name) {
 			continue // already running this sensor; never two of the same
 		}
@@ -134,13 +186,25 @@ func (rt *Runtime) Step(ctx context.Context) error {
 	return nil
 }
 
-// evaluate runs one sensor to a Result and hands it to the sink. All three
-// releases are deferred so not even a panic leaks the claim or the permit.
+// evaluate runs one sensor to a Result and hands it to the sink, then feeds
+// the verdict into the breaker so the next Step knows whether to keep
+// pressing this sensor. All three releases are deferred so not even a panic
+// leaks the claim or the permit.
 func (rt *Runtime) evaluate(ctx context.Context, spec Spec) {
+	brek := rt.breakerFor(spec.Name)
 	defer rt.ReleasePermit()
 	defer rt.unclaim(spec.Name)
 	in := rt.inputFor(spec)
 	res := rt.ev.Evaluate(ctx, spec, in)
+	// Truncate the batch before it reaches the sink: a single evaluation is
+	// bound to max_triggers_per_tick, and the rest are picked up on the next
+	// wake (M3-05).
+	applyLimit(&res, spec.MaxTriggers)
+	// Feed the verdict into the breaker AFTER the truncation decides what
+	// was actually committed: a truncated batch only counts as a success if
+	// the sensor itself answered, and an errored one counts toward the trip
+	// regardless of how many triggers were dropped.
+	_ = brek.NoteOutcome(ClassifyFailure(res.ExitCode), res.Outcome != Errored)
 	if rt.sink != nil {
 		if err := rt.sink.Commit(ctx, spec.Name, res); err != nil && ctx.Err() == nil {
 			rt.log.Warn("sensor result was not committed", "sensor", spec.Name, "error", err.Error())
