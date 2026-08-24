@@ -65,6 +65,14 @@ const (
 	// CodeCycle is a needs graph that loops: one step, somewhere in the graph,
 	// needs a step that needs it back, so no step in the loop can ever start.
 	CodeCycle = "PQ2003"
+	// CodeFanOutLimit is a needs graph where one step is a dependency of more
+	// than MaxFanOut steps (or names more than MaxFanOut needs). Beyond that
+	// the graph is a program wearing a job's clothes.
+	CodeFanOutLimit = "PQ2004"
+	// CodeDAGDepthLimit is a needs graph whose longest root-to-leaf run is
+	// more than MaxDAGDepth edges. Such a chain holds a machine hostage to a
+	// pipeline no stage bounds.
+	CodeDAGDepthLimit = "PQ2005"
 	// CodeUnknownTimezone is a schedule zone the time zone database does not
 	// have.
 	CodeUnknownTimezone = "PQ2010"
@@ -130,6 +138,8 @@ func Codes() []string {
 		CodeDuplicateStep,
 		CodeUnknownNeed,
 		CodeCycle,
+		CodeFanOutLimit,
+		CodeDAGDepthLimit,
 		CodeUnknownTimezone,
 		CodeShell,
 		CodeInheritEnv,

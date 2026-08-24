@@ -305,6 +305,28 @@ var catalogue = map[string]explanation{
 			"break the loop by making the last step not wait on the first",
 		},
 	},
+	spec.CodeFanOutLimit: {
+		Code:  spec.CodeFanOutLimit,
+		Title: "the needs graph fans out too wide for one step",
+		Explanation: "One step is an input to more than the ceiling, or names more needs than " +
+			"the ceiling. A graph fanning out past this is a program wearing a job's clothes, " +
+			"and no machine should wait on a single decision scaling that wide.",
+		Next: []string{
+			"split the many downstream steps into two stages joined by a middle step",
+			"the ceiling is documented in paceq error " + spec.CodeFanOutLimit,
+		},
+	},
+	spec.CodeDAGDepthLimit: {
+		Code:  spec.CodeDAGDepthLimit,
+		Title: "the needs graph runs too deep",
+		Explanation: "The longest chain from a step with no needs to the deepest step is past " +
+			"the ceiling. A run that deep holds a machine hostage to a pipeline no single " +
+			"stage bounds.",
+		Next: []string{
+			"flatten the pipeline: batch the tail stages under one step that runs a script",
+			"the ceiling is documented in paceq error " + spec.CodeDAGDepthLimit,
+		},
+	},
 	spec.CodeUnknownTimezone: {
 		Code:  spec.CodeUnknownTimezone,
 		Title: "the time zone is not one this machine knows",

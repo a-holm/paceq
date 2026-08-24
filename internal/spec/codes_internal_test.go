@@ -75,6 +75,8 @@ func TestCodesUseTheSeriesTheyBelongTo(t *testing.T) {
 		CodeDuplicateStep:   true,
 		CodeUnknownNeed:     true,
 		CodeCycle:           true,
+		CodeFanOutLimit:     true,
+		CodeDAGDepthLimit:   true,
 		CodeUnknownTimezone: true,
 	}
 	warning := map[string]bool{CodeShell: true, CodeInheritEnv: true}

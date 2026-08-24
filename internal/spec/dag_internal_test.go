@@ -2,6 +2,7 @@ package spec_test
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -320,4 +321,77 @@ func renderDiagnostics(t *testing.T, diags diag.List) string {
 	var b bytes.Buffer
 	_ = diag.ASCII.RenderAll(&b, diags, nil)
 	return b.String()
+}
+
+// TestFanOutOverTheCeilingIsRefused builds a step that names one too many
+// needs, each of which names nothing, so the only refusal is the fan-out one.
+func TestFanOutOverTheCeilingIsRefused(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("name: report\nsteps:\n")
+	// MaxFanOut roots, each a real step, plus one extra so the fan step can
+	// cross the ceiling without naming a duplicate (duplicates are deduped).
+	for i := range spec.MaxFanOut + 1 {
+		fmt.Fprintf(&b, "  - name: root%d\n    run: [\"/bin/true\"]\n", i)
+	}
+	// The fan step names one more than the ceiling.
+	fanNeeds := make([]string, 0, spec.MaxFanOut+1)
+	for i := range spec.MaxFanOut + 1 {
+		fanNeeds = append(fanNeeds, fmt.Sprintf("root%d", i))
+	}
+	fmt.Fprintf(&b, "  - name: fan\n    run: [\"/bin/true\"]\n    needs: [%s]\n", strings.Join(fanNeeds, ","))
+
+	_, diags := spec.Parse("fan.yaml", []byte(b.String()))
+	if !hasCode(diags, spec.CodeFanOutLimit) {
+		t.Errorf("no fan-out refusal among %v", codesOnly(diags))
+	}
+}
+
+// TestDepthOverTheCeilingIsRefused builds a chain one deeper than the
+// ceiling and demands the depth refusal.
+func TestDepthOverTheCeilingIsRefused(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("name: report\nsteps:\n")
+	for i := range spec.MaxDAGDepth + 2 {
+		fmt.Fprintf(&b, "  - name: s%d\n    run: [\"/bin/true\"]\n", i)
+		if i > 0 {
+			// needs points at the step before it, making a chain.
+			fmt.Fprintf(&b, "    needs: [s%d]\n", i-1)
+		}
+	}
+	_, diags := spec.Parse("deep.yaml", []byte(b.String()))
+	if !hasCode(diags, spec.CodeDAGDepthLimit) {
+		t.Errorf("no depth refusal among %v", codesOnly(diags))
+	}
+}
+
+func hasCode(diags diag.List, code string) bool {
+	for _, d := range diags {
+		if d.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
+// TestEngineReadsAFrozenCycleWithoutRevalidating is the runtime boundary:
+// the engine reads the spec back from the frozen JSON it was applied with,
+// and FromIR does NOT run the graph validator. Validation happens at the
+// door, when the file is applied or validated; a run that already exists was
+// built from a graph that passed, so the engine trusts the bytes. This test
+// pins that FromIR carries no cycle check, which is what keeps the engine
+// from importing the jobspec validation at all.
+func TestEngineReadsAFrozenCycleWithoutRevalidating(t *testing.T) {
+	// A canonical document whose graph is cyclic. A user cannot get this
+	// into the store, but the store is not the engine: the engine must still
+	// be able to read whatever its own job_versions hold.
+	doc := `{"schema":"paceq.job.v1","name":"report","steps":[` +
+		`{"name":"a","run":["/bin/a"],"needs":["b"]},` +
+		`{"name":"b","run":["/bin/b"],"needs":["a"]}]}`
+	job, err := spec.FromIR([]byte(doc))
+	if err != nil {
+		t.Fatalf("the engine refused a frozen cycle it must be able to read: %v", err)
+	}
+	if len(job.Steps) != 2 {
+		t.Errorf("read %d steps, want 2", len(job.Steps))
+	}
 }
