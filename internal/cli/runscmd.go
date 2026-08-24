@@ -32,7 +32,7 @@ backwards with --before, and reads through the read only pool, so history is
 there while another process writes new runs.`,
 	}
 	cmd.AddCommand(newRunsListCmd(env, g), newRunsShowCmd(env, g), newRunsCancelCmd(env, g),
-		newRunsRetryCmd(env, g))
+		newRunsRetryCmd(env, g), newRunsReplayCmd(env, g))
 	return cmd
 }
 
