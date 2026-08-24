@@ -408,3 +408,32 @@ func TestReopenedRunSweepsClean(t *testing.T) {
 		t.Fatalf("fsck after a reopen: %+v", violations)
 	}
 }
+
+// TestReopenSurvivesAMovingWallClock pins the schema rule a real deployment
+// hits and a frozen clock hides: a run created at T and reopened long after
+// must come back queued without tripping the check that ties a queued row's
+// visibility to its creation.
+func TestReopenSurvivesAMovingWallClock(t *testing.T) {
+	ctx := context.Background()
+	s, clk := coreStore(t)
+	runID := aDagRun(t, s, "retrychain", retryChainSpec)
+	driveChain(t, ctx, s, clk, runID, "c")
+
+	clk.Advance(6 * time.Hour)
+
+	res, err := s.ReopenTerminalRunByOperator(ctx, runID, "cli:1000", store.ReopenOpts{})
+	if err != nil {
+		t.Fatalf("reopen six hours later: %v", err)
+	}
+	if len(res.Reopened) != 3 {
+		t.Errorf("reopened = %v, want the three steps below b", res.Reopened)
+	}
+	reopened := mustGetRun(t, ctx, s, runID)
+	if reopened.State != string(model.RunQueued) {
+		t.Errorf("the reopened run is %s, want queued", reopened.State)
+	}
+	if reopened.AvailableAt.After(clk.Now()) {
+		t.Errorf("available_at %s is in the future; the next claim would miss it",
+			reopened.AvailableAt)
+	}
+}

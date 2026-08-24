@@ -125,6 +125,12 @@ func (s *Store) ReopenTerminalRunByOperator(ctx context.Context, runID string, a
 		// T14. The UPDATE carries lease_epoch = lease_epoch + 1, which is
 		// both the fence and its own proof: a writer holding last
 		// generation's token fails the CAS below and writes nothing.
+		// available_at goes back to the row's own creation stamp, not to
+		// now: the schema holds every queued run without a defer reason to
+		// have been visible since it was created, and a reopened run is
+		// visible immediately either way, because its creation is in the
+		// past by definition. The moment of the reopen lives on the
+		// operator_reopen event, where history reads it.
 		if err := finishTransition(tx, "operator_reopen", func() error {
 			result, err := tx.Exec(`UPDATE runs SET
 				state = 'queued',
@@ -143,7 +149,7 @@ func (s *Store) ReopenTerminalRunByOperator(ctx context.Context, runID string, a
 				available_at = ?,
 				updated_at = ?
 				WHERE id = ? AND state = ? AND lease_epoch = ?`,
-				string(reason.RUNReopenedOperator), now.UnixMilli(), now.UnixMilli(),
+				string(reason.RUNReopenedOperator), run.CreatedAt.UnixMilli(), now.UnixMilli(),
 				runID, run.State, run.LeaseEpoch)
 			if err != nil {
 				return err
