@@ -58,8 +58,8 @@ A cross table cell holds the states an event can lead to, over every combination
 | pending | - | - | running | - | - | skipped | - | - | - | - | - |
 | running | - | - | - | succeeded | pending, failed | - | - | cancelled | - | - | pending |
 | succeeded | - | - | - | - | - | - | - | - | - | - | - |
-| failed | - | - | - | - | - | - | - | - | - | - | - |
-| skipped | - | - | - | - | - | - | - | - | - | - | - |
+| failed | - | - | - | - | - | - | - | - | - | pending | - |
+| skipped | - | - | - | - | - | - | - | - | - | pending | - |
 | cancelled | - | - | - | - | - | - | - | - | - | - | - |
 
 ### Transitions
@@ -73,6 +73,8 @@ A cross table cell holds the states an event can lead to, over every combination
 | pending | upstream_failed | skipped | a failed upstream skips a pending step | set_finished, emit(step.skipped) |
 | running | cancel_observed | cancelled | an observed cancellation kills the process group and cancels the step | kill_process_group, set_finished, emit(step.cancelled) |
 | running | shutdown_drain | pending | a drain puts an interrupted attempt back to pending without spending it | restore_attempt, set_next_attempt_at, emit(step.interrupted) |
+| failed | operator_retry | pending | an operator reopens a failed step | set_next_attempt_at, emit(step.reopened) |
+| skipped | operator_retry | pending | an operator reopens a skipped step | set_next_attempt_at, emit(step.reopened) |
 
 ### Refusals
 
