@@ -106,7 +106,7 @@ func stepMachine() machine {
 		},
 		legal:     legal,
 		wantPairs: 66,
-		wantLegal: 6,
+		wantLegal: 8,
 	}
 }
 
@@ -227,9 +227,11 @@ func TestOnlyOperatorRetryLeavesATerminalRun(t *testing.T) {
 	}
 }
 
-// TestATerminalStepAcceptsNoEvent is the same rule one level down. A step that
-// has finished is finished: an operator reopens the run, and the engine
-// materialises its steps again.
+// TestATerminalStepAcceptsNoEvent is the same rule one level down, with the
+// one exception M4-04 writes into the machine: an operator reopening the run
+// puts its failed and skipped steps back in front of the claim gate. A
+// succeeded or cancelled step still accepts nothing; their outcomes are what
+// a retry builds on.
 func TestATerminalStepAcceptsNoEvent(t *testing.T) {
 	combos := guardCombos()
 
@@ -238,10 +240,19 @@ func TestATerminalStepAcceptsNoEvent(t *testing.T) {
 			continue
 		}
 		for _, ev := range model.AllEvents() {
+			reopenable := (from == model.StepFailed || from == model.StepSkipped) &&
+				ev == model.EvOperatorRetry
 			for _, g := range combos {
 				got, fx, err := model.NextStepState(from, ev, g)
+				if reopenable {
+					if err != nil || got != model.StepPending {
+						t.Fatalf("step %q + %q gave (%q, %v), want a reopened step",
+							from, ev, got, err)
+					}
+					continue
+				}
 				if !errors.Is(err, model.ErrIllegalTransition) || got != from || len(fx) != 0 {
-					t.Fatalf("step %q accepted %q, giving (%q, %v, %v) under %+v: a terminal step accepts nothing",
+					t.Fatalf("step %q accepted %q, giving (%q, %v, %v) under %+v: only an operator retry reopens a failed or skipped step",
 						from, ev, got, fx, err, g)
 				}
 			}

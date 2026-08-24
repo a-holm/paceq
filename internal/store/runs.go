@@ -136,6 +136,10 @@ type Run struct {
 	// quarantine instead of offering it to yet another executor.
 	CrashCount int
 
+	// ReplayOf is the run this one replays, empty when it replays nothing.
+	// It is what ties a replay back to the attempt it was made from.
+	ReplayOf string
+
 	// The cancellation request, durable before anything is killed. Empty
 	// time means nobody asked.
 	CancelRequestedAt time.Time
@@ -409,7 +413,8 @@ const runColumns = `id, job_name, job_version_id, trigger_id, origin, run_key, s
 	concurrency_key, available_at, defer_reason, scheduled_for, params_json, attempt,
 	max_attempts, lease_owner, lease_epoch, lease_expires_at, heartbeat_at,
 	cancel_requested_at, cancel_requested_by, cancel_reason, reason_code, reason_text,
-	reason_data, error, crash_count, created_at, started_at, finished_at, updated_at`
+	reason_data, error, crash_count, created_at, started_at, finished_at, updated_at,
+	replay_of`
 
 // GetRun reads one run and its steps. The argument is a whole id or any prefix
 // of one, the way a git object is named: ids are ULIDs, so a prefix is a range
@@ -571,14 +576,17 @@ func scanRuns(rows *sql.Rows) ([]Run, error) {
 			heartbeatAt                          sql.NullInt64
 			availableAt, createdAt, updatedAt    int64
 			leaseEpoch, crashCount               int64
+			replayOf                             sql.NullString
 		)
 		if err := rows.Scan(&run.ID, &run.JobName, &run.JobVersionID, &trigger, &run.Origin,
 			&runKey, &run.State, &concurrency, &availableAt, &deferReason, &scheduledFor, &params,
 			&run.Attempt, &run.MaxAttempts, &leaseOwner, &leaseEpoch, &leaseExpiresAt,
 			&heartbeatAt, &cancelRequestedAt, &cancelBy, &cancelReason, &reasonCode, &reasonText,
-			&reasonData, &failure, &crashCount, &createdAt, &startedAt, &finishedAt, &updatedAt); err != nil {
+			&reasonData, &failure, &crashCount, &createdAt, &startedAt, &finishedAt, &updatedAt,
+			&replayOf); err != nil {
 			return nil, err
 		}
+		run.ReplayOf = replayOf.String
 		run.TriggerID = trigger.String
 		run.RunKey = runKey.String
 		run.ConcurrencyKey = concurrency.String

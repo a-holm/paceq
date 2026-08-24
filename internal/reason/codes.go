@@ -62,6 +62,7 @@ var (
 	TRIGGERRejectedPayload    = triggerCode("REJECTED_PAYLOAD")
 
 	RUNQueuedConcurrency   = runCode("QUEUED_CONCURRENCY")
+	RUNReopenedOperator    = runCode("REOPENED_OPERATOR")
 	RUNCancelledManual     = runCode("CANCELLED_MANUAL")
 	RUNCancelledShutdown   = runCode("CANCELLED_SHUTDOWN")
 	RUNInterruptedShutdown = runCode("INTERRUPTED_SHUTDOWN")
@@ -72,6 +73,7 @@ var (
 	RUNPoisoned            = runCode("POISONED")
 
 	STEPSucceeded              = stepCode("SUCCEEDED")
+	STEPSkippedReplayReused    = stepCode("SKIPPED_REPLAY_REUSED")
 	STEPSkippedUpstreamFailed  = stepCode("SKIPPED_UPSTREAM_FAILED")
 	STEPSkippedUpstreamSkipped = stepCode("SKIPPED_UPSTREAM_SKIPPED")
 	STEPRetryScheduled         = stepCode("RETRY_SCHEDULED")
@@ -408,6 +410,21 @@ func newCatalog() map[Code]Entry {
 			DataKeys: []string{"limit", "scope"},
 		},
 		{
+			Code:  RUNReopenedOperator,
+			Level: LevelRun,
+			Short: "reopened by an operator",
+			Explanation: "A run that had ended was deliberately opened again by a person " +
+				"typing runs retry. This is T14, the only way out of a terminal state: no " +
+				"automatic path can produce it, the actor on the event names who asked, and " +
+				"the fencing token moved so a writer from the closed attempt stays shut out.",
+			Remedy: []string{
+				"nothing to fix; the steps it reopened carry their own outcomes next",
+				"a reopen of a run whose outcome was unknown is a deliberate double effect risk; check crash_count first",
+			},
+			DataKeys: []string{"only_step", "forced"},
+			Terminal: true,
+		},
+		{
 			Code:  RUNCancelledManual,
 			Level: LevelRun,
 			Short: "cancelled by request",
@@ -525,6 +542,20 @@ func newCatalog() map[Code]Entry {
 				"nothing to fix",
 				"duration_ms beside sibling steps is the cheap way to spot one step drifting",
 			},
+			Terminal: true,
+		},
+		{
+			Code:  STEPSkippedReplayReused,
+			Level: LevelStep,
+			Short: "reused from the replayed run, not run again",
+			Explanation: "A replay materialised this step straight to succeeded because the run it " +
+				"replays already carried a succeeded step here. Nothing ran in this run; its rows " +
+				"are a reference to that work, and its artifacts are copied as references, never as " +
+				"content.",
+			Remedy: []string{
+				"follow the same step on the replayed run for the log and the real duration",
+			},
+			DataKeys: []string{"replayed_from"},
 			Terminal: true,
 		},
 		{

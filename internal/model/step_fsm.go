@@ -58,6 +58,15 @@ func NextStepState(cur StepState, ev Event, g Guards) (StepState, []Effect, erro
 		}
 		return StepPending, effects(act(EffectRestoreAttempt), act(EffectSetNextAttemptAt),
 			emit("step.interrupted")), nil
+
+	case (cur == StepFailed || cur == StepSkipped) && ev == EvOperatorRetry:
+		// M4-04: the step half of T14. An operator reopening the run puts
+		// its failed and skipped steps back in front of the claim gate,
+		// runnable at once. The attempt counter is history, not budget: it
+		// stays as it stands here, and whoever reopens raises max_attempts
+		// so the next start is a real new attempt. A succeeded step never
+		// takes this event; its work is what the retry builds on.
+		return StepPending, effects(act(EffectSetNextAttemptAt), emit("step.reopened")), nil
 	}
 
 	return cur, nil, IllegalTransitionError{From: cur, Event: ev}

@@ -107,6 +107,45 @@ reason_code = 'RUN_FAILED_STEP', finished_at = created_at + 1000 WHERE id = ?`, 
 	}
 }
 
+// TestFsckCatchesAnAttemptOutsideItsBudget plants I5 twice over: a step that
+// claims a verdict with no attempt counted, and one whose counter ran past
+// the budget it is allowed. Attempt numbers are the history a retry builds
+// on; a hole or an overrun means somebody wrote behind the transition layer.
+func TestFsckCatchesAnAttemptOutsideItsBudget(t *testing.T) {
+	ctx := context.Background()
+	s, runID := plantSeededRun(t)
+
+	if _, err := s.w.ExecContext(ctx, `UPDATE steps SET state = 'succeeded',
+reason_code = 'STEP_SUCCEEDED', attempt = 0, max_attempts = 1
+WHERE run_id = ? AND name = 'build'`, runID); err != nil {
+		t.Fatalf("plant the uncounted verdict: %v", err)
+	}
+	if _, err := s.w.ExecContext(ctx, `UPDATE steps SET state = 'succeeded',
+reason_code = 'STEP_SUCCEEDED', attempt = 5, max_attempts = 2
+WHERE run_id = ? AND name = 'deploy'`, runID); err != nil {
+		t.Fatalf("plant the overrun: %v", err)
+	}
+	if _, err := s.w.ExecContext(ctx, `UPDATE runs SET state = 'succeeded',
+reason_code = 'RUN_SUCCEEDED', finished_at = created_at + 1000 WHERE id = ?`, runID); err != nil {
+		t.Fatalf("settle the run: %v", err)
+	}
+
+	violations, err := s.Fsck(ctx)
+	if err != nil {
+		t.Fatalf("fsck: %v", err)
+	}
+	found := 0
+	for _, v := range violations {
+		if v.Check == "I5" {
+			found++
+		}
+	}
+	if found != 2 {
+		t.Fatalf("fsck named %d attempt violations, want both planted rows: %+v",
+			found, violations)
+	}
+}
+
 func TestFsckCatchesTimeGoingBackwards(t *testing.T) {
 	ctx := context.Background()
 	s, runID := plantSeededRun(t)

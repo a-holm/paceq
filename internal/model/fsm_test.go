@@ -352,6 +352,22 @@ func stepTable() []stepCase {
 			want:   model.StepRunning,
 			err:    model.ErrMissingReasonCode,
 		},
+		{
+			name:    "an operator reopens a failed step",
+			from:    model.StepFailed,
+			event:   model.EvOperatorRetry,
+			guards:  model.Guards{Now: now},
+			want:    model.StepPending,
+			effects: with(kinds(model.EffectSetNextAttemptAt), emit("step.reopened")),
+		},
+		{
+			name:    "an operator reopens a skipped step",
+			from:    model.StepSkipped,
+			event:   model.EvOperatorRetry,
+			guards:  model.Guards{Now: now},
+			want:    model.StepPending,
+			effects: with(kinds(model.EffectSetNextAttemptAt), emit("step.reopened")),
+		},
 	}
 }
 
