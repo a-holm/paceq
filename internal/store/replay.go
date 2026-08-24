@@ -276,27 +276,28 @@ WHERE run_id = ? AND state = 'succeeded' ORDER BY idx`, srcRunID)
 
 // copyArtifactRefsTx copies the artifact rows of the spared steps as
 // references: uri, checksum, size and metadata move, content never does.
-// UNIQUE(run_id, name) holds in the source across all of its steps, so the
-// copied set can never collide inside the new run either, whatever number of
+// Only spared steps contribute: an empty reuse list means a full rerun, and
+// a full rerun copies nothing, because every rerun step has to earn its own
+// outputs under its own names. UNIQUE(run_id, name) holds in the source
+// across all of its steps, so whatever one step produced can never collide
+// with another's rows inside the new run either, whatever number of
 // artifacts a step produced.
 func copyArtifactRefsTx(tx *sql.Tx, srcRunID, newRunID string, reuse []string, at int64) error {
-	const all = `SELECT COALESCE(step_name, ''), name, uri, size_bytes, checksum, meta_json
-FROM artifacts WHERE run_id = ? ORDER BY created_at, id`
-
-	query := all
-	args := []any{srcRunID}
-	if reuse != nil {
-		// One bound parameter per spared step: the copied set is exactly
-		// what those steps produced, never the run's whole artifact table.
-		marks := make([]string, len(reuse))
-		for i, name := range reuse {
-			marks[i] = "?"
-			args = append(args, name)
-		}
-		query = `SELECT COALESCE(step_name, ''), name, uri, size_bytes, checksum, meta_json
+	if len(reuse) == 0 {
+		return nil
+	}
+	// One bound parameter per spared step: the copied set is exactly
+	// what those steps produced, never the run's whole artifact table.
+	marks := make([]string, len(reuse))
+	args := make([]any, 0, len(reuse)+1)
+	args = append(args, srcRunID)
+	for i, name := range reuse {
+		marks[i] = "?"
+		args = append(args, name)
+	}
+	query := `SELECT COALESCE(step_name, ''), name, uri, size_bytes, checksum, meta_json
 FROM artifacts WHERE run_id = ? AND step_name IN (` + strings.Join(marks, ",") + `)
 ORDER BY created_at, id`
-	}
 	rows, err := tx.Query(query, args...)
 	if err != nil {
 		return fmt.Errorf("read the artifacts of run %s: %w", srcRunID, err)

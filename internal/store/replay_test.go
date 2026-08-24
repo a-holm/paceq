@@ -113,6 +113,47 @@ func TestReplayUsesTheFrozenGraphNotTheCurrentOne(t *testing.T) {
 	}
 }
 
+// TestReplayFullRerunCopiesNoArtifacts pins the empty end of the reuse
+// spectrum: nothing is spared, so nothing may be copied. The source's
+// succeeded steps left real artifact rows behind, and seeding the replay's
+// rerun steps with those references would hand each command somebody else's
+// output under exactly the name it is about to produce itself.
+func TestReplayFullRerunCopiesNoArtifacts(t *testing.T) {
+	ctx := context.Background()
+	s, clk := coreStore(t)
+	srcID := aDagRun(t, s, "replaychain", retryChainSpec)
+	driveChain(t, ctx, s, clk, srcID, "c")
+
+	for _, art := range []struct{ step, name, uri, checksum string }{
+		{"a", "a.csv", "file:///out/a.csv", "sha256:a"},
+		{"b", "b.csv", "file:///out/b.csv", "sha256:b"},
+	} {
+		if err := s.InjectArtifact(ctx, srcID, art.step, art.name, art.uri, art.checksum); err != nil {
+			t.Fatalf("plant %s on %s: %v", art.name, art.step, err)
+		}
+	}
+	if staged, err := s.ArtifactsOf(ctx, srcID); err != nil || len(staged) != 2 {
+		t.Fatalf("stage check: the source carries %+v (%v), want its two artifacts", staged, err)
+	}
+
+	out, err := s.MaterializeReplay(ctx, srcID, store.ReplayOpts{})
+	if err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if len(out.Reused) != 0 || len(out.Rerun) != 5 {
+		t.Fatalf("reused = %v, rerun = %v, want a full rerun of all five", out.Reused, out.Rerun)
+	}
+
+	arts, err := s.ArtifactsOf(ctx, out.NewRunID)
+	if err != nil {
+		t.Fatalf("read the replay's artifacts: %v", err)
+	}
+	if len(arts) != 0 {
+		t.Errorf("the full rerun carries %d copied references (%+v), want none: nothing was spared",
+			len(arts), arts)
+	}
+}
+
 // TestReplayFromMaterializesUpstreamAsSucceeded is AC-8 on a diamond:
 // replay --from w reuses x, y and z (everything w sits on top of), each as
 // succeeded with STEP_SKIPPED_REPLAY_REUSED, and copies the artifact rows the
