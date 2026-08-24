@@ -174,6 +174,68 @@ func attachArtifacts(ctx context.Context, r reader, runID string, steps []Step) 
 	return nil
 }
 
+// CopyArtifactRefsTx re-publishes every reference one run holds into
+// another, inside the caller's transaction. It is paceq's whole answer to
+// replaying artefacts (AC-13): the references move, byte for byte what the
+// original step claimed, and nothing else does. No file is read, no checksum
+// is computed, no content is copied; a replayed run points at exactly the
+// uris its ancestor pointed at.
+//
+// BLOCKED SEAM (#13 on #10): the caller this is written for is #10's
+// MaterializeReplay, which must invoke it inside the transaction that
+// creates the new run, so the copies commit with the run or not at all.
+// Until #10 lands, only the tests call it. Do not build a parallel replay
+// path around it.
+func CopyArtifactRefsTx(tx *sql.Tx, fromRunID, toRunID string, at time.Time) (int, error) {
+	rows, err := tx.Query(`SELECT step_name, name, uri, size_bytes, checksum, meta_json
+		FROM artifacts WHERE run_id = ? ORDER BY rowid`, fromRunID)
+	if err != nil {
+		return 0, fmt.Errorf("read the references of run %s: %w", fromRunID, err)
+	}
+	var refs []Artifact
+	for rows.Next() {
+		var (
+			a        Artifact
+			size     sql.NullInt64
+			checksum sql.NullString
+			meta     string
+		)
+		if err := rows.Scan(&a.StepName, &a.Name, &a.URI, &size, &checksum, &meta); err != nil {
+			_ = rows.Close()
+			return 0, fmt.Errorf("scan a reference of run %s: %w", fromRunID, err)
+		}
+		if size.Valid {
+			v := size.Int64
+			a.SizeBytes = &v
+		}
+		a.Checksum = checksum.String
+		var claimed struct {
+			MediaType string `json:"media_type"`
+		}
+		if err := json.Unmarshal([]byte(meta), &claimed); err == nil && claimed.MediaType != "" {
+			a.MediaType = claimed.MediaType
+		}
+		refs = append(refs, a)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, fmt.Errorf("scan a reference of run %s: %w", fromRunID, err)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, fmt.Errorf("read the references of run %s: %w", fromRunID, err)
+	}
+
+	// insertArtifactsTx stamps created_at with the verdict time and mints
+	// fresh ids, so a copy is a new reference that ages with the replay,
+	// never a shared row with the ancestor.
+	for i := range refs {
+		if err := insertArtifactsTx(tx, toRunID, refs[i].StepName, at, refs[i:i+1]); err != nil {
+			return i, fmt.Errorf("copy the references of run %s into %s: %w", fromRunID, toRunID, err)
+		}
+	}
+	return len(refs), nil
+}
+
 // ArtifactOwner says who currently holds an artifact name inside one run,
 // and where that holder sits in the spec order. The engine consults it
 // before a verdict so a colliding reference resolves deterministically
