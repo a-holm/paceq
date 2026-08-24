@@ -57,6 +57,16 @@ type Spec struct {
 	Stderr     io.Writer   // nil means /dev/null
 	OutputPath string      // created before the command starts, handed over as PACEQ_OUTPUT
 
+	// The upstream references of this step (#13). InputsJSON is the merged
+	// closure in its frozen shape, handed over inline as PACEQ_INPUTS; an
+	// empty string reads as the empty document {}. When the merged payload
+	// crossed the spill bound, InputsJSON is the literal "null" and
+	// InputsFile names the file that carries it instead, handed over as
+	// PACEQ_INPUTS_FILE with PACEQ_INPUTS set to null so a jq pipeline
+	// still reads.
+	InputsJSON string
+	InputsFile string
+
 	// OnStart fires once per successful spawn, before Run returns, with the
 	// child's pid. The engine persists a process baseline through it (issue
 	// #62): pid plus /proc start ticks on file at spawn time is what later
