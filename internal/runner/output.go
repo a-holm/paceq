@@ -8,8 +8,6 @@ import (
 	"io/fs"
 	"os"
 	"strings"
-
-	"github.com/a-holm/paceq/internal/reason"
 )
 
 // The output contract (#13). A step publishes artifact references and
@@ -55,9 +53,21 @@ type PublishedRef struct {
 	MediaType string
 }
 
+// Warning kinds the output reader reports. The runner names facts, never
+// verdicts: which paceq reason code a kind maps onto is decided above this
+// package, which is why internal/reason is not among this package's imports.
+const (
+	// WarnOutputInvalid marks lines that did not parse as contract NDJSON.
+	WarnOutputInvalid = "output_invalid"
+
+	// WarnOutputTruncated marks a read stopped by one of the hard bounds,
+	// naming the bound and its limit in the detail.
+	WarnOutputTruncated = "output_truncated"
+)
+
 // OutputWarning is one fact worth reading beside a step's verdict.
 type OutputWarning struct {
-	Code   reason.Code
+	Kind   string
 	Detail map[string]any
 }
 
@@ -83,7 +93,7 @@ func ReadStepOutput(path string) (StepOutput, error) {
 		}
 		return StepOutput{
 			Warnings: []OutputWarning{{
-				Code:   reason.STEPOutputInvalid,
+				Kind:   WarnOutputInvalid,
 				Detail: map[string]any{"error": err.Error()},
 			}},
 		}, nil
@@ -176,13 +186,13 @@ func ParseStepOutput(data []byte, limits OutputLimits) StepOutput {
 	}
 	if dropped > 0 {
 		out.Warnings = append(out.Warnings, OutputWarning{
-			Code:   reason.STEPOutputInvalid,
+			Kind:   WarnOutputInvalid,
 			Detail: map[string]any{"count": dropped, "first_line": firstDropped},
 		})
 	}
 	if truncated {
 		out.Warnings = append(out.Warnings, OutputWarning{
-			Code:   reason.STEPOutputTruncated,
+			Kind:   WarnOutputTruncated,
 			Detail: map[string]any{"bound": bound, "limit": limit},
 		})
 	}

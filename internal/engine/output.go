@@ -64,11 +64,7 @@ func (e *Engine) collectPublications(ctx context.Context, runID, stepName string
 		}
 	}
 	for _, w := range parsed.Warnings {
-		fact := map[string]any{"code": string(w.Code)}
-		for k, v := range w.Detail {
-			fact[k] = v
-		}
-		warnings = append(warnings, fact)
+		warnings = append(warnings, warningFact(w))
 	}
 
 	arts := make([]store.Artifact, 0, len(keep))
@@ -83,6 +79,32 @@ func (e *Engine) collectPublications(ctx context.Context, runID, stepName string
 		})
 	}
 	return arts, warnings, nil
+}
+
+// warningCodes maps the runner's warning kinds onto paceq's reason
+// registry. The runner names facts; this package, which owns verdicts,
+// decides what they are called. The map is total over the kinds the
+// reader can emit today.
+var warningCodes = map[string]reason.Code{
+	runner.WarnOutputInvalid:   reason.STEPOutputInvalid,
+	runner.WarnOutputTruncated: reason.STEPOutputTruncated,
+}
+
+// publicationDetail's helper: one runner warning becomes one fact beside
+// the verdict. An unmapped kind keeps its raw name so a future kind can
+// never vanish silently on its way up.
+func warningFact(w runner.OutputWarning) map[string]any {
+	fact := map[string]any{}
+	code, mapped := warningCodes[w.Kind]
+	if mapped {
+		fact["code"] = string(code)
+	} else {
+		fact["code"] = w.Kind
+	}
+	for k, v := range w.Detail {
+		fact[k] = v
+	}
+	return fact
 }
 
 func collisionFact(name, winner, loser string) map[string]any {

@@ -7,8 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-
-	"github.com/a-holm/paceq/internal/reason"
 )
 
 // The $PACEQ_OUTPUT contract (#13): NDJSON, one JSON object per line, two
@@ -74,8 +72,8 @@ func TestParseStepOutputKeepsValidLinesAroundAnInvalidOne(t *testing.T) {
 		t.Fatalf("warnings = %v, want exactly one", out.Warnings)
 	}
 	w := out.Warnings[0]
-	if w.Code != reason.STEPOutputInvalid {
-		t.Errorf("warning code = %s, want STEP_OUTPUT_INVALID", w.Code)
+	if w.Kind != WarnOutputInvalid {
+		t.Errorf("warning code = %s, want STEP_OUTPUT_INVALID", w.Kind)
 	}
 	if w.Detail["count"] != 1 || w.Detail["first_line"] != 2 {
 		t.Errorf("warning detail = %v, want count 1 at first_line 2", w.Detail)
@@ -121,7 +119,7 @@ func TestParseStepOutputLineBoundIsExact(t *testing.T) {
 
 	over := ok.String() + artifactLine("one-too-many", "/f") + "\n"
 	out = ParseStepOutput([]byte(over), DefaultOutputLimits)
-	if len(out.Warnings) != 1 || out.Warnings[0].Code != reason.STEPOutputTruncated {
+	if len(out.Warnings) != 1 || out.Warnings[0].Kind != WarnOutputTruncated {
 		t.Fatalf("warnings = %v, want one truncation", out.Warnings)
 	}
 	if out.Warnings[0].Detail["bound"] != "lines" ||
@@ -164,7 +162,7 @@ func TestParseStepOutputFileByteBoundIsExact(t *testing.T) {
 
 	over := b.String()[:b.Len()-2] + "xy\n"
 	out = ParseStepOutput([]byte(over), DefaultOutputLimits)
-	if len(out.Warnings) != 1 || out.Warnings[0].Code != reason.STEPOutputTruncated {
+	if len(out.Warnings) != 1 || out.Warnings[0].Kind != WarnOutputTruncated {
 		t.Fatalf("warnings = %v, want one truncation one byte over", out.Warnings)
 	}
 	if out.Warnings[0].Detail["bound"] != "file_bytes" {
@@ -190,7 +188,7 @@ func TestParseStepOutputLineLengthBoundIsExact(t *testing.T) {
 
 	over := pre + pad + "y" + suf + "\n"
 	out = ParseStepOutput([]byte(over), DefaultOutputLimits)
-	if len(out.Warnings) != 1 || out.Warnings[0].Code != reason.STEPOutputTruncated {
+	if len(out.Warnings) != 1 || out.Warnings[0].Kind != WarnOutputTruncated {
 		t.Fatalf("warnings = %v, want one truncation", out.Warnings)
 	}
 	if out.Warnings[0].Detail["bound"] != "line_bytes" {
@@ -233,7 +231,7 @@ func TestReadStepOutputWarnsWhenTheFileCannotBeRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("an unreadable file is data, not an error: %v", err)
 	}
-	if len(step.Warnings) != 1 || step.Warnings[0].Code != reason.STEPOutputInvalid {
+	if len(step.Warnings) != 1 || step.Warnings[0].Kind != WarnOutputInvalid {
 		t.Fatalf("warnings = %v, want one invalid-output warning", step.Warnings)
 	}
 }
@@ -258,7 +256,7 @@ func TestParseStepOutputRefusesBrokenReferencesWithoutFailingTheRest(t *testing.
 	if len(out.Artifacts) != 1 || out.Artifacts[0].Name != "good" {
 		t.Fatalf("artifacts = %+v, want only the good one", out.Artifacts)
 	}
-	if len(out.Warnings) != 1 || out.Warnings[0].Code != reason.STEPOutputInvalid {
+	if len(out.Warnings) != 1 || out.Warnings[0].Kind != WarnOutputInvalid {
 		t.Fatalf("warnings = %+v, want one aggregated invalid-output warning", out.Warnings)
 	}
 	detail := out.Warnings[0].Detail

@@ -174,7 +174,7 @@ func attachArtifacts(ctx context.Context, r reader, runID string, steps []Step) 
 	return nil
 }
 
-// CopyArtifactRefsTx re-publishes every reference one run holds into
+// copyArtifactRefsTx re-publishes every reference one run holds into
 // another, inside the caller's transaction. It is paceq's whole answer to
 // replaying artefacts (AC-13): the references move, byte for byte what the
 // original step claimed, and nothing else does. No file is read, no checksum
@@ -184,9 +184,10 @@ func attachArtifacts(ctx context.Context, r reader, runID string, steps []Step) 
 // BLOCKED SEAM (#13 on #10): the caller this is written for is #10's
 // MaterializeReplay, which must invoke it inside the transaction that
 // creates the new run, so the copies commit with the run or not at all.
-// Until #10 lands, only the tests call it. Do not build a parallel replay
-// path around it.
-func CopyArtifactRefsTx(tx *sql.Tx, fromRunID, toRunID string, at time.Time) (int, error) {
+// It stays unexported because the caller it waits for lives in this
+// package; until #10 lands, only the tests call it. Do not build a
+// parallel replay path around it.
+func copyArtifactRefsTx(tx *sql.Tx, fromRunID, toRunID string, at time.Time) (int, error) {
 	rows, err := tx.Query(`SELECT step_name, name, uri, size_bytes, checksum, meta_json
 		FROM artifacts WHERE run_id = ? ORDER BY rowid`, fromRunID)
 	if err != nil {
