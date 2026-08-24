@@ -64,6 +64,7 @@ Codes stored on the runs table, one row per run.
 | `RUN_ORPHANED_RECONCILED` | found running with no process, reconciled | yes | - |
 | `RUN_POISONED` | crashed more often than allowed | yes | `crash_count`, `max_crash_count` |
 | `RUN_QUEUED_CONCURRENCY` | held back by a concurrency limit | no | `limit`, `scope` |
+| `RUN_REOPENED_OPERATOR` | reopened by an operator | yes | `only_step`, `forced` |
 | `RUN_SUCCEEDED` | every step succeeded | yes | - |
 | `RUN_TIMED_OUT` | over the run deadline | yes | `timeout_ms` |
 
@@ -81,6 +82,7 @@ Codes stored on the steps table, one row per step of a run.
 | `STEP_FAILED_TIMEOUT` | killed at the deadline | yes | `timeout_ms` |
 | `STEP_RETRIES_EXHAUSTED` | failed with no retries left | yes | `attempt`, `max_attempts` |
 | `STEP_RETRY_SCHEDULED` | failed, will retry | no | `attempt`, `backoff_ms`, `next_attempt_at` |
+| `STEP_SKIPPED_REPLAY_REUSED` | reused from the replayed run, not run again | yes | `replayed_from` |
 | `STEP_SKIPPED_UPSTREAM_FAILED` | a step it needs failed | yes | `upstream` |
 | `STEP_SKIPPED_UPSTREAM_SKIPPED` | an upstream step was itself skipped | yes | `upstream` |
 | `STEP_SUCCEEDED` | exited zero | yes | - |
@@ -479,6 +481,21 @@ What to do next:
 
 Promised reason_data keys: limit, scope.
 
+### RUN_REOPENED_OPERATOR
+
+reopened by an operator. [run level, ends the object]
+
+A run that had ended was deliberately opened again by a person typing runs
+retry. This is T14, the only way out of a terminal state: no automatic path
+can produce it, the actor on the event names who asked, and the fencing
+token moved so a writer from the closed attempt stays shut out.
+
+What to do next:
+- nothing to fix; the steps it reopened carry their own outcomes next
+- a reopen of a run whose outcome was unknown is a deliberate double effect risk; check crash_count first
+
+Promised reason_data keys: only_step, forced.
+
 ### RUN_SUCCEEDED
 
 every step succeeded. [run level, ends the object]
@@ -621,6 +638,20 @@ What to do next:
 - attempts climbing without progress means the retry budget is buying delay, not recovery
 
 Promised reason_data keys: attempt, backoff_ms, next_attempt_at.
+
+### STEP_SKIPPED_REPLAY_REUSED
+
+reused from the replayed run, not run again. [step level, ends the object]
+
+A replay materialised this step straight to succeeded because the run it
+replays already carried a succeeded step here. Nothing ran in this run; its
+rows are a reference to that work, and its artifacts are copied as
+references, never as content.
+
+What to do next:
+- follow the same step on the replayed run for the log and the real duration
+
+Promised reason_data keys: replayed_from.
 
 ### STEP_SKIPPED_UPSTREAM_FAILED
 
