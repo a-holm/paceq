@@ -207,6 +207,94 @@ VALUES (?, ?, ?, 'manual', 'queued', 0, ?, 1, 1)`,
 	return subject, nil
 }
 
+// InjectDoubleCompletedRunKey plants the exact row invariant AC-4 of issue
+// 20 exists for: two succeeded runs sharing one dedup key. The existing
+// duplicate key injection leaves the twin queued, which is a different
+// finding; this one completes both, so only a check that counts COMPLETED
+// runs per key can see it. It returns the shared key.
+func (s *Store) InjectDoubleCompletedRunKey(ctx context.Context) (string, error) {
+	var key string
+	err := s.withTx(ctx, func(tx *sql.Tx) error {
+		key = "planted-double-completed-run-key"
+		now := s.clk.Now().UTC().UnixMilli()
+		var (
+			baseID  string
+			job     string
+			version string
+		)
+		if err := tx.QueryRow(`SELECT id, job_name, job_version_id FROM runs
+ORDER BY created_at LIMIT 1`).Scan(&baseID, &job, &version); err != nil {
+			return fmt.Errorf("inject a double completed run key: %w", err)
+		}
+		stepsOf := func(runID string) error {
+			rows, err := tx.Query(`SELECT name, idx, max_attempts FROM steps WHERE run_id = ?`, baseID)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = rows.Close() }()
+			type seedStep struct {
+				name    string
+				idx     int
+				attempt int
+			}
+			var seeds []seedStep
+			for rows.Next() {
+				var st seedStep
+				if err := rows.Scan(&st.name, &st.idx, &st.attempt); err != nil {
+					_ = rows.Close()
+					return err
+				}
+				seeds = append(seeds, st)
+			}
+			if err := rows.Err(); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			if err := rows.Close(); err != nil {
+				return err
+			}
+			for _, st := range seeds {
+				if _, err := tx.Exec(`INSERT INTO steps (run_id, name, idx, state,
+max_attempts, attempt, reason_code, started_at, finished_at)
+VALUES (?, ?, ?, 'succeeded', ?, 1, 'STEP_SUCCEEDED', ?, ?)`,
+					runID, st.name, st.idx, st.attempt, now, now); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		for _, runID := range []string{baseID, baseID + "-twin"} {
+			// nolint:fencing: fault injection for the harness battery's
+			// negative proof, not engine state: the planted twins must
+			// exist unfenced so the checker can name them.
+			if _, err := tx.Exec(`UPDATE runs SET
+state = 'succeeded', reason_code = 'RUN_SUCCEEDED',
+started_at = ?, finished_at = ?, run_key = ?
+WHERE id = ?`, now, now, key, runID); err != nil {
+				return fmt.Errorf("inject a double completed run key: %w", err)
+			}
+			if runID == baseID+"-twin" {
+				continue // completed below from its own step rows
+			}
+			if _, err := tx.Exec(`INSERT INTO runs (id, job_name, job_version_id, origin,
+state, available_at, run_key, created_at, updated_at, started_at, finished_at,
+reason_code)
+VALUES (?, ?, ?, 'manual', 'succeeded', 0, ?, 1, 1, ?, ?, 'RUN_SUCCEEDED')`,
+				runID, job, version, key, now, now); err != nil {
+				return fmt.Errorf("inject a double completed run key: %w", err)
+			}
+			if err := stepsOf(runID); err != nil {
+				return fmt.Errorf("inject a double completed run key: %w", err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return key, nil
+}
+
 // InjectDependencyCycle plants I9: two steps of one run pointing at each
 // other, so no order of execution can ever be legal. Like the duplicate run
 // key, nothing in the schema forbids it; only the health check can see it.

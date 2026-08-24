@@ -65,7 +65,7 @@ func runRow(t *testing.T, sc Scenario) {
 			sc.describe(), finalState, sc.allowedFinalStates())
 	}
 
-	requireEffects(t, sc, readEffects(t, ws.EffectFile))
+	requireEffects(t, sc, expectedEffectKeys(sc, finalRunID), readEffects(t, ws.EffectFile))
 	requireEventStory(t, ctx, s, sc, finalRunID)
 
 	requireIntegrity(t, ctx, s, "after convergence")
@@ -227,27 +227,59 @@ func requireNoAbandonedChains(t *testing.T, ctx context.Context, s *store.Store,
 	}
 }
 
-// requireEffects holds the count to its bound and checks the attribution: all
-// lines share one idempotency key, and no two lines claim the same attempt.
-func requireEffects(t *testing.T, sc Scenario, effects []effect) {
+// requireEffects holds the count to its bound and checks the attribution: on
+// a single-step row all lines share one idempotency key and no two lines
+// claim the same attempt; on a DAG row every step's own documented key must
+// appear, nothing else may, and each key's lines sit inside the row's
+// per-step bound.
+func requireEffects(t *testing.T, sc Scenario, wantKeys map[string]string, effects []effect) {
 	t.Helper()
 
 	if len(effects) < sc.MinEffects || len(effects) > sc.MaxEffects {
 		t.Fatalf("%s: %d effects landed, want between %d and %d (lines: %v)",
 			sc.describe(), len(effects), sc.MinEffects, sc.MaxEffects, effects)
 	}
-	keys := map[string]bool{}
-	attempts := map[int]bool{}
+	counts := map[string]int{}
+	attempts := map[string]bool{}
 	for _, e := range effects {
-		keys[e.Key] = true
-		if attempts[e.Attempt] {
-			t.Errorf("%s: two effect lines claim attempt %d", sc.describe(), e.Attempt)
+		counts[e.Key]++
+		pair := e.Key + "\x00" + strconv.Itoa(e.Attempt)
+		if attempts[pair] {
+			t.Errorf("%s: two effect lines claim attempt %d under one key",
+				sc.describe(), e.Attempt)
 		}
-		attempts[e.Attempt] = true
+		attempts[pair] = true
 	}
-	if len(keys) != 1 {
-		t.Errorf("%s: effect lines carry %d idempotency keys, want exactly one",
-			sc.describe(), len(keys))
+
+	if len(wantKeys) == 0 {
+		if len(counts) != 1 {
+			t.Errorf("%s: effect lines carry %d idempotency keys, want exactly one",
+				sc.describe(), len(counts))
+		}
+		return
+	}
+
+	floor := sc.StepMinEffects
+	if floor == 0 {
+		floor = 1
+	}
+	ceiling := sc.StepMaxEffects
+	for key, step := range wantKeys {
+		n := counts[key]
+		if n < floor || (ceiling > 0 && n > ceiling) {
+			t.Errorf("%s: step %s landed %d effects, want between %d and %d",
+				sc.describe(), step, n, floor, ceiling)
+		}
+	}
+	if len(counts) != len(wantKeys) {
+		unexpected := make([]string, 0)
+		for key := range counts {
+			if _, ok := wantKeys[key]; !ok {
+				unexpected = append(unexpected, key)
+			}
+		}
+		t.Errorf("%s: effect keys cover %d of %d steps (unexpected keys: %v)",
+			sc.describe(), len(counts), len(wantKeys), unexpected)
 	}
 }
 
@@ -336,7 +368,7 @@ func TestCrashInsideRecovery(t *testing.T) {
 	if finalState != "succeeded" {
 		t.Fatalf("the restart after the killed recovery ended %q, want succeeded", finalState)
 	}
-	requireEffects(t, sc, readEffects(t, ws.EffectFile))
+	requireEffects(t, sc, expectedEffectKeys(sc, runID), readEffects(t, ws.EffectFile))
 	requireEventStory(t, ctx, s, sc, runID)
 	requireFsckClean(t, ctx, s, "after the restart")
 }
@@ -436,29 +468,52 @@ func TestChildProcess(t *testing.T) {
 	fmt.Printf("PACEQ-DONE %s\n", state)
 }
 
-// applyJob records the frozen job version a scenario runs. One step, whose
-// whole effect is one line in the workspace's effect file; the drip variant
-// keeps attempt 1 alive so an under-exec kill lands inside execution.
+// applyJob records the frozen job version a scenario runs. A single-step row
+// freezes the one-step job; a DAG row freezes its Steps in order, every step
+// appending to the same effect file so one count covers the whole run. The
+// drip variant keeps attempt 1 alive so an under-exec kill lands inside
+// execution.
 func applyJob(t *testing.T, s *store.Store, sc Scenario, appendBin, effectFile string) {
 	t.Helper()
 
-	mode := "append"
-	if sc.WaitsForOrphan {
-		mode = "first-drip"
-	}
 	quote := func(s string) string { return strconv.Quote(s) }
-	step := fmt.Sprintf(`{"name":"only","run":[%s,%s,%s],"shell":false`,
-		quote(appendBin), quote(mode), quote(effectFile))
-	if sc.RetryMax > 0 {
-		step += fmt.Sprintf(`,"retry":{"max":%d}`, sc.RetryMax)
+	runArg := fmt.Sprintf(`[%s,%s,%s]`, quote(appendBin), quote("append"), quote(effectFile))
+
+	var steps []string
+	if len(sc.Steps) > 0 {
+		for _, st := range sc.Steps {
+			step := fmt.Sprintf(`{"name":%q`, st.Name)
+			if len(st.Needs) > 0 {
+				names := make([]string, len(st.Needs))
+				for i, n := range st.Needs {
+					names[i] = quote(n)
+				}
+				step += fmt.Sprintf(`,"needs":[%s]`, strings.Join(names, ","))
+			}
+			step += `,"run":` + runArg
+			if st.RetryMax > 0 {
+				step += fmt.Sprintf(`,"retry":{"max":%d}`, st.RetryMax)
+			}
+			steps = append(steps, step+"}")
+		}
+	} else {
+		mode := "append"
+		if sc.WaitsForOrphan {
+			mode = "first-drip"
+		}
+		step := fmt.Sprintf(`{"name":"only","run":[%s,%s,%s]`,
+			quote(appendBin), quote(mode), quote(effectFile))
+		if sc.RetryMax > 0 {
+			step += fmt.Sprintf(`,"retry":{"max":%d}`, sc.RetryMax)
+		}
+		steps = append(steps, step+"}")
 	}
-	step += "}"
 	// The ceiling is generous on purpose (#68): these rows probe crash
 	// windows of the tick chain and of execution, not admission control,
 	// and the manual run this child seeds must not stand the tick row's
 	// fire-time down before its window is ever reached.
 	spec := fmt.Sprintf(`{"schema":"paceq.job.v1","name":%q,"max_concurrent":200,`+
-		`"timeout_ms":60000,"steps":[%s]}`, jobName, step)
+		`"timeout_ms":60000,"steps":[%s]}`, jobName, strings.Join(steps, ","))
 
 	if _, _, err := s.UpsertJobVersion(context.Background(), store.JobVersionInput{
 		JobName:  jobName,

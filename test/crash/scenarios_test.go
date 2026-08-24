@@ -2,6 +2,8 @@ package crash
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"testing"
 	"time"
@@ -68,6 +70,29 @@ type Scenario struct {
 	// harness requires the finding to be exactly the predicted one before
 	// recovery, and none at all after.
 	TransientFindings []string
+
+	// Steps, when non-empty, makes the row a DAG row: applyJob freezes
+	// exactly these steps, in this order, instead of the single-step job.
+	// Kind stays execute: recovery and convergence are the same code for
+	// one step and for many, and the crash points sit in that shared code.
+	Steps []dagStep
+
+	// StepMinEffects and StepMaxEffects bound each step's OWN effect count
+	// on a DAG row, checked per idempotency key. Zero StepMinEffects means
+	// one; zero StepMaxEffects means no per-step ceiling beyond the total.
+	StepMinEffects int
+	StepMaxEffects int
+}
+
+// dagStep is one step of a DAG row's frozen spec: its name, the steps it
+// needs, and whether it carries a retry budget. A crashed attempt is handed
+// back to the step's own policy, so the step a kill catches mid-flight
+// carries RetryMax 1: the row then proves bounded duplication instead of a
+// terminal failure.
+type dagStep struct {
+	Name     string
+	Needs    []string
+	RetryMax int
 }
 
 // Crash points, named after the window they sit in so a failing row names
@@ -91,6 +116,13 @@ const (
 	tickAfterTick    = "M2:tick:after_tick_before_run"
 	tickAfterRun     = "M2:tick:after_run_before_progress"
 	tickAfterCommit  = "M2:tick:after_commit"
+
+	// The DAG-era windows (#20). Same machinery, wider graph: the point
+	// names are frozen by the issue, so a row, its output and the seam in
+	// the engine all spell the window identically.
+	w4ClaimExec      = "W4:etter_steg_claim_for_exec"
+	w8BarnExit       = "W8:etter_barn_exit_for_commit"
+	w9ResultNextStep = "W9:etter_resultat_for_neste_steg"
 )
 
 func succeeded() []string { return []string{"succeeded"} }
@@ -258,6 +290,85 @@ var scenarios = []Scenario{
 		MinEffects: 2, MaxEffects: 2,
 		ExpectRequeue: true, ExpectExecutorLost: true,
 	},
+
+	// The fan-out rows (#20): one diamond, extract → transform →
+	// {whs, cache} → notify, killed at each DAG-era window. The engine
+	// admits steps in spec order, so extract is always the step under the
+	// knife; it carries the retry budget and every other step runs once.
+	//
+	// W4 kills between the committed claim and the spawn: the command never
+	// ran, so recovery loses nothing and the second attempt is the first
+	// effect. Five lines, one per step.
+	{
+		Name: "fanout_claim_w4", KillAt: w4ClaimExec, Kind: "execute",
+		Steps:      diamond("extract"),
+		MinEffects: 5, MaxEffects: 5,
+		StepMinEffects: 1, StepMaxEffects: 1,
+		ExpectRequeue: true, ExpectExecutorLost: true,
+	},
+	// W8 kills after the child exited and its effect landed, before the
+	// verdict transaction: the window whose whole cost is exactly one
+	// repeated effect. Extract's key carries two lines (attempts 1 and 2),
+	// every other key exactly one: six in all.
+	{
+		Name: "fanout_barn_exit_w8", KillAt: w8BarnExit, Kind: "execute",
+		Steps:      diamond("extract"),
+		MinEffects: 6, MaxEffects: 6,
+		StepMinEffects: 1, StepMaxEffects: 2,
+		ExpectRequeue: true, ExpectExecutorLost: true,
+	},
+	// W9 kills after extract's verdict committed but before transform was
+	// claimed. Nothing was ever lost: no attempt is closed, no effect is
+	// repeated, and the restart simply continues down the diamond. The
+	// requeue is still owed, because the crash caught the run running.
+	{
+		Name: "fanout_result_w9", KillAt: w9ResultNextStep, Kind: "execute",
+		Steps:      diamond(""),
+		MinEffects: 5, MaxEffects: 5,
+		StepMinEffects: 1, StepMaxEffects: 1,
+		ExpectRequeue: true,
+	},
+}
+
+// diamond is the fan-out shape of issue #20's matrix: two parallel branches
+// under transform, joined again by notify. retryStep names the one step that
+// carries a retry budget, because that is the step whose attempt the kill
+// catches; empty means none does.
+func diamond(retryStep string) []dagStep {
+	steps := []dagStep{
+		{Name: "extract"},
+		{Name: "transform", Needs: []string{"extract"}},
+		{Name: "whs", Needs: []string{"transform"}},
+		{Name: "cache", Needs: []string{"transform"}},
+		{Name: "notify", Needs: []string{"whs", "cache"}},
+	}
+	for i := range steps {
+		if steps[i].Name == retryStep {
+			steps[i].RetryMax = 1
+		}
+	}
+	return steps
+}
+
+// effectKey is the runner's documented context contract (internal/runner/doc.go):
+// sha256 of run id and step name, first 32 hex characters. Recomputing it here
+// ties every effect line to its step by name instead of by guesswork.
+func effectKey(runID, step string) string {
+	sum := sha256.Sum256([]byte(runID + ":" + step))
+	return hex.EncodeToString(sum[:])[:32]
+}
+
+// expectedEffectKeys maps each DAG row step's key to its name. A single-step
+// row returns nil: its legacy one-key rule does not need the run id.
+func expectedEffectKeys(sc Scenario, runID string) map[string]string {
+	if len(sc.Steps) == 0 || runID == "" {
+		return nil
+	}
+	out := make(map[string]string, len(sc.Steps))
+	for _, st := range sc.Steps {
+		out[effectKey(runID, st.Name)] = st.Name
+	}
+	return out
 }
 
 // control is the no-crash row: the same child recipe with nothing armed. It
