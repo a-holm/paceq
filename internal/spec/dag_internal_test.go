@@ -233,6 +233,43 @@ steps:
 	}
 }
 
+// TestDuplicateNeedsCollapseToTheirFirstMention pins first-wins dedup across
+// one step's needs list: a name said twice means one edge, in the position of
+// its first mention. Without the dedup, duplicates flow into step_deps as
+// extra edges and inflate the fan-out count, and no shipped test noticed.
+func TestDuplicateNeedsCollapseToTheirFirstMention(t *testing.T) {
+	job, diags := spec.Parse("dup.yaml", []byte(`
+name: report
+steps:
+  - name: extract
+    run: ["/bin/extract"]
+  - name: transform
+    run: ["/bin/transform"]
+  - name: load
+    run: ["/bin/load"]
+    needs: [transform, extract, transform]
+`))
+	if diags.HasErrors() {
+		t.Fatalf("duplicate needs were refused instead of collapsed:\n%s", renderDiagnostics(t, diags))
+	}
+	var got []string
+	for _, step := range job.Steps {
+		if step.Name == "load" {
+			got = step.Needs
+			break
+		}
+	}
+	want := []string{"transform", "extract"}
+	if len(got) != len(want) {
+		t.Fatalf("needs = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("needs[%d] = %q, want %q (first mention wins)", i, got[i], want[i])
+		}
+	}
+}
+
 // TestMaxParallelBounds pins the acceptance criterion on the field that
 // becomes the per-run semaphore: 1 is the floor, MaxParallelHi is the ceiling,
 // and anything outside is refused at the door with its own code.
