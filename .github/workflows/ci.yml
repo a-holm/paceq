@@ -67,6 +67,14 @@ jobs:
       - name: go test -race
         run: make test
 
+      # The sensor-cursor property test (issue #16) is a model-based crash sweep
+      # over a real SQLite file. It runs under -race here with a bounded seed and
+      # action count so it finishes deterministically in CI time. It is deliberately
+      # a separate step from `go test -race` above, which would pay the race
+      # detector's cost on a many-minute sweep. ~45 s of runner time.
+      - name: sensor cursor property test
+        run: make property
+
       # The gate runs without the race detector: it is where the throughput
       # floor is asserted, and a number measured under the detector would only
       # describe the detector. Roughly 15 s of runner time.
