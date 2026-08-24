@@ -37,7 +37,7 @@ export GOFLAGS += -buildvcs=false
 # Platforms cross built and asserted cgo free on every pull request.
 CROSS_TARGETS := linux/amd64 linux/arm64 darwin/arm64
 
-.PHONY: all build test gate bench fuzz fmt fmt-check vet staticcheck lint gosec govulncheck \
+.PHONY: all build test property gate bench fuzz fmt fmt-check vet staticcheck lint gosec govulncheck \
 	tidy-check cross test-scratch sensors-examples ci fixture-change hooks clean
 
 all: build
@@ -62,6 +62,16 @@ test:
 gate:
 	$(GO) test ./internal/store -run 'TestConcurrentWriters|TestWALRecoveryUnderKill|TestLoadHarness' -count=1 -v
 	$(GO) test ./internal/spec -run 'TestParsingAHundredFilesStaysUnderTheBudget' -count=1 -v
+
+# The sensor-cursor property test (issue #16) is a model-based crash sweep over a
+# real SQLite file. It runs here, under the race detector, with a bounded seed and
+# action count so it finishes deterministically in CI time. It is deliberately a
+# separate step rather than part of the `test` suite above: the race detector
+# multiplies the cost of every one of its transactions (a full 100-seed sweep is
+# many minutes under -race), so folding it in would drag every PR. Every PR still
+# gets it, just through this step; raise -prop.seeds for a deeper sweep.
+property:
+	CGO_ENABLED=1 $(GO) test -race -tags rapid ./internal/store -run TestSensorCursorProperties -count=1 -prop.seeds=10 -prop.actions=10
 
 # The parser gate. A job file is untrusted input, so the fuzz targets run on
 # every pull request rather than nightly only. -count=1 is required with -fuzz
@@ -164,7 +174,7 @@ sensors-examples:
 fixture-change:
 	scripts/check-fixture-change.sh origin/main HEAD
 
-ci: fmt-check vet staticcheck gosec govulncheck tidy-check test gate fuzz build test-scratch sensors-examples cross
+ci: fmt-check vet staticcheck gosec govulncheck tidy-check test property gate fuzz build test-scratch sensors-examples cross
 
 hooks:
 	git config core.hooksPath .githooks
