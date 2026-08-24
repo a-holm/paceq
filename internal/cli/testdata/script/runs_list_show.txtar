@@ -91,12 +91,14 @@ steps:
 -- expected_show.json --
 {
   "run": {
+    "available_at": "2026-09-24T09:10:00Z",
     "created_at": "2026-09-24T09:10:00Z",
     "finished_at": "2026-09-24T09:10:00Z",
     "id": "<RUN1>",
     "job": "nightly",
     "origin": "manual",
     "reason_code": "RUN_SUCCEEDED",
+    "reason_data": "{}",
     "started_at": "2026-09-24T09:10:00Z",
     "state": "succeeded",
     "steps": [
