@@ -19,6 +19,7 @@ import (
 	"github.com/rogpeppe/go-internal/testscript"
 	"github.com/rogpeppe/go-internal/txtar"
 
+	"github.com/a-holm/paceq/internal/clock"
 	"github.com/a-holm/paceq/internal/store"
 )
 
@@ -661,6 +662,106 @@ func cmdPlantRun(ts *testscript.TestScript, neg bool, args []string) {
 		}
 	}
 	ts.Logf("planted a broken event chain on run %s", queued.Run.ID)
+}
+
+// cmdPlantSensor seeds one sensor row directly into the state database, so a
+// golden script can exercise the sensors CLI before the apply path that
+// materialises rows in the same base. The row carries the M3 exec contract
+// object so sensorSpecFromRow can read its argv.
+//
+//	plantsensor finder polling-job '["/bin/echo","hi"]' [paused]
+func cmdPlantSensor(ts *testscript.TestScript, neg bool, args []string) {
+	if neg || len(args) < 3 {
+		ts.Fatalf("usage: plantsensor NAME JOB EXECJSON [PAUSED]")
+	}
+	ctx := context.Background()
+	dbPath := filepath.Join(workDirOf(ts), stateDirName, store.DatabaseFileName)
+	s, err := store.Open(ctx, dbPath, store.Options{Clock: plantClock(ts)})
+	if err != nil {
+		ts.Fatalf("could not open the state to plant a sensor: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	name, job, execJSON := args[0], args[1], args[2]
+	paused := len(args) > 3 && args[3] == "paused"
+	// The sensors table references jobs; plant the job row first so the FK
+	// holds. A re-seed with the same job is a no-op upsert.
+	if _, _, err := s.UpsertJobVersion(ctx, store.JobVersionInput{
+		JobName:       job,
+		SpecHash:      "sha256:planted",
+		SpecJSON:      `{"schema":"paceq.job.v1","name":"` + job + `","steps":[{"name":"collect","run":["true"]}]}`,
+		MaxConcurrent: 10,
+	}); err != nil {
+		ts.Fatalf("could not plant job %s: %v", job, err)
+	}
+	if err := s.UpsertSensor(ctx, store.SensorSeedInput{
+		Name: name, JobName: job, ExecJSON: execJSON, Paused: paused,
+	}); err != nil {
+		ts.Fatalf("could not plant sensor %s: %v", name, err)
+	}
+	ts.Logf("planted sensor %s on job %s", name, job)
+}
+
+// plantClock returns the fake clock a script runs on, so rows a plant helper
+// writes carry the same deterministic stamps the paceq process sees. The
+// default matches harnessClock; an explicit PULSEQ_FAKE_CLOCK wins.
+func plantClock(ts *testscript.TestScript) clock.Clock {
+	value := ts.Getenv("PULSEQ_FAKE_CLOCK")
+	if value == "" {
+		value = fakeClockDefault
+	}
+	stamp, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		ts.Fatalf("PULSEQ_FAKE_CLOCK %q is not RFC3339: %v", value, err)
+	}
+	return clock.NewFake(stamp)
+}
+
+// cmdPlantSensorTick commits one sensor tick on a planted sensor, so a golden
+// script can give `sensors show` a history to render.
+//
+//	plantsensortick finder
+func cmdPlantSensorTick(ts *testscript.TestScript, neg bool, args []string) {
+	if neg || len(args) != 1 {
+		ts.Fatalf("usage: plantsensortick SENSOR")
+	}
+	ctx := context.Background()
+	dbPath := filepath.Join(workDirOf(ts), stateDirName, store.DatabaseFileName)
+	s, err := store.Open(ctx, dbPath, store.Options{Clock: plantClock(ts)})
+	if err != nil {
+		ts.Fatalf("could not open the state to plant a sensor tick: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	// The commit transaction needs the sensor's current job to materialise the
+	// run; read it from the row rather than assuming a name.
+	sum, err := s.GetSensor(ctx, args[0])
+	if err != nil {
+		ts.Fatalf("could not read the job of sensor %s: %v", args[0], err)
+	}
+	job := sum.JobName
+
+	begin, err := s.BeginSensorTick(ctx, store.BeginSensorTickInput{
+		SensorName: args[0], CursorBefore: "a",
+	})
+	if err != nil {
+		ts.Fatalf("could not begin a sensor tick: %v", err)
+	}
+	if _, err := s.CommitSensorTick(ctx, store.SensorTickCommitInput{
+		TickID:        begin.TickID,
+		SensorName:    args[0],
+		JobName:       job,
+		CursorVersion: begin.CursorVersion,
+		CursorAfter:   "b",
+		DedupEpoch:    0,
+		Triggers:      []store.SensorTrigger{{RunKey: "file:1"}},
+		Outcome:       store.OutcomeTriggered,
+		NextEvalAt:    60000,
+		DurationMs:    5,
+	}); err != nil {
+		ts.Fatalf("could not commit a sensor tick: %v", err)
+	}
+	ts.Logf("planted one triggered tick on %s", args[0])
 }
 
 // harnessMu guards harnessValues. testscript runs every script as its own
