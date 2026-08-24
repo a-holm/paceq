@@ -18,11 +18,20 @@ import (
 // stateUpdatePattern matches the writes that move a run or a step between
 // states. Every one of them has to live beside the machine calls that decide
 // them, so no caller can change what a run or a step is without walking
-// through the transition layer. Two files carry that duty: transitions.go,
-// which owns the state machine's own moves, and runlease.go (#60), which owns
-// the lease moves the machine is fed through (claim, renewal, reap, drain).
-// Both route their decisions through internal/model; neither takes callers'
-// words for a new state. A third file matching the pattern is a defect.
+// through the transition layer. Three files carry that duty: transitions.go,
+// which owns the state machine's own moves, runlease.go (#60), which owns the
+// lease moves the machine is fed through (claim, renewal, reap, drain), and
+// claim.go (M4-02), which owns the atomic step reservation. The first two
+// route their decisions through internal/model; neither takes callers' words
+// for a new state.
+//
+// claim.go is the one deliberate exception to the machine rule, and it is the
+// point of M4-02: the claim predicate has to flip the step to running in the
+// same UPDATE that admits it, or the decision and the reservation split into
+// a read-then-write window (07 section 4.1). The machine's EvStepStarted is
+// the sequential path; the claim cannot consult it without reopening that
+// window. The event the claim writes is the same shape the machine would
+// have emitted. A fourth file matching the pattern is a defect.
 var stateUpdatePattern = regexp.MustCompile(`UPDATE\s+(runs|steps)\b`)
 
 // transitionFiles are the only files in the module allowed to match it.
@@ -34,6 +43,7 @@ var transitionFiles = map[string]bool{
 	"internal/store/transitions.go": true,
 	"internal/store/runlease.go":    true,
 	"internal/store/inject.go":      true,
+	"internal/store/claim.go":       true,
 }
 
 func TestStateUpdatesStayInTheTransitionLayer(t *testing.T) {
