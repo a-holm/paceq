@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/a-holm/paceq/internal/id"
+	"github.com/a-holm/paceq/internal/reason"
 	"github.com/a-holm/paceq/internal/store"
 )
 
@@ -97,6 +98,23 @@ func runRunsRetry(ctx context.Context, env Env, g *globals, out *ui, runArg stri
 		return internalError("could not close the read only store", closeErr)
 	}
 
+	// The unknown outcome veto (AC-10, 02 R14). A run an executor died
+	// holding may already have done part of its work: rerunning those
+	// steps can do it twice. The command says exactly which evidence it
+	// saw, refuses, and goes on only for an operator who passed --force.
+	// The check sits before both write paths, so the same refusal comes
+	// back whether the reopen travels through the daemon or not.
+	if facts := unknownOutcomeFacts(detail); len(facts) > 0 && !f.force {
+		return validationError(
+			"the last attempt of this run has an outcome nobody recorded; --force is required to retry it",
+			nil,
+			append(facts,
+				"rerunning a step whose outcome was never written may repeat its work",
+				"pass --force if that double effect is accepted",
+			)...,
+		)
+	}
+
 	opts := store.ReopenOpts{Forced: f.force}
 	if f.step != "" {
 		opts.OnlyStep = &f.step
@@ -122,6 +140,26 @@ func runRunsRetry(ctx context.Context, env Env, g *globals, out *ui, runArg stri
 		out.symbols.ok, result.RunID, result.NewEpoch)
 	out.print("  pending once more: %s", strings.Join(result.Reopened, ", "))
 	return nil
+}
+
+// unknownOutcomeFacts collects the evidence that a run's finished attempt
+// cannot be assumed clean: executors died holding it (crash_count), or a
+// step's verdict was lost with its executor and never written. Empty means
+// every outcome on record was reported by a process that lived to see the
+// end of its work, so a plain retry carries no double effect risk.
+func unknownOutcomeFacts(detail store.RunDetail) []string {
+	var facts []string
+	if detail.CrashCount > 0 {
+		facts = append(facts, fmt.Sprintf("crash_count is %d: an executor died holding this run",
+			detail.CrashCount))
+	}
+	for _, step := range detail.Steps {
+		if step.ReasonCode == string(reason.STEPFailedExecutorLost) {
+			facts = append(facts, fmt.Sprintf("step %s ended %s with its verdict lost (%s)",
+				step.Name, step.State, reason.STEPFailedExecutorLost))
+		}
+	}
+	return facts
 }
 
 // retryRunOnce performs the reopen on one of the two write paths. When a

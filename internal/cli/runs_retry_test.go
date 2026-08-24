@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/a-holm/paceq/internal/clock"
 	"github.com/a-holm/paceq/internal/reason"
 	"github.com/a-holm/paceq/internal/store"
 )
@@ -38,25 +39,33 @@ func retryTestProject(t *testing.T) (string, *store.Store) {
 	return dir, s
 }
 
+// retryChainSpecJSON is the five step chain every CLI retry test runs on:
+// a -> b -> c -> d -> e.
+const retryChainSpecJSON = `{"name":"retrycli","max_concurrent":1,"timeout_ms":3600000,` +
+	`"schema":"paceq.job.v1","steps":[` +
+	`{"name":"a","run":["/bin/true"],"shell":false},` +
+	`{"name":"b","needs":["a"],"run":["/bin/true"],"shell":false},` +
+	`{"name":"c","needs":["b"],"run":["/bin/true"],"shell":false},` +
+	`{"name":"d","needs":["c"],"run":["/bin/true"],"shell":false},` +
+	`{"name":"e","needs":["d"],"run":["/bin/true"],"shell":false}]}`
+
+func recordRetryChainJob(t *testing.T, s *store.Store) {
+	t.Helper()
+	if _, _, err := s.UpsertJobVersion(context.Background(), store.JobVersionInput{
+		JobName:  "retrycli",
+		SpecHash: "sha256:retrycli",
+		SpecJSON: retryChainSpecJSON,
+	}); err != nil {
+		t.Fatalf("record the job: %v", err)
+	}
+}
+
 // plantFailedChain records a five step job, runs it once with step c dying,
 // and returns the failed run's id. Steps d and e end skipped behind it.
 func plantFailedChain(t *testing.T, s *store.Store) string {
 	t.Helper()
 	ctx := context.Background()
-	const spec = `{"name":"retrycli","max_concurrent":1,"timeout_ms":3600000,` +
-		`"schema":"paceq.job.v1","steps":[` +
-		`{"name":"a","run":["/bin/true"],"shell":false},` +
-		`{"name":"b","needs":["a"],"run":["/bin/true"],"shell":false},` +
-		`{"name":"c","needs":["b"],"run":["/bin/true"],"shell":false},` +
-		`{"name":"d","needs":["c"],"run":["/bin/true"],"shell":false},` +
-		`{"name":"e","needs":["d"],"run":["/bin/true"],"shell":false}]}`
-	if _, _, err := s.UpsertJobVersion(ctx, store.JobVersionInput{
-		JobName:  "retrycli",
-		SpecHash: "sha256:retrycli",
-		SpecJSON: spec,
-	}); err != nil {
-		t.Fatalf("record the job: %v", err)
-	}
+	recordRetryChainJob(t, s)
 	queued, err := s.MaterializeManualTrigger(ctx, store.ManualTriggerInput{JobName: "retrycli"})
 	if err != nil {
 		t.Fatalf("queue the run: %v", err)
@@ -197,6 +206,156 @@ func TestRunsRetryWithStepReopensOnlyTheClosure(t *testing.T) {
 	}
 	if len(doc.Reopened) != 2 || doc.Reopened[0] != "d" || doc.Reopened[1] != "e" {
 		t.Errorf("reopened = %v, want exactly [d e]", doc.Reopened)
+	}
+}
+
+// unknownOutcomeProject makes one paceq project whose store runs on a clock
+// the test moves, so a reaped run's requeue backoff can pass between two
+// statements instead of being slept through.
+func unknownOutcomeProject(t *testing.T) (string, *store.Store, *clock.Fake) {
+	t.Helper()
+	dir := t.TempDir()
+	if res := runCLI(t, dir, nil, "init"); res.code != ExitOK {
+		t.Fatalf("paceq init exited %d:\n%s%s", res.code, res.stdout, res.stderr)
+	}
+	clk := clock.NewFake(time.Now())
+	path := filepath.Join(dir, stateDirName, store.DatabaseFileName)
+	s, err := store.Open(context.Background(), path, store.Options{Clock: clk})
+	if err != nil {
+		t.Fatalf("open %s: %v", path, err)
+	}
+	if err := s.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	return dir, s, clk
+}
+
+// plantUnknownOutcomeRun queues a second run of the same job whose executor
+// dies mid flight on step a. The reaper closes the lost attempt (crash_count
+// 1, a's verdict lost with its executor), the run tries once more the normal
+// way after its backoff, and c's ordinary failure ends it. What is left is
+// exactly the run AC-10 guards: a terminal failure that carries an unknown
+// outcome nobody can rule out.
+func plantUnknownOutcomeRun(t *testing.T, s *store.Store, clk *clock.Fake) string {
+	t.Helper()
+	ctx := context.Background()
+	recordRetryChainJob(t, s)
+	queued, err := s.MaterializeManualTrigger(ctx, store.ManualTriggerInput{JobName: "retrycli"})
+	if err != nil {
+		t.Fatalf("queue the run: %v", err)
+	}
+	runID := queued.Run.ID
+
+	// Generation one: claimed, mid flight on a, executor dies, reaped.
+	if _, _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: "reaped:test", TTL: time.Hour}); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := s.StartStep(ctx, runID, "a", store.LeaseRef{Owner: "reaped:test", Epoch: 1}); err != nil {
+		t.Fatalf("start a: %v", err)
+	}
+	reaped, err := s.ReapExpiredRuns(ctx, store.ReapOptions{IgnoreLease: true})
+	if err != nil {
+		t.Fatalf("reap: %v", err)
+	}
+	if len(reaped) != 1 || reaped[0].CrashCount != 1 {
+		t.Fatalf("the reaper did not count the loss: %+v", reaped)
+	}
+
+	// Generation two: the ordinary way down, so the only unusual thing
+	// left about this run is the death it already had. The backoff a
+	// reaped run waits out passes on the clock the test holds.
+	clk.Advance(2 * store.DefaultRequeueBackoff)
+	_, epoch, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: "cli:test", TTL: time.Hour})
+	if err != nil {
+		t.Fatalf("reclaim: %v", err)
+	}
+	ref := store.LeaseRef{Owner: "cli:test", Epoch: epoch}
+	if err := s.StartStep(ctx, runID, "b", ref); err != nil {
+		t.Fatalf("start b: %v", err)
+	}
+	if err := s.RecordStepOutcome(ctx, runID, "b", store.StepOutcome{
+		Event: "step_succeeded", ReasonCode: reason.STEPSucceeded,
+		ExitCode: new(int), FinishedAt: time.Now(),
+	}, ref); err != nil {
+		t.Fatalf("record b: %v", err)
+	}
+	if err := s.StartStep(ctx, runID, "c", ref); err != nil {
+		t.Fatalf("start c: %v", err)
+	}
+	if err := s.RecordStepOutcome(ctx, runID, "c", store.StepOutcome{
+		Event: "step_failed", ReasonCode: reason.STEPFailedNonzeroExit,
+		ExitCode: new(int), FinishedAt: time.Now(),
+	}, ref); err != nil {
+		t.Fatalf("record c: %v", err)
+	}
+	if _, err := s.FinishRun(ctx, runID, ref, store.FinishReason{
+		Code: reason.RUNFailedStep, Data: `{"step":"c"}`,
+	}); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+
+	detail, err := s.GetRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if detail.State != "failed" || detail.CrashCount != 1 {
+		t.Fatalf("planted run is %s with crash_count %d, want failed with 1",
+			detail.State, detail.CrashCount)
+	}
+	for _, step := range detail.Steps {
+		if step.Name == "a" && step.ReasonCode != string(reason.STEPFailedExecutorLost) {
+			t.Fatalf("step a carries %q, want the lost verdict", step.ReasonCode)
+		}
+	}
+	return runID
+}
+
+// TestRunsRetryWarnsOnAnUnknownOutcome is AC-10: a run whose executor died
+// mid flight carries an unknown outcome, so the plain command refuses with
+// the facts and only --force gets past the warning. The refusal must leave
+// the run exactly as it was; nothing reopens behind the operator's back.
+func TestRunsRetryWarnsOnAnUnknownOutcome(t *testing.T) {
+	dir, s, clk := unknownOutcomeProject(t)
+	runID := plantUnknownOutcomeRun(t, s, clk)
+
+	got := runCLI(t, dir, nil, "runs", "retry", runID)
+
+	if got.code != ExitValidation {
+		t.Fatalf("retrying an unknown outcome without --force exited %d, want %d\nstdout:\n%s\nstderr:\n%s",
+			got.code, ExitValidation, got.stdout, got.stderr)
+	}
+	for _, want := range []string{"--force", "STEP_FAILED_EXECUTOR_LOST"} {
+		if !strings.Contains(got.stderr, want) {
+			t.Errorf("the refusal does not mention %q:\n%s", want, got.stderr)
+		}
+	}
+	detail, err := s.GetRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if detail.State != "failed" {
+		t.Errorf("the refused retry moved the run to %s, want it left failed", detail.State)
+	}
+
+	forced := runCLI(t, dir, nil, "runs", "retry", runID, "--force", "-o", "json")
+	if forced.code != ExitOK {
+		t.Fatalf("retry --force exited %d, want %d\nstderr:\n%s", forced.code, ExitOK, forced.stderr)
+	}
+	var doc struct {
+		RunID    string   `json:"run_id"`
+		NewEpoch int64    `json:"new_epoch"`
+		Reopened []string `json:"reopened"`
+	}
+	if err := json.Unmarshal([]byte(forced.stdout), &doc); err != nil {
+		t.Fatalf("the forced answer is not the retry record:\n%s\n%v", forced.stdout, err)
+	}
+	if doc.RunID != runID {
+		t.Errorf("forced reopen named %s, want %s", doc.RunID, runID)
+	}
+	if len(doc.Reopened) != 4 || doc.Reopened[0] != "a" || doc.Reopened[1] != "c" ||
+		doc.Reopened[2] != "d" || doc.Reopened[3] != "e" {
+		t.Errorf("reopened = %v, want exactly [a c d e]: b succeeded and stays", doc.Reopened)
 	}
 }
 
