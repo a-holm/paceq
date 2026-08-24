@@ -1,0 +1,106 @@
+# sensors list and show read straight from the database, so they work with the
+# daemon down. list gives every sensor with its state; show gives one sensor
+# whole with its recent ticks.
+
+exec paceq init
+plantsensor dropzone polling-job '["/bin/echo","dropzone"]'
+plantsensor watcher polling-job '["/bin/echo","watcher"]' paused
+plantsensortick dropzone
+
+# A human at a terminal gets the same facts as a table.
+exec paceq sensors list -o text
+stdout 'dropzone'
+stdout 'watcher'
+stdout 'paused'
+
+# JSON form is a stable contract.
+exec paceq sensors list -o json
+cp stdout actual_list.json
+maskfile actual_list.json
+cmpjson actual_list.json expected_list.json
+
+# sensors show answers with the full record.
+exec paceq sensors show dropzone -o json
+cp stdout actual_show.json
+maskfile actual_show.json
+cmpjson actual_show.json expected_show.json
+
+# show renders a human record too.
+exec paceq sensors show dropzone -o text
+stdout 'sensor dropzone'
+stdout 'cursor'
+
+# An unknown sensor is a not-found with a did-you-mean suggestion.
+wantexit 3 nf.json nf_err.txt sensors show dropzones
+grep 'no sensor matches' nf_err.txt
+grep 'did you mean' nf_err.txt
+
+# cursor get answers from the row.
+exec paceq sensors cursor get dropzone -o json
+cp stdout actual_cursor.json
+maskfile actual_cursor.json
+cmpjson actual_cursor.json expected_cursor.json
+
+# cursor set moves the cursor without touching the dedup epoch.
+exec paceq sensors cursor set dropzone "v2"
+exec paceq sensors cursor get dropzone -o text
+stdout 'v2'
+
+# pause requires the sensor to exist (refuses with exit 3).
+wantexit 3 p.json p_err.txt sensors pause missing
+grep 'no sensor matches' p_err.txt
+
+# reset refuses --forget-run-keys in a non-tty without --yes (exit 2).
+wantexit 2 r.json r_err.txt sensors reset dropzone --forget-run-keys
+grep 'needs confirmation' r_err.txt
+
+-- expected_list.json --
+[
+  {
+    "interval_ms": 60000,
+    "job": "polling-job",
+    "last_outcome": "triggered",
+    "last_tick_at": "2026-09-24T09:00:00Z",
+    "name": "dropzone",
+    "next_eval_at": "1970-01-01T00:01:00Z",
+    "paused": false
+  },
+  {
+    "interval_ms": 60000,
+    "job": "polling-job",
+    "last_outcome": "never",
+    "name": "watcher",
+    "next_eval_at": "2026-09-24T09:00:00Z",
+    "paused": true
+  }
+]
+-- expected_show.json --
+{
+  "consecutive_failures": 0,
+  "cursor": "b",
+  "cursor_version": 1,
+  "dedup_epoch": 0,
+  "interval_ms": 60000,
+  "job": "polling-job",
+  "kind": "exec",
+  "max_triggers_per_tick": 100,
+  "min_interval_ms": 1000,
+  "name": "dropzone",
+  "next_eval_at": "1970-01-01T00:01:00Z",
+  "paused": false,
+  "ticks": [
+    {
+      "deduped_count": 0,
+      "outcome": "triggered",
+      "started_at": "2026-09-24T09:00:00Z",
+      "trigger_count": 1
+    }
+  ],
+  "timeout_ms": 30000
+}
+-- expected_cursor.json --
+{
+  "cursor": "b",
+  "cursor_version": 1,
+  "sensor": "dropzone"
+}

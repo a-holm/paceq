@@ -71,6 +71,25 @@ func startHealthEndpoint(cfg Config, st *statuses, log *slog.Logger, store *stor
 		mux.HandleFunc("POST /v1/runs/{id}/cancel", func(w http.ResponseWriter, r *http.Request) {
 			handleCancelRun(w, r, store)
 		})
+		// Sensor write routes: the daemon is the single writer for pause,
+		// resume, reset, cursor set and tick, mirroring the schedule routes
+		// above (M2-08 dual-mode: the CLI dials here first, flock is the
+		// no-daemon fallback).
+		mux.HandleFunc("POST /v1/sensors/{name}/pause", func(w http.ResponseWriter, r *http.Request) {
+			handlePauseSensor(w, r, store)
+		})
+		mux.HandleFunc("POST /v1/sensors/{name}/resume", func(w http.ResponseWriter, r *http.Request) {
+			handleResumeSensor(w, r, store)
+		})
+		mux.HandleFunc("POST /v1/sensors/{name}/reset", func(w http.ResponseWriter, r *http.Request) {
+			handleResetSensor(w, r, store)
+		})
+		mux.HandleFunc("POST /v1/sensors/{name}/cursor", func(w http.ResponseWriter, r *http.Request) {
+			handleSetSensorCursor(w, r, store)
+		})
+		mux.HandleFunc("POST /v1/sensors/{name}/tick", func(w http.ResponseWriter, r *http.Request) {
+			handleSensorTick(w, r, store)
+		})
 	}
 
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
