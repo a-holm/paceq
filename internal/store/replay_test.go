@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -55,13 +56,37 @@ func TestReplayMakesANewRunFromTheFrozenVersion(t *testing.T) {
 	}
 }
 
+// changedFrozenSpec is what an apply lands on job frozen after the source
+// ran: the steps both specs share carry different commands, c is rewired
+// straight onto a, and two brand new steps appear while b, d and e vanish.
+// Every difference is one a confused replay could leak into the new run,
+// which is what lets each assertion below actually fail.
+const changedFrozenSpec = `{"name":"frozen","max_concurrent":1,"timeout_ms":3600000,` +
+	`"schema":"paceq.job.v1","steps":[` +
+	`{"name":"a","run":["/bin/echo","rewritten"],"shell":false},` +
+	`{"name":"c","needs":["a"],"run":["/bin/false"],"shell":false},` +
+	`{"name":"p","run":["/bin/true"],"shell":false},` +
+	`{"name":"q","needs":["p"],"run":["/bin/true"],"shell":false}]}`
+
 // TestReplayUsesTheFrozenGraphNotTheCurrentOne is AC-7 at the record level:
-// the job's definition changes after the source ran, and the replay still
-// carries exactly the source's steps and edges, byte for byte.
+// a genuinely newer version of the same job becomes current after the source
+// ran, and the replay still carries exactly the source's steps and edges,
+// bit for bit. The setup is load bearing: if the planted apply failed to
+// create a new version, the current pointer would stay on the old spec and
+// even a replay that read the current version would pass every assertion
+// here. That is why created is asserted before anything else.
 func TestReplayUsesTheFrozenGraphNotTheCurrentOne(t *testing.T) {
 	ctx := context.Background()
 	s, clk := coreStore(t)
-	srcID := aDagRun(t, s, "frozen", retryChainSpec)
+
+	// Version 1 is what the source runs. Its exact bytes are kept so old
+	// and new commands can be told apart below.
+	v1 := aCanonicalJob(t, s, "frozen", retryChainSpec)
+	materialised, err := s.MaterializeManualTrigger(ctx, store.ManualTriggerInput{JobName: "frozen"})
+	if err != nil {
+		t.Fatalf("materialise the source: %v", err)
+	}
+	srcID := materialised.Run.ID
 	driveChain(t, ctx, s, clk, srcID, "c")
 
 	srcDeps, err := s.StepDeps(ctx, srcID)
@@ -69,8 +94,27 @@ func TestReplayUsesTheFrozenGraphNotTheCurrentOne(t *testing.T) {
 		t.Fatalf("read the source edges: %v", err)
 	}
 
-	// A new version of the same job lands: different steps, different edges.
-	aCanonicalJob(t, s, "frozen", isolatedSkipSpec)
+	// A new version of the SAME job lands: different commands on the shared
+	// steps, a rewired edge, and a different step set. It must really be
+	// born, or everything below proves nothing.
+	v2, created, err := s.UpsertJobVersion(ctx, store.JobVersionInput{
+		JobName:       "frozen",
+		SpecHash:      "sha256:frozen-changed",
+		SpecJSON:      changedFrozenSpec,
+		MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatalf("apply the changed spec: %v", err)
+	}
+	if !created {
+		t.Fatal("the changed spec created no version: the current pointer never moved, so this test could not fail")
+	}
+	if v2.ID == v1.ID {
+		t.Fatalf("the changed spec landed as version %q, the very one the source froze", v2.ID)
+	}
+	if v2.SpecJSON == v1.SpecJSON {
+		t.Fatal("the two versions carry the same bytes: there is no current spec to be confused with")
+	}
 
 	out, err := s.MaterializeReplay(ctx, srcID, store.ReplayOpts{})
 	if err != nil {
@@ -80,16 +124,19 @@ func TestReplayUsesTheFrozenGraphNotTheCurrentOne(t *testing.T) {
 	replay := mustGetRun(t, ctx, s, out.NewRunID)
 	src := mustGetRun(t, ctx, s, srcID)
 	if replay.JobVersionID != src.JobVersionID {
-		t.Fatalf("the replay took version %q, want the frozen %q",
-			replay.JobVersionID, src.JobVersionID)
+		t.Fatalf("the replay took version %q, want the frozen %q (the current pointer sits on %q)",
+			replay.JobVersionID, src.JobVersionID, v2.ID)
 	}
+
+	// The graph is the source's, edge for edge: none missing, none added,
+	// none rewired onto the newer spec's shape.
 	replayDeps, err := s.StepDeps(ctx, out.NewRunID)
 	if err != nil {
 		t.Fatalf("read the replay edges: %v", err)
 	}
 	if len(replayDeps) != len(srcDeps) {
-		t.Fatalf("the replay froze %d edges, want the source's %d",
-			len(replayDeps), len(srcDeps))
+		t.Fatalf("the replay froze %d edges (%+v), want the source's %d (%+v)",
+			len(replayDeps), replayDeps, len(srcDeps), srcDeps)
 	}
 	for i, d := range srcDeps {
 		r := replayDeps[i]
@@ -99,17 +146,20 @@ func TestReplayUsesTheFrozenGraphNotTheCurrentOne(t *testing.T) {
 		}
 	}
 
-	names := map[string]bool{}
-	for _, st := range mustGetRun(t, ctx, s, out.NewRunID).Steps {
-		names[st.Name] = true
+	// The steps are the source's too, in its order, carrying its commands'
+	// version: exactly a through e, never the newer spec's p or q.
+	replayed := mustGetRun(t, ctx, s, out.NewRunID)
+	var names []string
+	for _, st := range replayed.Steps {
+		names = append(names, st.Name)
 	}
-	for _, want := range []string{"a", "b", "c", "d", "e"} {
-		if !names[want] {
-			t.Errorf("the replay has no step %s: the current spec leaked in", want)
+	if strings.Join(names, ",") != "a,b,c,d,e" {
+		t.Errorf("the replay froze steps [%s], want exactly [a,b,c,d,e]: the current spec leaked in", strings.Join(names, ","))
+	}
+	for _, st := range replayed.Steps {
+		if st.State != "pending" {
+			t.Errorf("step %s is %s, want pending in a full rerun of the old graph", st.Name, st.State)
 		}
-	}
-	if names["p"] || names["q"] {
-		t.Error("steps from the newer spec appear in a replay of the older one")
 	}
 }
 
