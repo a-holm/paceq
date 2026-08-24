@@ -1,0 +1,38 @@
+#!/bin/sh
+# contract-lint - validate one sensor output object against the frozen v0.1
+# contract, the same strictness the evaluator parser applies but usable by
+# hand and by external sensor authors.
+#
+#   $ echo '{"cursor":"c","triggers":[],"skip_reason":null}' | contract-lint
+#   OK: valid output, 0 trigger(s)
+#
+# It reads one JSON object on stdin and reports one line. Exit 0 means the
+# object is valid; exit 1 means it is not, with a short reason on stderr.
+# Unknown top-level fields are rejected: an unknown field means the sensor
+# and paceq disagree about the contract. Missing optional fields (triggers,
+# skip_reason) are fine, exactly as the evaluator parses them.
+#
+# Needs jq (brew/apt). CI installs it.
+
+set -eu
+
+# Read the whole object once; both jq passes must see the same bytes.
+input=$(cat)
+
+if ! printf '%s' "$input" | jq -e '
+  type == "object"
+  and (.cursor == null or (.cursor | type) == "string")
+  and (.triggers == null or (.triggers | type) == "array")
+  and ([.triggers[]? | (type == "object"
+                        and (has("run_key"))
+                        and ((.run_key | type) == "string"))] | all)
+  and (.skip_reason == null or (.skip_reason | type) == "string")
+  and (keys | all(. == "cursor" or . == "triggers" or . == "skip_reason"))
+' >/dev/null 2>&1; then
+  echo "invalid sensor output: must be one object; cursor is a string," >&2
+  echo "triggers[].run_key is a string, skip_reason optional; nothing else" >&2
+  exit 1
+fi
+
+count=$(printf '%s' "$input" | jq -r '(.triggers // []) | length')
+printf 'OK: valid output, %s trigger(s)\n' "$count"

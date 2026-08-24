@@ -54,6 +54,16 @@ jobs:
 
       # -race needs cgo, so this step alone builds with a C toolchain. The
       # shipped binary is proven cgo free in the cross-build job.
+      # The example sensors (issue #14, M3-07) are shell, so shellcheck is
+      # not a Makefile pin like the Go tools: it is a system package. Install
+      # it here so `make sensors-examples` runs the full gate. The step is its
+      # own gate so a red example names the exact script that failed.
+      - name: install shellcheck for the example sensors
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: example sensors parse, lint and behave
+        run: make sensors-examples
+
       - name: go test -race
         run: make test
 
