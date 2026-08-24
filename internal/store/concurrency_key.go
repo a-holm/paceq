@@ -90,22 +90,6 @@ func concDeferDataJSON(key, blocking string) string {
 	return data + "}"
 }
 
-// keyedRunInsertTx is the insert-first attempt: the run goes in WITH its key,
-// DO NOTHING targets the partial index by its exact predicate, and written==0
-// is the whole conflict signal. Every other constraint still aborts loudly,
-// because a targeted ON CONFLICT ignores only the named index.
-func keyedRunInsertTx(tx *sql.Tx, insertSQL string, args []any) (bool, error) {
-	result, err := tx.Exec(insertSQL, args...)
-	if err != nil {
-		return false, err
-	}
-	written, err := result.RowsAffected()
-	if err != nil {
-		return false, err
-	}
-	return written == 1, nil
-}
-
 // blockingRunForKeyTx names the active run holding a key. It runs AFTER the
 // insert said "held": this is attribution for the record, never a decision,
 // which is why reading it here breaks no insert-first rule. Empty when the
