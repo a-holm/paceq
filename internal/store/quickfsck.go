@@ -19,7 +19,8 @@ import (
 //         could still break.
 //   - I9  The dependency graph is acyclic. A cycle has no topological order,
 //         so no scheduler can ever pick a legal first step.
-//   - I12 No job runs more than max_concurrent allows (#68). The admission
+//   - I12 No job runs more than max_concurrent allows (#68), and no
+//         concurrency key is held by more than one active run (#17). The admission
 //         control and the claim both enforce this on the way in; the startup
 //         subset catches what a hand edit, a future writer or a bug let
 //         through.
@@ -141,6 +142,15 @@ GROUP BY source_kind, source_name, scheduled_for HAVING COUNT(*) > 1`)
 		return nil, fmt.Errorf("quick fsck I12: %w", err)
 	}
 	out = append(out, active...)
+
+	// I12 keys: no concurrency key held twice (#17). The index is the
+	// everyday enforcement; the startup subset still looks, because a
+	// double held key is exactly the state the code cannot reason about.
+	keyed, err := s.ActiveConcurrencyKeyViolations(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("quick fsck I12 keys: %w", err)
+	}
+	out = append(out, keyed...)
 
 	return out, nil
 }

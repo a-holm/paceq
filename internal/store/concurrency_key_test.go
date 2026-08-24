@@ -326,6 +326,53 @@ func TestFsckCatchesTwoActiveRunsOnOneKey(t *testing.T) {
 	}
 }
 
+// The sweeps must carry the key invariant themselves: a full fsck and the
+// startup quick subset both have to name a double held key, because that
+// state means a dropped index or a hand edit and every sweep is the net that
+// catches it.
+func TestFsckSweepCarriesTheKeyInvariant(t *testing.T) {
+	s := migratedStore(t)
+	ctx := context.Background()
+	concApply(t, s, "swept", constKey("k"), "")
+
+	keyedActiveRun(t, s, "swept", "01J00000000000000000000001", "swept:k")
+	dropIndex(t, s)
+	keyedActiveRun(t, s, "swept", "01J00000000000000000000002", "swept:k")
+
+	violations, err := s.Fsck(ctx)
+	if err != nil {
+		t.Fatalf("full fsck: %v", err)
+	}
+	if !hasKeyCheck(violations, "I12", "key swept:k") {
+		t.Fatalf("the full fsck does not name the doubly held key: %+v", violations)
+	}
+
+	quick, err := s.QuickFsck(ctx)
+	if err != nil {
+		t.Fatalf("quick fsck: %v", err)
+	}
+	if !hasKeyCheck(quick, "I12", "key swept:k") {
+		t.Fatalf("the quick fsck does not name the doubly held key: %+v", quick)
+	}
+
+	// The fixture rows sit below the minimum the other invariants demand,
+	// so they leave before the index returns: this test is about the key
+	// sweep seeing them, not about the rest of the report.
+	if _, err := s.w.ExecContext(ctx, `DELETE FROM runs WHERE job_name = 'swept'`); err != nil {
+		t.Fatalf("clear the fixture runs: %v", err)
+	}
+	restoreIndex(t, s)
+}
+
+func hasKeyCheck(violations []Violation, check, subject string) bool {
+	for _, v := range violations {
+		if v.Check == check && strings.Contains(v.Subject, subject) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestFsckReportsNothingWhenEveryKeyIsClean(t *testing.T) {
 	s := migratedStore(t)
 	ctx := context.Background()
