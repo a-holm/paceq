@@ -53,6 +53,23 @@ The whole system is at-least-once with reconciliation. `NORMAL` costs at most a 
 
 `FULL` is available as a configuration key for anyone who wants to pay for it. It fsyncs on every commit and closes the power-cut window. It does not change any guarantee above; it narrows the window in which G1 falls back on re-evaluation.
 
+## Cursor and run_key are two notions with two reset flags
+
+A sensor runs a dedup identity that is a triple: `(source_id, epoch, run_key)`. The `run_key` is the natural identity of what changed (the file, the row); the epoch is the operator's way to say "start over" without deleting anything. This is what G2's uniqueness cites, and it is what makes the "reset gives replay" promise real: 50 new files give 50 runs, an immediate rerun gives 0 runs, and a reset gives 50 new runs.
+
+The cursor and the dedup key must therefore never be coupled implicitly (10 `§5` F4c). Moving the cursor is not a reset, and a reset is not merely a cursor move. Each command moves exactly the flags it names:
+
+| Command | cursor | dedup_epoch | run_keys | Effect |
+|---|---|---|---|---|
+| `sensors reset <s>` | NULL | +1 | kept | Full replay from the start, against a fresh epoch |
+| `sensors reset <s> --cursor <v>` | v | +1 | kept | Replay from a chosen point |
+| `sensors reset <s> --forget-run-keys` | NULL | +1 | deleted for that sensor | Full replay plus a clean dedup table |
+| `sensors cursor set <s> <v>` | v | unchanged | kept | Spool the cursor without replay; old run keys still dedup |
+
+The epoch bump is `O(1)` and reversible in practice (the old rows stay), while deleting run keys is `O(n)` and irreversible, so reset never deletes unless you ask. This is why a reset bumps the epoch rather than clearing the table: it preserves the dedup history and only makes old keys irrelevant.
+
+`run_keys` keeps its rows for 365 days, longer than runs (90 days). A `run_key` that reappears after the retention window is treated as new and fires a new run. That is a documented consequence, not a silent one: the gate only remembers what it is still told to remember.
+
 ## Invariants
 
 Machine-checkable properties, enforced by `paceq fsck` as SQL and asserted continuously in the property tests (plans: 02 §4.3, 00 §4.6). A violation is recorded as an integrity event, not swallowed.
