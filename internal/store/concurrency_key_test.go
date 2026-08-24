@@ -437,3 +437,185 @@ func readRunKey(t *testing.T, s *Store, runID string) string {
 	}
 	return got.(string)
 }
+
+// The claim side of the model (#17): a keyless deferral is INVISIBLE to the
+// ordinary queue. It can never be claimed into running while its wanted key
+// may be held; the only way out is the claim pass's own keyed start, which
+// gives the row its key back in the same statement that starts it.
+
+func makeDeferredVictim(t *testing.T, s *Store) (holderID, victimID string) {
+	t.Helper()
+
+	concApply(t, s, "gate", constKey("k"), "")
+	row := concSchedule(t, s, "gate")
+
+	// The holder is already RUNNING, the way a claim left it: never a
+	// candidate itself, so every assertion below isolates the victim.
+	holderID = "01J0000000000000000000000H"
+	keyedActiveRun(t, s, "gate", holderID, "gate:k")
+
+	victim := admitTick(t, s, row, 0)
+	if victim.Run.DeferReason != model.DeferReasonConcurrencyKey {
+		t.Fatalf("setup: the fire did not defer: %+v", victim.Run)
+	}
+	victimID = victim.Run.ID
+
+	// Time passes; the deferral comes due while the key is still held.
+	if _, err := s.w.ExecContext(context.Background(),
+		`UPDATE runs SET available_at = ? WHERE id = ?`,
+		time.Now().Add(-time.Minute).UnixMilli(), victimID); err != nil {
+		t.Fatalf("make the deferral due: %v", err)
+	}
+	return holderID, victimID
+}
+
+func TestAClaimSkipsAKeylessDeferralWhileTheKeyIsHeld(t *testing.T) {
+	s := migratedStore(t)
+	ctx := context.Background()
+	_, victimID := makeDeferredVictim(t, s)
+
+	claims, err := s.ClaimRuns(ctx, ClaimSpec{Owner: "w1", TTL: time.Minute})
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	for _, c := range claims {
+		if c.ID == victimID {
+			t.Fatalf("the claim took a keyless deferral: %s would run beside its blocker", c.ID)
+		}
+	}
+
+	var state, key string
+	var reason any
+	if err := s.r.QueryRowContext(ctx,
+		`SELECT state, COALESCE(concurrency_key,''), defer_reason FROM runs WHERE id = ?`,
+		victimID).Scan(&state, &key, &reason); err != nil {
+		t.Fatalf("read the victim: %v", err)
+	}
+	if state != "queued" || key != "" || reason == nil {
+		t.Fatalf("the victim moved on its own: state=%q key=%q reason=%v", state, key, reason)
+	}
+}
+
+func TestAClaimStartsADueDeferralOnceTheKeyFrees(t *testing.T) {
+	s := migratedStore(t)
+	ctx := context.Background()
+	holderID, victimID := makeDeferredVictim(t, s)
+
+	// The holder goes terminal: it falls out of the index predicate and the
+	// key is free.
+	if _, err := s.w.ExecContext(ctx,
+		`UPDATE runs SET state = 'succeeded', finished_at = ?, reason_code = ?, updated_at = ?
+		 WHERE id = ?`,
+		time.Now().UnixMilli(), string(reason.RUNSucceeded), time.Now().UnixMilli(),
+		holderID); err != nil {
+		t.Fatalf("finish the holder: %v", err)
+	}
+
+	claims, err := s.ClaimRuns(ctx, ClaimSpec{Owner: "w1", TTL: time.Minute})
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	started := false
+	for _, c := range claims {
+		if c.ID == victimID {
+			started = true
+		}
+	}
+	if !started {
+		t.Fatal("the freed key did not release the deferral")
+	}
+
+	var state, key, deferReason string
+	var reasonCode any
+	if err := s.r.QueryRowContext(ctx,
+		`SELECT state, COALESCE(concurrency_key,''), COALESCE(defer_reason,''), reason_code
+		 FROM runs WHERE id = ?`, victimID).Scan(&state, &key, &deferReason, &reasonCode); err != nil {
+		t.Fatalf("read the started run: %v", err)
+	}
+	if state != "running" {
+		t.Fatalf("state %q, want running", state)
+	}
+	if key != "gate:k" {
+		t.Fatalf("the started run carries key %q: the keyed start must restore it", key)
+	}
+	if deferReason != "" || reasonCode != nil {
+		t.Fatalf("a started run still reads as deferred (%q / %v)", deferReason, reasonCode)
+	}
+
+	events, err := s.RunEvents(ctx, victimID)
+	if err != nil {
+		t.Fatalf("read events: %v", err)
+	}
+	var startedEvent bool
+	for _, e := range events {
+		if e.Kind == "run.started" && e.ToState == "running" {
+			startedEvent = true
+		}
+	}
+	if !startedEvent {
+		t.Fatal("no run.started event for the keyed start")
+	}
+}
+
+// Two deferred runs on one key must never block each other, and one claim
+// pass must start exactly one of them once the key frees.
+func TestTwoDeferralsOnOneKeyReleaseOneAtATime(t *testing.T) {
+	s := migratedStore(t)
+	ctx := context.Background()
+	concApply(t, s, "pair", constKey("k"), "")
+	row := concSchedule(t, s, "pair")
+
+	keyedActiveRun(t, s, "pair", "01J0000000000000000000000H", "pair:k")
+	first := admitTick(t, s, row, 0)
+	second := admitTick(t, s, row, 1)
+	for _, r := range []Run{first.Run, second.Run} {
+		if r.ConcurrencyKey != "" || r.DeferReason != model.DeferReasonConcurrencyKey {
+			t.Fatalf("two deferrals interfere with each other: %+v", r)
+		}
+	}
+
+	// The holder goes terminal; the key is free but single.
+	if _, err := s.w.ExecContext(ctx,
+		`UPDATE runs SET state = 'succeeded', finished_at = ?, reason_code = ?, updated_at = ?
+		 WHERE id = ?`,
+		time.Now().UnixMilli(), string(reason.RUNSucceeded), time.Now().UnixMilli(),
+		"01J0000000000000000000000H"); err != nil {
+		t.Fatalf("finish the holder: %v", err)
+	}
+
+	if _, err := s.w.ExecContext(ctx,
+		`UPDATE runs SET available_at = ? WHERE defer_reason = 'concurrency_key'`,
+		time.Now().Add(-time.Minute).UnixMilli()); err != nil {
+		t.Fatalf("make both due: %v", err)
+	}
+
+	// One pass, limit two: only one of them can take the single key.
+	claims, err := s.ClaimRuns(ctx, ClaimSpec{Owner: "w1", TTL: time.Minute, Limit: 2})
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	keyed := 0
+	for _, c := range claims {
+		detail, err := s.GetRun(ctx, c.ID)
+		if err != nil {
+			t.Fatalf("read claimed run: %v", err)
+		}
+		if detail.Run.ConcurrencyKey == "pair:k" {
+			keyed++
+		}
+	}
+	if keyed != 1 {
+		t.Fatalf("%d of the pair started with the key in one pass, want exactly 1", keyed)
+	}
+
+	// The other one waits, still whole.
+	var remaining int
+	if err := s.r.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM runs WHERE job_name = 'pair' AND state = 'queued'
+		 AND defer_reason = 'concurrency_key'`).Scan(&remaining); err != nil {
+		t.Fatalf("count the leftovers: %v", err)
+	}
+	if remaining != 1 {
+		t.Fatalf("%d deferrals left waiting, want 1", remaining)
+	}
+}

@@ -43,6 +43,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/a-holm/paceq/internal/reason"
 	"github.com/a-holm/paceq/internal/spec"
@@ -176,4 +178,161 @@ func (s *Store) ActiveConcurrencyKeyViolations(ctx context.Context) ([]Violation
 		return nil, fmt.Errorf("fsck I12 keys: %w", err)
 	}
 	return out, nil
+}
+
+// keyDeferredCandidatesSQL reads the due key deferrals in claim order. The
+// same ordering and gates as the ordinary queue, one different defer_reason.
+const keyDeferredCandidatesSQL = `SELECT id, reason_data FROM runs
+WHERE state = 'queued'
+	AND available_at <= ?
+	AND cancel_requested_at IS NULL
+	AND defer_reason = 'concurrency_key'
+%s
+ORDER BY scheduled_for, created_at, id
+LIMIT ?`
+
+// keyedStartSQL is the keyed start (#17), the only exit a keyless deferral
+// has. One statement gives the row its key back AND starts it, and the NOT
+// EXISTS guard refuses any other active holder of that key: the same atomic
+// decision shape as the step claim predicate, with the partial unique index
+// standing behind it for every writer this statement does not cover. A row
+// this statement does not touch stays exactly as it was, deferred and whole.
+//
+// nolint:fencing: queued rows hold no lease, so there is no token to fence
+// with; the claim itself mints the epoch, exactly as the batch claim does.
+const keyedStartSQL = `UPDATE runs SET
+	state = 'running',
+	lease_owner = ?1,
+	lease_epoch = lease_epoch + 1,
+	lease_expires_at = ?3,
+	heartbeat_at = ?2,
+	started_at = COALESCE(started_at, ?2),
+	updated_at = ?2,
+	concurrency_key = ?5,
+	defer_reason = NULL,
+	reason_code = NULL,
+	reason_data = NULL
+WHERE id = ?4
+	AND state = 'queued'
+	AND available_at <= ?2
+	AND cancel_requested_at IS NULL
+	AND NOT EXISTS (
+		SELECT 1 FROM runs other
+		WHERE other.concurrency_key = ?5
+			AND other.state IN ('queued', 'running'))
+RETURNING id, job_name, job_version_id, run_key, attempt, lease_epoch, params_json`
+
+// keyDeferredOnlyClause mirrors the Only filter of ClaimSpec for deferrals:
+// an executor claiming one exact run gets that run or nothing else.
+func keyDeferredOnlyClause(only []string) string {
+	if len(only) == 0 {
+		return ""
+	}
+	return "AND id IN (" + strings.TrimSuffix(strings.Repeat("?, ", len(only)), ", ") + ")"
+}
+
+// claimKeyDeferredTx starts due key deferrals while the caller's budget lasts.
+// Each is one guarded keyed start; a start that loses (the key is still held)
+// leaves its row deferred for the next pass, which is the whole release model:
+// correctness never depended on the wake, only on the next look.
+func claimKeyDeferredTx(tx *sql.Tx, spec ClaimSpec, now, expires time.Time,
+	budget int, out *[]ClaimedRun,
+) error {
+	if budget <= 0 {
+		return nil
+	}
+	query := fmt.Sprintf(keyDeferredCandidatesSQL, keyDeferredOnlyClause(spec.Only))
+	args := []any{now.UnixMilli()}
+	for _, id := range spec.Only {
+		args = append(args, id)
+	}
+	args = append(args, budget)
+
+	rows, err := tx.Query(query, args...)
+	if err != nil {
+		return fmt.Errorf("read the due key deferrals for %s: %w", spec.Owner, err)
+	}
+	type pendingDeferral struct {
+		id   string
+		data string
+	}
+	var cands []pendingDeferral
+	for rows.Next() {
+		var p pendingDeferral
+		var data sql.NullString
+		if err := rows.Scan(&p.id, &data); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan a due key deferral for %s: %w", spec.Owner, err)
+		}
+		p.data = data.String
+		cands = append(cands, p)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("read the due key deferrals for %s: %w", spec.Owner, err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close the due key deferrals of %s: %w", spec.Owner, err)
+	}
+
+	started := 0
+	for _, p := range cands {
+		if started >= budget {
+			break
+		}
+		key, _ := concDataOf(p.data)
+		if key == "" {
+			// A deferral without a wanted key cannot be started by this
+			// path at all. It stays put; fsck's sweeps are what surface
+			// such a row, because no writer produces one.
+			continue
+		}
+		startRows, err := tx.Query(keyedStartSQL,
+			spec.Owner, now.UnixMilli(), expires.UnixMilli(), p.id, key)
+		if err != nil {
+			return fmt.Errorf("start the keyed deferral %s for %s: %w", p.id, spec.Owner, err)
+		}
+		var claimed *ClaimedRun
+		for startRows.Next() {
+			var cl ClaimedRun
+			var runKey sql.NullString
+			if err := startRows.Scan(&cl.ID, &cl.JobName, &cl.JobVersionID, &runKey,
+				&cl.Attempt, &cl.LeaseEpoch, &cl.ParamsJSON); err != nil {
+				_ = startRows.Close()
+				return fmt.Errorf("scan the keyed start of %s: %w", p.id, err)
+			}
+			cl.RunKey = runKey.String
+			claimed = &cl
+		}
+		if err := startRows.Err(); err != nil {
+			_ = startRows.Close()
+			return fmt.Errorf("read the keyed start of %s: %w", p.id, err)
+		}
+		if err := startRows.Close(); err != nil {
+			return fmt.Errorf("close the keyed start of %s: %w", p.id, err)
+		}
+		if claimed == nil {
+			continue
+		}
+		*out = append(*out, *claimed)
+		started++
+	}
+	return nil
+}
+
+// concDataOf reads the wanted key back out of a deferral's reason_data. It
+// exists so the claim pass never has to trust the row's own columns: the key
+// lives in the data object the deferral wrote, beside the blocking run.
+func concDataOf(data string) (key, blocking string) {
+	if data == "" {
+		return "", ""
+	}
+	var parsed struct {
+		Key      string `json:"concurrency_key"`
+		Blocking string `json:"blocking_run_id"`
+	}
+	if err := json.Unmarshal([]byte(data), &parsed); err != nil {
+		return "", ""
+	}
+	return parsed.Key, parsed.Blocking
 }
