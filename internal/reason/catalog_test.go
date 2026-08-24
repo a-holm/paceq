@@ -88,8 +88,9 @@ func TestAllFourLevelsArePopulated(t *testing.T) {
 // cannot quietly join them.
 func TestTerminalFlagsFollowTheWriteRule(t *testing.T) {
 	notTerminal := map[Code]bool{
-		RUNQueuedConcurrency: true,
-		STEPRetryScheduled:   true,
+		RUNQueuedConcurrency:      true,
+		RUNDeferredConcurrencyKey: true,
+		STEPRetryScheduled:        true,
 		// The drain interrupt: work goes back to pending with no attempt
 		// spent, so nothing about the run or the step has ended.
 		RUNInterruptedShutdown: true,
