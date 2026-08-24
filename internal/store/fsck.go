@@ -110,6 +110,38 @@ WHERE r.state IN ('succeeded', 'failed', 'cancelled')
 		return nil, fmt.Errorf("fsck I2: %w", err)
 	}
 
+	// I8: a step that is running has every need succeeded. The claim
+	// predicate gates on the same predicate before any start, so a running
+	// step with an unmet need can only be drift (M4-03).
+	rows, err = s.r.QueryContext(ctx, `SELECT s.run_id, s.name FROM steps s
+WHERE s.state = 'running'
+	AND EXISTS (SELECT 1 FROM step_deps sd
+		JOIN steps need ON need.run_id = sd.run_id AND need.name = sd.depends_on
+		WHERE sd.run_id = s.run_id AND sd.step_name = s.name
+			AND need.state <> 'succeeded')`)
+	if err != nil {
+		return nil, fmt.Errorf("fsck I8: %w", err)
+	}
+	for rows.Next() {
+		var runID, step string
+		if err := rows.Scan(&runID, &step); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("fsck I8: %w", err)
+		}
+		out = append(out, Violation{
+			Check:   "I8",
+			Subject: "run " + runID + " step " + step,
+			Detail:  "the step is running while a step it needs has not succeeded",
+		})
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, fmt.Errorf("fsck I8: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("fsck I8: %w", err)
+	}
+
 	// I10: the stored state is the aggregate of the steps, decided by the
 	// same model function the engine finishes runs with. One truth, two
 	// users; if they disagree, a row was written behind both.
