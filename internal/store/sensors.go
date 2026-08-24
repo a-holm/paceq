@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"time"
 
 	"github.com/a-holm/paceq/internal/id"
 	"github.com/a-holm/paceq/internal/spec"
@@ -20,24 +19,6 @@ import (
 // last_error, breaker_opened_at, last_eval_at, next_eval_at, paused_reason)
 // are owned by the evaluator and by the operator, never by a file: SyncSensors
 // leaves them alone.
-
-// SensorSummary is the read-side view of one sensor row as the readers here
-// return it.
-type SensorSummary struct {
-	Name               string
-	JobName            string
-	Kind               string
-	ExecJSON           string
-	SpecJSON           string
-	IntervalMS         int64
-	MinIntervalMS      int64
-	TimeoutMS          int64
-	MaxTriggersPerTick int
-	Paused             bool
-	NextEvalAt         time.Time
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
-}
 
 // SyncResult says what SyncSensors did, so a caller can tell the story of an
 // apply without re-reading the table. Created and Updated both mean the row's
