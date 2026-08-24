@@ -225,7 +225,7 @@ func claimKeyDeferredTx(tx *sql.Tx, spec ClaimSpec, now, expires time.Time,
 	if budget <= 0 {
 		return nil
 	}
-	query := fmt.Sprintf(keyDeferredCandidatesSQL, keyDeferredOnlyClause(spec.Only))
+	query := fmt.Sprintf(keyDeferredCandidatesSQL, keyDeferredOnlyClause(spec.Only)) // #nosec G201 - the %s inserts only "?" placeholder marks, never user data; every value is a bound arg below
 	args := []any{now.UnixMilli()}
 	for _, id := range spec.Only {
 		args = append(args, id)
