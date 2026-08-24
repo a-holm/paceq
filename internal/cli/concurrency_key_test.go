@@ -110,7 +110,7 @@ func TestRunsListNamesTheKeyAndTheBlocker(t *testing.T) {
 func TestRunShowNamesTheKeyAndTheBlocker(t *testing.T) {
 	dir, holderID, victimID := keyedFixture(t)
 
-	piped := runCLI(t, dir, nil, "run", "show", victimID)
+	piped := runCLI(t, dir, nil, "runs", "show", victimID)
 	if piped.code != ExitOK {
 		t.Fatalf("run show = %d\n%s", piped.code, piped.stderr)
 	}
@@ -123,5 +123,22 @@ func TestRunShowNamesTheKeyAndTheBlocker(t *testing.T) {
 	var doc map[string]any
 	if err := json.Unmarshal([]byte(piped.stdout), &doc); err != nil {
 		return // human form; the JSON contract is pinned by reason_data above
+	}
+
+	// The human form says it in words: which key, who holds it.
+	stdout, readOut := terminalFile(t)
+	stderr, readErr := pipeFile(t)
+	env := Env{Stdout: stdout, Stderr: stderr, Dir: dir, Getenv: lookup(nil)}
+	code := run(context.Background(), env, []string{"runs", "show", victimID})
+	_ = stdout.Close()
+	_ = stderr.Close()
+	if code != ExitOK {
+		t.Fatalf("runs show at a terminal = %d\n%s", code, readErr())
+	}
+	shown := readOut() + readErr()
+	for _, want := range []string{"keyed:k", holderID} {
+		if !strings.Contains(shown, want) {
+			t.Errorf("runs show does not name %q:\n%s", want, shown)
+		}
 	}
 }

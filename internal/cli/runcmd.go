@@ -274,6 +274,12 @@ type runDetailRecord struct {
 	FinishedAt string       `json:"finished_at,omitempty"`
 	DurationMS int64        `json:"duration_ms,omitempty"`
 	Steps      []stepRecord `json:"steps"`
+
+	// The deferral facts (#68, #17): the same fields the listing carries,
+	// verbatim, so one jq program reads both shapes.
+	DeferReason string `json:"defer_reason,omitempty"`
+	ReasonData  string `json:"reason_data,omitempty"`
+	AvailableAt string `json:"available_at,omitempty"`
 }
 
 type runEnvelope struct {
@@ -298,6 +304,10 @@ func writeRunRecord(out *ui, detail store.RunDetail) error {
 		FinishedAt: rfc3339(detail.FinishedAt),
 		DurationMS: millisBetween(detail.StartedAt, detail.FinishedAt),
 		Steps:      make([]stepRecord, 0, len(detail.Steps)),
+
+		DeferReason: detail.DeferReason,
+		ReasonData:  detail.ReasonData,
+		AvailableAt: rfc3339(detail.AvailableAt),
 	}
 	for _, step := range detail.Steps {
 		var exit *int
@@ -326,6 +336,13 @@ func outcomeText(code, data string) string {
 		}
 		if json.Unmarshal([]byte(data), &d) == nil && d.Step != "" {
 			return fmt.Sprintf("step %q failed (%s)", d.Step, code)
+		}
+	}
+	if code == string(reason.RUNDeferredConcurrencyKey) {
+		key, blocking := concDeferFields(data)
+		if key != "" {
+			return fmt.Sprintf("waiting for concurrency key %s, held by run %s (%s)",
+				key, blocking, code)
 		}
 	}
 	if entry, ok := reason.Lookup(reason.Code(code)); ok {

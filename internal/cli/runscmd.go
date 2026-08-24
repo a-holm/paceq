@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -214,6 +215,11 @@ func newListRow(row store.RunSummary) runListRow {
 
 // runOutcome is the text column of the table: why the run ended, as words.
 func runOutcome(row store.RunSummary) string {
+	if row.DeferReason == model.DeferReasonConcurrencyKey {
+		if text := concDeferText(row.ReasonData); text != "" {
+			return text
+		}
+	}
 	if row.ReasonCode == "" {
 		return ""
 	}
@@ -221,6 +227,33 @@ func runOutcome(row store.RunSummary) string {
 		return entry.Short
 	}
 	return row.ReasonCode
+}
+
+// concDeferText turns a key deferral's reason_data into the words a human
+// needs first: which key is wanted, and who holds it. Empty when the data
+// does not name a key, so the ordinary reason text stands in its place.
+func concDeferText(data string) string {
+	key, blocking := concDeferFields(data)
+	if key == "" {
+		return ""
+	}
+	if blocking == "" {
+		return "waiting for concurrency key " + key
+	}
+	return fmt.Sprintf("waiting for concurrency key %s (run %s holds it)", key, blocking)
+}
+
+// concDeferFields reads the wanted key and the holding run out of a key
+// deferral's reason_data object.
+func concDeferFields(data string) (key, blocking string) {
+	var parsed struct {
+		Key      string `json:"concurrency_key"`
+		Blocking string `json:"blocking_run_id"`
+	}
+	if json.Unmarshal([]byte(data), &parsed) != nil {
+		return "", ""
+	}
+	return parsed.Key, parsed.Blocking
 }
 
 // listState is the state column of the table, with the deferral facts folded in
