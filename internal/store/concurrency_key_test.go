@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -861,5 +862,38 @@ func TestSensorSkipPolicyRejectsTheHeldFire(t *testing.T) {
 	}
 	if keys != 0 {
 		t.Fatalf("%d dedup rows survive a refused fire, want none", keys)
+	}
+}
+
+// The manual path (#17). A person typing the command is not a fire a policy
+// should second guess, so there is no defer and no skip: the run goes in with
+// its key, and when the key is held the refusal names the holder.
+func TestAManualRunOfAHeldKeyIsRefusedNamingTheHolder(t *testing.T) {
+	s := migratedStore(t)
+	ctx := context.Background()
+	concApply(t, s, "handy", constKey("k"), "")
+	keyedQueuedRun(t, s, "handy", "01J0000000000000000000000H", "handy:k")
+
+	_, err := s.MaterializeManualTrigger(ctx, ManualTriggerInput{JobName: "handy"})
+	if !errors.Is(err, ErrConcurrencyKeyHeld) {
+		t.Fatalf("the refusal is %v, want ErrConcurrencyKeyHeld", err)
+	}
+	if !strings.Contains(err.Error(), "01J0000000000000000000000H") {
+		t.Fatalf("the refusal does not name the holding run: %v", err)
+	}
+
+	// With the key free, the manual run carries its key as usual.
+	if _, err := s.w.ExecContext(ctx,
+		`UPDATE runs SET state = 'succeeded', finished_at = ?, reason_code = ?, updated_at = ?
+		 WHERE id = '01J0000000000000000000000H'`,
+		time.Now().UnixMilli(), string(reason.RUNSucceeded), time.Now().UnixMilli()); err != nil {
+		t.Fatalf("free the key: %v", err)
+	}
+	out, err := s.MaterializeManualTrigger(ctx, ManualTriggerInput{JobName: "handy"})
+	if err != nil {
+		t.Fatalf("materialise the manual run: %v", err)
+	}
+	if out.Run.ConcurrencyKey != "handy:k" {
+		t.Fatalf("the manual run carries %q", out.Run.ConcurrencyKey)
 	}
 }

@@ -130,14 +130,32 @@ VALUES (?, ?, ?, ?, ?, 'accepted')`, triggerID, tickID, in.JobName, params, at);
 			CreatedAt:    now,
 			UpdatedAt:    now,
 		}
-		if _, err := tx.Exec(`INSERT INTO runs
-(id, job_name, job_version_id, trigger_id, origin, state, available_at,
- params_json, max_attempts, created_at, updated_at)
-VALUES (?, ?, ?, ?, 'manual', 'queued', ?, ?, 1, ?, ?)`,
+		// Insert-first against the partial unique index (#17): a manual run
+		// carries its key like any other, and a held key refuses the whole
+		// decision. A person watching the command needs the holder named, not a
+		// policy deferring their run behind their back.
+		concKey := resolvedConcurrencyKey(job, params, "")
+		result, err := tx.Exec(`INSERT INTO runs
+		(id, job_name, job_version_id, trigger_id, origin, state, available_at,
+		params_json, max_attempts, created_at, updated_at, concurrency_key)
+		VALUES (?, ?, ?, ?, 'manual', 'queued', ?, ?, 1, ?, ?, ?)
+		ON CONFLICT (concurrency_key) WHERE concurrency_key IS NOT NULL
+		AND state IN ('queued', 'running') DO NOTHING`,
 			run.ID, run.JobName, run.JobVersionID, nullIfEmpty(run.TriggerID),
-			run.AvailableAt.UnixMilli(), run.ParamsJSON, at, at); err != nil {
+			run.AvailableAt.UnixMilli(), run.ParamsJSON, at, at, nullIfEmpty(concKey))
+		if err != nil {
 			return fmt.Errorf("create a run of job %s: %w", run.JobName, err)
 		}
+		written, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("create a run of job %s: %w", run.JobName, err)
+		}
+		if written == 0 && concKey != "" {
+			blocking := blockingRunForKeyTx(tx, concKey)
+			return fmt.Errorf("create a run of job %s: %w (the run %s holds concurrency key %s)",
+				run.JobName, ErrConcurrencyKeyHeld, blocking, concKey)
+		}
+		run.ConcurrencyKey = concKey
 
 		if err := insertSteps(tx, run.ID, job.Steps); err != nil {
 			return err
