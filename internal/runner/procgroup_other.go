@@ -9,12 +9,18 @@ import "syscall"
 // and darwin, all take the unix path above.
 func sysProcAttr() *syscall.SysProcAttr { return &syscall.SysProcAttr{} }
 
+// SysProcAttr is the public form of sysProcAttr.
+func SysProcAttr() *syscall.SysProcAttr { return sysProcAttr() }
+
 // zeroCoreLimit has no rlimit hook on this platform.
 func zeroCoreLimit() (release func()) { return func() {} }
 
 // registerGroup on platforms without process groups: there is no group to
 // track, so the release is a no-op.
 func registerGroup(pgid int) (release func()) { return func() {} }
+
+// RegisterProcessGroup is the public form of registerGroup.
+func RegisterProcessGroup(pgid int) func() { return registerGroup(pgid) }
 
 // KillAllProcessGroups on platforms without process groups: nothing to reach.
 func KillAllProcessGroups(sig syscall.Signal) {}

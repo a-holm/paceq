@@ -63,13 +63,25 @@ func schedulerLoop(ctx context.Context, d loops, every time.Duration, src Schedu
 	})
 }
 
-// sensorRuntime is the M3 placeholder: it exists, it ticks, it decides
-// nothing yet. Its slot in the topology is real from day one so adding the
-// evaluator later changes no wiring.
-func sensorLoop(ctx context.Context, d loops, every time.Duration) error {
-	return loop(ctx, d, "sensor", every, notify.TopicScheduleChanged, func(context.Context) error {
-		return nil
-	})
+// sensorRuntime is the seam M3-02 fills: whatever evaluates due sensors. Step
+// is one wake of the work; the runtime holds the per-sensor serialisation and
+// the global semaphore across wakes. Nil means idle, correct until a source of
+// due sensors exists, and the loop still ticks so the topology stays live. It
+// is an interface here so the daemon never learns the sensor package's shape.
+type sensorRuntime interface {
+	Step(ctx context.Context) error
+}
+
+// sensorLoop wakes the evaluator runtime once per tick. A nil runtime is the
+// M3-01-waiting placeholder: it ticks, marks itself healthy and decides
+// nothing yet.
+func sensorLoop(ctx context.Context, d loops, every time.Duration, rt sensorRuntime) error {
+	if rt == nil {
+		return loop(ctx, d, "sensor", every, notify.TopicScheduleChanged, func(context.Context) error {
+			return nil
+		})
+	}
+	return loop(ctx, d, "sensor", every, notify.TopicScheduleChanged, rt.Step)
 }
 
 // reapSweeper is what the reaper loop needs of the engine. The interface

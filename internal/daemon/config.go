@@ -71,6 +71,10 @@ type Config struct {
 	// group during the drain. Zero leaves the runner's own default.
 	KillGrace time.Duration
 
+	// SensorMaxParallel is the global cap on concurrent sensor evaluations.
+	// Zero means four.
+	SensorMaxParallel int
+
 	// TickInterval is the safety net period shared by the loops: how often a
 	// loop looks at the world without being woken. Zero means 1s.
 	TickInterval time.Duration
@@ -194,4 +198,16 @@ func (c Config) reconcileEvery() time.Duration {
 		return c.ReconcileEvery
 	}
 	return defaultReconcileEvery
+}
+
+// killGrace returns the SIGTERM to SIGKILL gap used for sensor subprocess
+// groups. Zero means the runner default, which the evaluator resolves.
+func (c Config) killGrace() time.Duration { return c.KillGrace }
+
+// sensorMaxParallel resolves the sensor concurrency cap.
+func (c Config) sensorMaxParallel() int {
+	if c.SensorMaxParallel > 0 {
+		return c.SensorMaxParallel
+	}
+	return 4
 }

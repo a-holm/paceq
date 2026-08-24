@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"os"
 	"os/exec"
 	"time"
 )
@@ -107,4 +108,19 @@ func classify(cmd *exec.Cmd, timedOut bool, ctxErr error, timeout time.Duration)
 			},
 		}
 	}
+}
+
+// ExitStatus is the public reading of a finished process's wait status: the
+// exit code for a normal exit, or the canonical signal name for a signal
+// death. The sensor evaluator reads the same facts through this seam instead
+// of re-deriving the platform split the classifier above keeps private.
+func ExitStatus(st *os.ProcessState) (code int, signal string, signalled bool) {
+	if st == nil {
+		return 0, "", false
+	}
+	c, sig, signaled := exitStatus(st)
+	if !signaled {
+		return c, "", false
+	}
+	return c, sigName(sig), true
 }

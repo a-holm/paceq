@@ -15,6 +15,7 @@ import (
 	"github.com/a-holm/paceq/internal/obs/sdnotify"
 	"github.com/a-holm/paceq/internal/reconcile"
 	"github.com/a-holm/paceq/internal/scheduler"
+	"github.com/a-holm/paceq/internal/sensor"
 	"github.com/a-holm/paceq/internal/store"
 )
 
@@ -152,11 +153,28 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 
 	tickEvery := cfg.tickInterval()
 
+	// The sensor runtime is the long-lived evaluator context (M3-02). Its
+	// source of due sensors is a seam: the store-backed reader arrives with
+	// M3-01, until then a nil source keeps the loop alive and idle. The sink
+	// that commits results to cursor, tick and trigger rows is M3-03's; the
+	// daemon wires it when that lands.
+	sensorEv := sensor.NewEvaluator(sensor.Config{
+		KillGrace: cfg.killGrace(),
+	}, clk)
+	sensorRt := sensor.NewRuntime(sensorEv, sensor.RuntimeConfig{
+		Source:       nil, // M3-01: the store-backed due-sensors reader
+		Sink:         nil, // M3-03: the atomic sensor commit
+		MaxParallel:  cfg.sensorMaxParallel(),
+		DrainTimeout: cfg.drainTimeout(),
+		Clock:        clk,
+		Log:          log,
+	})
+
 	launch(intakeCtx, intakeAck(), func(c context.Context) error {
 		return schedulerLoop(c, d, tickEvery, schedSrc)
 	})
 	launch(grp.ctx, nil, func(c context.Context) error {
-		return sensorLoop(c, d, tickEvery)
+		return sensorLoop(c, d, tickEvery, sensorRt)
 	})
 	launch(intakeCtx, intakeAck(), func(c context.Context) error {
 		return dispatcherLoop(c, d, tickEvery, st, func(runID string) bool {

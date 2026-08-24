@@ -14,6 +14,11 @@ func sysProcAttr() *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{Setpgid: true}
 }
 
+// SysProcAttr is the public form of sysProcAttr. The sensor evaluator uses it
+// so its subprocess gets the same process group guarantee as a step: the child
+// leads its own group, and every escalation on it reaches the whole group.
+func SysProcAttr() *syscall.SysProcAttr { return sysProcAttr() }
+
 // coreLimitMu serialises the brief window in which this process runs with
 // RLIMIT_CORE set to zero, because rlimits are per process, not per child,
 // and two concurrent Starts would otherwise restore different values.
@@ -34,6 +39,12 @@ func registerGroup(pgid int) (release func()) {
 		once.Do(func() { activeGroups.Delete(pgid) })
 	}
 }
+
+// RegisterProcessGroup is the public form of registerGroup. The sensor
+// evaluator calls it so a daemon hard stop (the second signal, which sweeps
+// every group through KillAllProcessGroups) reaches a sensor subprocess with
+// the same certainty it reaches a step.
+func RegisterProcessGroup(pgid int) func() { return registerGroup(pgid) }
 
 // KillAllProcessGroups signals every registered group. Delivery failures are
 // ignored on purpose: ESRCH only means the group is already gone, which is
