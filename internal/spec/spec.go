@@ -27,6 +27,17 @@ const (
 	MaxNodes = 20000
 	// MaxSteps is the same ceiling M4-01 puts on a DAG.
 	MaxSteps = 200
+	// MaxFanOut is how many steps one step may be a dependency of, or how many
+	// needs one step may name. A successor count past this is a program wearing
+	// a job's clothes, and there is no way to see what it does. Enforced in
+	// M4-01 as a semantic refusal.
+	MaxFanOut = 100
+	// MaxDAGDepth is the longest run of edges from a step with no needs to the
+	// deepest step. A deeper graph is a chain no machine should wait on.
+	MaxDAGDepth = 100
+	// MaxParallelHi is the highest a job's max_parallel may go (M4-02 uses it
+	// as the per-run semaphore). The default is four.
+	MaxParallelHi = 64
 	// MaxExpandedNodes is the decoder's budget. Every node it visits costs
 	// one, including each visit through an alias, so nested aliases cannot
 	// multiply their way past the tree limits above.
@@ -47,6 +58,11 @@ const (
 	// flock wrappers people write around cron jobs are what it costs them
 	// (09 section 7, US-02).
 	DefaultMaxConcurrent = 1
+	// DefaultMaxParallel is how many steps of one run may run at once
+	// (M4-02 uses it as the per-run semaphore). Independent steps share the
+	// run, so a fan out needs more than one slot to matter; four is a solid
+	// default for a machine that also runs other things.
+	DefaultMaxParallel = 4
 	// DefaultTimezone is the zone a schedule without one runs in. UTC rather
 	// than the daemon's local zone: a schedule that means something different
 	// depending on which machine reads it is not explainable.
@@ -124,9 +140,14 @@ type Job struct {
 	Workdir       string
 	Timeout       time.Duration
 	MaxConcurrent int
-	Steps         []Step
-	Schedules     []Schedule
-	Sensors       []Sensor
+	// MaxParallel is how many steps of one run may be in flight at once
+	// (M4-02). 1..MaxParallelHi, default DefaultMaxParallel. It is materialised
+	// into the default on parse so a job that leaves it out hashes identically
+	// to one that writes it.
+	MaxParallel int
+	Steps       []Step
+	Schedules   []Schedule
+	Sensors     []Sensor
 }
 
 // Step is one command in a job.

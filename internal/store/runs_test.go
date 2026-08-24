@@ -447,3 +447,121 @@ func TestAppendRunEventRecordsATransitionOfItsOwn(t *testing.T) {
 		t.Fatal("an event on a run that does not exist was accepted")
 	}
 }
+
+// TestCreateRunWithStepsFreezesTheDiamond proves the frozen edge set on a
+// diamond: two steps both wait on a, and report waits on both, so all four
+// edges are written together with the run.
+func TestCreateRunWithStepsFreezesTheDiamond(t *testing.T) {
+	ctx := context.Background()
+	s, _ := coreStore(t)
+	version := aJob(t, s, "nightly")
+
+	run, err := s.CreateRunWithSteps(ctx, store.NewRun{
+		JobName: "nightly", JobVersionID: version.ID, Origin: "manual", Actor: "cli:1000",
+		Steps: []store.NewStep{
+			{Name: "extract"},
+			{Name: "load", DependsOn: []string{"extract"}},
+			{Name: "transform", DependsOn: []string{"extract"}},
+			{Name: "report", DependsOn: []string{"load", "transform"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+
+	want := []store.StepDep{
+		{StepName: "load", DependsOn: "extract"},
+		{StepName: "report", DependsOn: "load"},
+		{StepName: "report", DependsOn: "transform"},
+		{StepName: "transform", DependsOn: "extract"},
+	}
+	got, err := s.StepDeps(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("read the frozen edges: %v", err)
+	}
+	if !sameStepDeps(got, want) {
+		t.Errorf("the run froze %v, want %v", got, want)
+	}
+	if len(got) != 4 {
+		t.Errorf("the diamond froze %d edges, want 4", len(got))
+	}
+}
+
+// TestASpecChangeDoesNotRewriteAnExistingRun: the edges come from the frozen
+// spec, so a later job edit cannot touch a run the edit did not create.
+func TestASpecChangeDoesNotRewriteAnExistingRun(t *testing.T) {
+	ctx := context.Background()
+	s, _ := coreStore(t)
+	version := aJob(t, s, "nightly")
+
+	first, err := s.CreateRunWithSteps(ctx, store.NewRun{
+		JobName: "nightly", JobVersionID: version.ID, Origin: "manual",
+		Steps: []store.NewStep{
+			{Name: "build"},
+			{Name: "test", DependsOn: []string{"build"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create first run: %v", err)
+	}
+
+	// A second version edits the job, with a shorter step list.
+	if _, _, err := s.UpsertJobVersion(ctx, store.JobVersionInput{
+		JobName: "nightly", SpecHash: "sha256:bb", SpecJSON: `{"steps":[{"name":"build"}]}`,
+	}); err != nil {
+		t.Fatalf("edit the job: %v", err)
+	}
+	second, err := s.CreateRunWithSteps(ctx, store.NewRun{
+		JobName: "nightly", JobVersionID: version.ID, Origin: "manual",
+		Steps: []store.NewStep{{Name: "build"}},
+	})
+	if err != nil {
+		t.Fatalf("create second run: %v", err)
+	}
+
+	firstDeps, err := s.StepDeps(ctx, first.ID)
+	if err != nil {
+		t.Fatalf("read first run edges: %v", err)
+	}
+	secondDeps, err := s.StepDeps(ctx, second.ID)
+	if err != nil {
+		t.Fatalf("read second run edges: %v", err)
+	}
+	if !sameStepDeps(firstDeps, []store.StepDep{
+		{StepName: "test", DependsOn: "build"},
+	}) {
+		t.Errorf("the older run lost its edge after the edit: %v", firstDeps)
+	}
+	if len(secondDeps) != 0 {
+		t.Errorf("the newer run wrote %v, want no edges for the one-step job", secondDeps)
+	}
+}
+
+func sameStepDeps(got, want []store.StepDep) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	byName := func(s []store.StepDep) map[string][]string {
+		out := map[string][]string{}
+		for _, dep := range s {
+			out[dep.StepName] = append(out[dep.StepName], dep.DependsOn)
+		}
+		return out
+	}
+	gm, wm := byName(got), byName(want)
+	if len(gm) != len(wm) {
+		return false
+	}
+	for name, deps := range gm {
+		wd, ok := wm[name]
+		if !ok || len(deps) != len(wd) {
+			return false
+		}
+		for i := range deps {
+			if deps[i] != wd[i] {
+				return false
+			}
+		}
+	}
+	return true
+}

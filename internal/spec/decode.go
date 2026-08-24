@@ -16,7 +16,7 @@ import (
 // list a misspelling is measured against, so a field added to a struct and not
 // to its list here is a field the parser refuses.
 var (
-	jobFields      = []string{"name", "description", "env", "env_file", "inherit_env", "workdir", "timeout", "max_concurrent", "steps", "schedules", "sensors"}
+	jobFields      = []string{"name", "description", "env", "env_file", "inherit_env", "workdir", "timeout", "max_concurrent", "max_parallel", "steps", "schedules", "sensors"}
 	stepFields     = []string{"name", "run", "shell", "workdir", "timeout", "retry", "needs"}
 	retryFields    = []string{"max", "backoff", "initial", "max_delay", "jitter"}
 	scheduleFields = []string{"name", "cron", "timezone", "overlap"}
@@ -60,7 +60,7 @@ var commonMistakes = map[string]string{
 var envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func (d *decoder) job(node ast.Node) *Job {
-	job := &Job{Timeout: DefaultTimeout, MaxConcurrent: DefaultMaxConcurrent}
+	job := &Job{Timeout: DefaultTimeout, MaxConcurrent: DefaultMaxConcurrent, MaxParallel: DefaultMaxParallel}
 
 	mapping, ok := d.mapping(node, "the job file")
 	if !ok {
@@ -85,6 +85,8 @@ func (d *decoder) job(node ast.Node) *Job {
 			job.Timeout = d.timeout(value, DefaultTimeout)
 		case "max_concurrent":
 			job.MaxConcurrent = d.maxConcurrent(value)
+		case "max_parallel":
+			job.MaxParallel = d.maxParallel(value)
 		case "steps":
 			job.Steps = d.steps(value)
 		case "schedules":
@@ -779,6 +781,11 @@ func (d *decoder) needs(node ast.Node, where string) ([]string, []diag.Position)
 	for i, value := range sequence.Values {
 		name, ok := d.stringValue(value, fmt.Sprintf("needs[%d] in %s", i, where))
 		if !ok {
+			continue
+		}
+		// A name used twice says nothing a run would act on twice; the first
+		// one wins and a job that says it twice means it once.
+		if contains(names, name) {
 			continue
 		}
 		names = append(names, name)

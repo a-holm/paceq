@@ -337,6 +337,39 @@ func (d *decoder) maxConcurrent(node ast.Node) int {
 	return int(value)
 }
 
+// maxParallel has its own function because its ceiling carries a reason worth
+// stating: this is the field that becomes the per-run semaphore in M4-02, and
+// the same gate max_concurrent uses applies to it. A number outside 1..64 is
+// refused here, at the door, so the engine never has to read a nonsense limit.
+func (d *decoder) maxParallel(node ast.Node) int {
+	resolved, ok := d.resolve(node, "max_parallel")
+	if !ok {
+		return DefaultMaxParallel
+	}
+	value, isNumber := integerValue(resolved)
+	if !isNumber {
+		written, _ := scalarText(resolved)
+		d.error(CodeBadMaxParallel, position(resolved),
+			fmt.Sprintf("max_parallel is %q, and it is a whole number", written),
+			fmt.Sprintf("It is how many steps of one run may run at once:\n\n    max_parallel: %d", DefaultMaxParallel))
+		return DefaultMaxParallel
+	}
+	if value < 1 {
+		d.error(CodeBadMaxParallel, position(resolved),
+			fmt.Sprintf("max_parallel is %d, and the lowest it goes is 1", value),
+			"There is no value that means \"never run any step in parallel\". Set it to 1,\n"+
+				"the floor, if you want the steps of a run to strictly serialise.")
+		return DefaultMaxParallel
+	}
+	if value > int64(MaxParallelHi) {
+		d.error(CodeBadMaxParallel, position(resolved),
+			fmt.Sprintf("max_parallel is %d, and paceq allows at most %d", value, MaxParallelHi),
+			fmt.Sprintf("Pick a number between 1 and %d.", MaxParallelHi))
+		return DefaultMaxParallel
+	}
+	return int(value)
+}
+
 // timeout reads a duration field. fallback is what an unreadable value falls
 // back to, so the rest of the file is still checked against something sensible.
 func (d *decoder) timeout(node ast.Node, fallback time.Duration) time.Duration {
@@ -461,6 +494,9 @@ func (d *decoder) crossCheck(job *Job) {
 		}
 	}
 
+	d.checkCycles(job.Steps)
+	d.checkGraphBounds(job.Steps)
+
 	sensorNames := make(map[string]int, len(job.Sensors))
 	for i, sensor := range job.Sensors {
 		if d.stopped {
@@ -517,6 +553,102 @@ func (d *decoder) needPosition(step, need int) diag.Position {
 		return d.stepPos[step].needs[need]
 	}
 	return d.stepPosition(step)
+}
+
+// checkCycles runs after every step is known to exist, so the only problem
+// left in the graph is a loop. A loop means each step in it waits on a step
+// that waits on it, so none of them can ever start; the diagnostic names the
+// steps it goes around, so the reader can find it in the file. The position
+// points at the first named step, which is the one the loop comes back to.
+func (d *decoder) checkCycles(steps []Step) {
+	if d.stopped {
+		return
+	}
+	_, cycle := TopoOrder(steps)
+	if cycle == "" {
+		return
+	}
+	subject := cycle
+	if line := strings.Index(subject, " -> "); line >= 0 {
+		subject = subject[:line]
+	}
+	where := -1
+	for i, step := range steps {
+		if step.Name == subject {
+			where = i
+			break
+		}
+	}
+	d.error(CodeCycle, d.stepPosition(where),
+		fmt.Sprintf("the steps depend on each other in a circle: %s", cycle),
+		"Every step in that list waits on one before to start, so none of them can:\n"+
+			"    "+cycle+"\n\n"+
+			"One of them must stop waiting on the one after it. A dependency has to point\n"+
+			"backwards, at a step that has already finished.")
+}
+
+// checkGraphBounds is the other graph refusal: a graph that avoids a cycle
+// but runs deeper than MaxDAGDepth, or fans a single step out wider than
+// MaxFanOut, is refused, so an edit pushed into the file cannot push a run
+// past the machine's limits at apply.
+func (d *decoder) checkGraphBounds(steps []Step) {
+	if d.stopped {
+		return
+	}
+	order, cycle := TopoOrder(steps)
+	if cycle != "" {
+		return
+	}
+	if len(order) == 0 {
+		return
+	}
+
+	byName := map[string]int{}
+	for i, s := range steps {
+		byName[s.Name] = i
+	}
+	// depth[i] is the longest run of edges from a step with no needs to step
+	// i, in the deterministic order, so every need is resolved before its
+	// consumer.
+	depth := make([]int, len(steps))
+	// fanOut[i] is how many steps wait on step i, plus the number of needs
+	// step i names; both directions count the same ceiling.
+	fanOut := make([]int, len(steps))
+	for _, name := range order {
+		i := byName[name]
+		best := 0
+		for _, need := range steps[i].Needs {
+			j := byName[need]
+			if depth[j]+1 > best {
+				best = depth[j] + 1
+			}
+			fanOut[j]++
+		}
+		if len(steps[i].Needs) > MaxFanOut {
+			d.error(CodeFanOutLimit, d.stepPosition(i),
+				fmt.Sprintf("step %q names %d needs, and the most it may is %d", name, len(steps[i].Needs), MaxFanOut),
+				fmt.Sprintf("A step that waits on %d others is a graph several machines, not one\n"+
+					"step. Split it:\n\n"+
+					"    max_fan_out: %d", MaxFanOut, MaxFanOut))
+			continue
+		}
+		depth[i] = best
+		if best > MaxDAGDepth {
+			d.error(CodeDAGDepthLimit, d.stepPosition(i),
+				fmt.Sprintf("step %q is %d steps from the top, and the deepest a run may be is %d", name, best, MaxDAGDepth),
+				fmt.Sprintf("A pipeline %d steps deep waits longer than the machine can answer.\nFlatten it into groups:\n\n"+
+					"    max_depth: %d", MaxDAGDepth, MaxDAGDepth))
+		}
+	}
+	for i := range steps {
+		if fanOut[i] > MaxFanOut {
+			d.error(CodeFanOutLimit, d.stepPosition(i),
+				fmt.Sprintf("%d steps wait on %q, and the most may is %d", fanOut[i], steps[i].Name, MaxFanOut),
+				fmt.Sprintf("A step that %d others depends on is a single point the whole run waits\\n"+
+					"on. Fan it out:\\n\\n"+
+					"    max_fan_out: %d", MaxFanOut, MaxFanOut))
+		}
+	}
 }
 
 // scalarText is the value of a scalar node as the text the file carries.
