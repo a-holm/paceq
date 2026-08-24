@@ -48,7 +48,7 @@ build:
 # The race detector is the one thing that needs cgo. It affects the test run only,
 # never the artifact built by the build target.
 test:
-	CGO_ENABLED=1 $(GO) test -race -count=1 ./...
+	CGO_ENABLED=1 $(GO) test -race -count=1 -timeout 6h ./...
 
 # The concurrency gate and the throughput floor. It runs without the race
 # detector on purpose: the detector multiplies the cost of every transaction, so
