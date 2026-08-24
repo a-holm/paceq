@@ -709,3 +709,157 @@ func TestADeferralReleasesOnTheTickerAlone(t *testing.T) {
 			detail.Run.State, detail.Run.ConcurrencyKey, detail.Run.DeferReason)
 	}
 }
+
+// The sensor path (#17). A sensor payload carries the params a param-form key
+// reads, so the sensor path is where per fire keys actually vary.
+
+func concSensorReady(t *testing.T, s *Store, job string) {
+	t.Helper()
+	if _, err := s.SyncSensors(context.Background(), job, []spec.Sensor{{
+		Name:               "watch",
+		Kind:               "exec",
+		Run:                []string{"/bin/true"},
+		Interval:           time.Minute,
+		MinInterval:        time.Minute,
+		Timeout:            time.Minute,
+		MaxTriggersPerTick: 10,
+	}}); err != nil {
+		t.Fatalf("sync the sensor of %s: %v", job, err)
+	}
+}
+
+func concSensorCommit(t *testing.T, s *Store, job string, triggers ...SensorTrigger) SensorTickCommitResult {
+	t.Helper()
+	ctx := context.Background()
+
+	b, err := s.BeginSensorTick(ctx, BeginSensorTickInput{
+		SensorName:      "watch",
+		DaemonSessionID: "test",
+		Now:             time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("begin the tick: %v", err)
+	}
+	var version, epoch int64
+	if err := s.r.QueryRowContext(ctx,
+		`SELECT cursor_version, dedup_epoch FROM sensors WHERE name = 'watch'`).
+		Scan(&version, &epoch); err != nil {
+		t.Fatalf("read the guard: %v", err)
+	}
+	out, err := s.CommitSensorTick(ctx, SensorTickCommitInput{
+		TickID:        b.TickID,
+		SensorName:    "watch",
+		JobName:       job,
+		CursorVersion: version,
+		DedupEpoch:    epoch,
+		Triggers:      triggers,
+		Outcome:       OutcomeTriggered,
+		DurationMs:    1,
+		NextEvalAt:    time.Now().Add(time.Minute).UnixMilli(),
+		Now:           time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("commit the tick: %v", err)
+	}
+	return out
+}
+
+func runRowOf(t *testing.T, s *Store, runID string) Run {
+	t.Helper()
+	detail, err := s.GetRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("read run %s: %v", runID, err)
+	}
+	return detail.Run
+}
+
+func triggerRowOf(t *testing.T, s *Store, runKey string) (outcome, code, pointedAt string) {
+	t.Helper()
+	err := s.r.QueryRowContext(context.Background(),
+		`SELECT outcome, COALESCE(reason_code,''), COALESCE(run_id,'')
+		 FROM triggers WHERE run_key = ?`, runKey).
+		Scan(&outcome, &code, &pointedAt)
+	if err != nil {
+		t.Fatalf("read the trigger behind %s: %v", runKey, err)
+	}
+	return outcome, code, pointedAt
+}
+
+func TestSensorFiresResolveKeysAndDeferTheLoser(t *testing.T) {
+	s := migratedStore(t)
+	concApply(t, s, "sens", constKey("k"), "")
+	concSensorReady(t, s, "sens")
+
+	out := concSensorCommit(t, s, "sens",
+		SensorTrigger{RunKey: "ev-1"},
+		SensorTrigger{RunKey: "ev-2"})
+	if out.Accepted != 2 {
+		t.Fatalf("accepted %d, want 2 (a deferral is still an accepted run)", out.Accepted)
+	}
+
+	holder := runRowOf(t, s, out.RunIDs[0])
+	loser := runRowOf(t, s, out.RunIDs[1])
+	if holder.ConcurrencyKey != "sens:k" {
+		t.Fatalf("the holder carries %q", holder.ConcurrencyKey)
+	}
+	if loser.ConcurrencyKey != "" || loser.DeferReason != model.DeferReasonConcurrencyKey {
+		t.Fatalf("the loser is not a keyless deferral: %+v", loser)
+	}
+}
+
+func TestSensorParamsGiveEachFireItsOwnOrNoKey(t *testing.T) {
+	s := migratedStore(t)
+	concApply(t, s, "bykunde", &spec.ConcurrencyKey{Param: "kunde"}, "")
+	concSensorReady(t, s, "bykunde")
+
+	out := concSensorCommit(t, s, "bykunde",
+		SensorTrigger{RunKey: "e1", ParamsJSON: `{"kunde":"a"}`},
+		SensorTrigger{RunKey: "e2", ParamsJSON: `{"kunde":"a"}`},
+		SensorTrigger{RunKey: "e3", ParamsJSON: `{}`})
+	if out.Accepted != 3 {
+		t.Fatalf("accepted %d, want 3", out.Accepted)
+	}
+
+	r1 := runRowOf(t, s, out.RunIDs[0])
+	r2 := runRowOf(t, s, out.RunIDs[1])
+	r3 := runRowOf(t, s, out.RunIDs[2])
+	if r1.ConcurrencyKey != "bykunde:a" {
+		t.Fatalf("the first fire carries %q, want bykunde:a", r1.ConcurrencyKey)
+	}
+	if r2.DeferReason != model.DeferReasonConcurrencyKey || r2.ConcurrencyKey != "" {
+		t.Fatalf("the second fire should wait for kunde=a: %+v", r2)
+	}
+	if r3.ConcurrencyKey != "" && r3.DeferReason != "" {
+		t.Fatalf("a fire without the parameter is unlimited, not deferred: %+v", r3)
+	}
+}
+
+func TestSensorSkipPolicyRejectsTheHeldFire(t *testing.T) {
+	s := migratedStore(t)
+	concApply(t, s, "sskip", constKey("k"), spec.OnConflictSkip)
+	concSensorReady(t, s, "sskip")
+
+	out := concSensorCommit(t, s, "sskip",
+		SensorTrigger{RunKey: "keep"},
+		SensorTrigger{RunKey: "drop"})
+	if out.Accepted != 1 {
+		t.Fatalf("accepted %d, want exactly the first fire", out.Accepted)
+	}
+
+	holder := runRowOf(t, s, out.RunIDs[0])
+	outcome, code, pointedAt := triggerRowOf(t, s, "drop")
+	if outcome != "rejected" || code != string(reason.TRIGGERRejectedConcurrencyKey) {
+		t.Fatalf("the dropped fire reads %s/%s", outcome, code)
+	}
+	if pointedAt != holder.ID {
+		t.Fatalf("the rejection points at %q, want the holder %q", pointedAt, holder.ID)
+	}
+	var keys int
+	if err := s.r.QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM run_keys WHERE run_key = 'drop'`).Scan(&keys); err != nil {
+		t.Fatal(err)
+	}
+	if keys != 0 {
+		t.Fatalf("%d dedup rows survive a refused fire, want none", keys)
+	}
+}

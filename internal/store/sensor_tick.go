@@ -9,6 +9,7 @@ import (
 
 	"github.com/a-holm/paceq/internal/faults"
 	"github.com/a-holm/paceq/internal/id"
+	"github.com/a-holm/paceq/internal/model"
 	"github.com/a-holm/paceq/internal/reason"
 	"github.com/a-holm/paceq/internal/spec"
 )
@@ -191,6 +192,10 @@ type SensorTickCommitResult struct {
 	// advanced past the cursor_version this evaluation started from. Nothing
 	// was written except the tick being marked error with TICK_MISSED_LEASE_LOST.
 	Fenced bool
+
+	// Rejected is how many triggers a held concurrency key refused (#17):
+	// no run behind them, only the trigger row recording the refusal.
+	Rejected int
 }
 
 // CommitSensorTick records one finished sensor evaluation, all or nothing: the
@@ -288,7 +293,7 @@ WHERE j.name = ?`, in.JobName).Scan(&versionID, &specJSON); err != nil {
 		}
 
 		for i, tr := range in.Triggers {
-			accepted, err := commitSensorTriggerTx(tx, commitTriggerParams{
+			accepted, rejected, err := commitSensorTriggerTx(tx, commitTriggerParams{
 				tickID:    in.TickID,
 				triggerID: triggerIDs[i],
 				runID:     runIDs[i],
@@ -304,10 +309,13 @@ WHERE j.name = ?`, in.JobName).Scan(&versionID, &specJSON); err != nil {
 			if err != nil {
 				return err
 			}
-			if accepted {
+			switch {
+			case accepted:
 				out.Accepted++
 				out.RunIDs = append(out.RunIDs, runIDs[i])
-			} else {
+			case rejected:
+				out.Rejected++
+			default:
 				out.Deduped++
 			}
 		}
@@ -356,8 +364,8 @@ type commitTriggerParams struct {
 // rather than a gap.
 //
 // It reports whether the trigger created a new run (true) or folded into an
-// existing run (false).
-func commitSensorTriggerTx(tx *sql.Tx, p commitTriggerParams) (accepted bool, _ error) {
+// existing run (false), and whether a refused fire rejected its trigger (#17).
+func commitSensorTriggerTx(tx *sql.Tx, p commitTriggerParams) (accepted bool, rejected bool, _ error) {
 	params := p.params
 	if params == "" {
 		params = "{}"
@@ -371,11 +379,11 @@ VALUES (?, ?, ?, ?, ?)
 ON CONFLICT(source_id, epoch, run_key) DO NOTHING`,
 		p.sensor, p.epoch, p.runKey, p.at, p.runID)
 	if err != nil {
-		return false, fmt.Errorf("register the run key %s: %w", p.runKey, err)
+		return false, false, fmt.Errorf("register the run key %s: %w", p.runKey, err)
 	}
 	newKey, err := res.RowsAffected()
 	if err != nil {
-		return false, fmt.Errorf("count the run key %s registration: %w", p.runKey, err)
+		return false, false, fmt.Errorf("count the run key %s registration: %w", p.runKey, err)
 	}
 
 	if newKey == 0 {
@@ -385,7 +393,7 @@ ON CONFLICT(source_id, epoch, run_key) DO NOTHING`,
 		if err := tx.QueryRow(`SELECT run_id FROM run_keys
 WHERE source_id = ? AND epoch = ? AND run_key = ?`,
 			p.sensor, p.epoch, p.runKey).Scan(&original); err != nil {
-			return false, fmt.Errorf("find the run behind key %s: %w", p.runKey, err)
+			return false, false, fmt.Errorf("find the run behind key %s: %w", p.runKey, err)
 		}
 		_, err := tx.Exec(`INSERT INTO triggers
 (id, tick_id, job_name, run_key, params_json, created_at, outcome, reason_code, run_id)
@@ -393,9 +401,9 @@ VALUES (?, ?, ?, ?, ?, ?, 'deduped', ?, ?)`,
 			p.triggerID, p.tickID, p.jobName, p.runKey, params, p.at,
 			string(reason.TRIGGERDedupedRunKey), original)
 		if err != nil {
-			return false, fmt.Errorf("record the deduped trigger for %s: %w", p.runKey, err)
+			return false, false, fmt.Errorf("record the deduped trigger for %s: %w", p.runKey, err)
 		}
-		return false, nil
+		return false, false, nil
 	}
 
 	// A new run: the trigger, the queued run with its steps, and its queued
@@ -410,31 +418,83 @@ VALUES (?, ?, ?, ?, ?, ?, 'deduped', ?, ?)`,
 VALUES (?, ?, ?, ?, ?, ?, 'accepted', ?)`,
 		p.triggerID, p.tickID, p.jobName, p.runKey, params, p.at,
 		string(reason.TRIGGERAccepted)); err != nil {
-		return false, fmt.Errorf("record the accepted trigger for %s: %w", p.runKey, err)
+		return false, false, fmt.Errorf("record the accepted trigger for %s: %w", p.runKey, err)
 	}
 
-	if _, err := tx.Exec(`INSERT INTO runs
+	// Insert-first against the partial unique index (#17): the conflict
+	// target names ux_runs_conc_key by its exact predicate, written==0 is
+	// the whole conflict signal, and the job's on_conflict policy decides
+	// what this fire becomes. Same shape as the schedule path.
+	concKey := resolvedConcurrencyKey(p.job, p.params, p.runKey)
+	result, err := tx.Exec(`INSERT INTO runs
 (id, job_name, job_version_id, trigger_id, origin, run_key, state, available_at,
- params_json, attempt, max_attempts, created_at, updated_at)
-VALUES (?, ?, ?, ?, 'sensor', ?, 'queued', ?, ?, 0, 1, ?, ?)`,
-		p.runID, p.jobName, p.versionID, p.triggerID, p.runKey, p.at, params, p.at, p.at); err != nil {
-		return false, fmt.Errorf("create the sensor run for %s: %w", p.runKey, err)
+ params_json, attempt, max_attempts, created_at, updated_at, concurrency_key)
+VALUES (?, ?, ?, ?, 'sensor', ?, 'queued', ?, ?, 0, 1, ?, ?, ?)
+ON CONFLICT (concurrency_key) WHERE concurrency_key IS NOT NULL
+AND state IN ('queued', 'running') DO NOTHING`,
+		p.runID, p.jobName, p.versionID, p.triggerID, p.runKey, p.at, params, p.at, p.at,
+		nullIfEmpty(concKey))
+	if err != nil {
+		return false, false, fmt.Errorf("create the sensor run for %s: %w", p.runKey, err)
+	}
+	written, err := result.RowsAffected()
+	if err != nil {
+		return false, false, fmt.Errorf("create the sensor run for %s: %w", p.runKey, err)
+	}
+
+	eventKind := "run.queued"
+	var eventData string
+	if written == 0 && concKey != "" {
+		blocking := blockingRunForKeyTx(tx, concKey)
+		eventData = concDeferDataJSON(concKey, blocking)
+		if p.job.OnConflict == spec.OnConflictSkip {
+			// No run at all: the trigger this fire already wrote becomes
+			// the rejection record, pointing at the holder, and the dedup
+			// registration made for this fire's own id is withdrawn so a
+			// later evaluation of the same event may try again.
+			if err := rejectTriggerConcurrencyKeyTx(tx, p.triggerID, p.sensor, p.epoch,
+				p.runKey, p.runID, blocking, concKey); err != nil {
+				return false, false, err
+			}
+			return false, true, nil
+		}
+		// Defer (the default): store the loser queued but KEYLESS, naming
+		// the wanted key and the blocker (model comment:
+		// concurrency_key.go). A deferral is still an accepted fire: the
+		// run exists and will start when the key frees.
+		availableAt := p.at + int64(DefaultDeferBackoff/time.Millisecond)
+		if _, err := tx.Exec(`INSERT INTO runs
+(id, job_name, job_version_id, trigger_id, origin, run_key, state, available_at,
+ defer_reason, reason_code, reason_data, params_json, attempt, max_attempts,
+ created_at, updated_at, concurrency_key)
+VALUES (?, ?, ?, ?, 'sensor', ?, 'queued', ?, ?, ?, ?, ?, 0, 1, ?, ?, NULL)`,
+			p.runID, p.jobName, p.versionID, p.triggerID, p.runKey, availableAt,
+			model.DeferReasonConcurrencyKey, string(reason.RUNDeferredConcurrencyKey),
+			eventData, params, p.at, p.at); err != nil {
+			return false, false, fmt.Errorf("create the deferred sensor run for %s: %w", p.runKey, err)
+		}
+		eventKind = "run.deferred"
 	}
 
 	if err := insertSteps(tx, p.runID, p.job.Steps); err != nil {
-		return false, err
+		return false, false, err
 	}
 
-	if err := appendRunEvent(tx, RunEvent{
+	event := RunEvent{
 		RunID:   p.runID,
 		At:      time.UnixMilli(p.at).UTC(),
-		Kind:    "run.queued",
+		Kind:    eventKind,
 		ToState: "queued",
 		Actor:   "sensor",
-	}); err != nil {
-		return false, err
 	}
-	return true, nil
+	if eventKind == "run.deferred" {
+		event.ReasonCode = string(reason.RUNDeferredConcurrencyKey)
+		event.DetailJSON = eventData
+	}
+	if err := appendRunEvent(tx, event); err != nil {
+		return false, false, err
+	}
+	return true, false, nil
 }
 
 // closeSensorTickTx writes a tick's outcome. It is the only place a sensor tick
