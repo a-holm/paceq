@@ -197,6 +197,11 @@ type Step struct {
 	// yet; the claim gate reads it all the same, because M1-09 will fill
 	// it without touching a single reader.
 	NextAttemptAt time.Time
+
+	// Artifacts are the references the step published through its
+	// $PACEQ_OUTPUT (#13). Only a succeeded step has any; they are filled
+	// by GetRun and RunsArtifacts and never written here.
+	Artifacts []Artifact
 }
 
 // RunDetail is a run with its steps, which is what showing one run needs.
@@ -462,6 +467,9 @@ FROM runs WHERE id >= ? AND id < ? ORDER BY id LIMIT 2`, span.Lower, span.Upper)
 
 		detail.Steps, err = readSteps(ctx, r, detail.Run.ID)
 		if err != nil {
+			return err
+		}
+		if err := attachArtifacts(ctx, r, detail.Run.ID, detail.Steps); err != nil {
 			return err
 		}
 		return nil
