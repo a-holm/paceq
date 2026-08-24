@@ -3,11 +3,13 @@ package store
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/a-holm/paceq/internal/clock"
 	"github.com/a-holm/paceq/internal/model"
 	"github.com/a-holm/paceq/internal/reason"
 	"github.com/a-holm/paceq/internal/spec"
@@ -617,5 +619,93 @@ func TestTwoDeferralsOnOneKeyReleaseOneAtATime(t *testing.T) {
 	}
 	if remaining != 1 {
 		t.Fatalf("%d deferrals left waiting, want 1", remaining)
+	}
+}
+
+// The release model end to end on a moving clock (#17, AC 6): the deferral
+// waits out its backoff, survives a claim look while its key is held, and
+// starts the moment a look finds the key free. There is no notify.Bus in this
+// file at all: the ticker alone must converge, because wakes are latency and
+// never correctness. A live bus changes nothing here but speed, which is the
+// same standing rule the dispatcher loop keeps (its wake wiring is pinned by
+// the daemon package's own tests).
+func TestADeferralReleasesOnTheTickerAlone(t *testing.T) {
+	clk := clock.NewFake(time.Now())
+	path := filepath.Join(t.TempDir(), "state.db")
+	s, err := Open(context.Background(), path, Options{Clock: clk})
+	if err != nil {
+		t.Fatalf("open the store: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	if err := s.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	ctx := context.Background()
+	concApply(t, s, "solo", constKey("k"), "")
+	row := concSchedule(t, s, "solo")
+
+	keyedActiveRun(t, s, "solo", "01J0000000000000000000000H", "solo:k")
+	victim := admitTick(t, s, row, 0)
+	victimID := victim.Run.ID
+	if victim.Run.DeferReason != model.DeferReasonConcurrencyKey {
+		t.Fatalf("setup: the fire did not defer: %+v", victim.Run)
+	}
+
+	// A look before the backoff is out: nothing happens, deferral or not.
+	if claims, err := s.ClaimRuns(ctx, ClaimSpec{Owner: "w1", TTL: time.Minute}); err != nil {
+		t.Fatalf("claim early: %v", err)
+	} else if len(claims) != 0 {
+		t.Fatalf("a due deferral was taken anyway: %v", claims)
+	}
+
+	// The backoff passes. The key is still held, so even a due look must
+	// leave the row alone: this is the gate, now under a moved clock.
+	clk.Advance(2 * DefaultDeferBackoff)
+	if claims, err := s.ClaimRuns(ctx, ClaimSpec{Owner: "w1", TTL: time.Minute}); err != nil {
+		t.Fatalf("claim while held: %v", err)
+	} else if len(claims) != 0 {
+		t.Fatalf("a held key let a keyless deferral start: %v", claims)
+	}
+	var state string
+	if err := s.r.QueryRowContext(ctx, `SELECT state FROM runs WHERE id = ?`, victimID).Scan(&state); err != nil {
+		t.Fatalf("read the victim: %v", err)
+	}
+	if state != "queued" {
+		t.Fatalf("state %q after a due look against a held key", state)
+	}
+
+	// The holder ends. The next plain look releases the run with its key,
+	// no wake required anywhere.
+	if _, err := s.w.ExecContext(ctx,
+		`UPDATE runs SET state = 'succeeded', finished_at = ?, reason_code = ?, updated_at = ?
+		 WHERE id = ?`,
+		clk.Now().UnixMilli(), string(reason.RUNSucceeded), clk.Now().UnixMilli(),
+		"01J0000000000000000000000H"); err != nil {
+		t.Fatalf("finish the holder: %v", err)
+	}
+
+	started := false
+	for i := 0; i < 100 && !started; i++ {
+		claims, err := s.ClaimRuns(ctx, ClaimSpec{Owner: "w1", TTL: time.Minute})
+		if err != nil {
+			t.Fatalf("claim %d: %v", i, err)
+		}
+		for _, c := range claims {
+			if c.ID == victimID {
+				started = true
+			}
+		}
+	}
+	if !started {
+		t.Fatal("the ticker alone never released the deferral")
+	}
+	detail, err := s.GetRun(ctx, victimID)
+	if err != nil {
+		t.Fatalf("read the released run: %v", err)
+	}
+	if detail.Run.State != "running" || detail.Run.ConcurrencyKey != "solo:k" || detail.Run.DeferReason != "" {
+		t.Fatalf("released wrong: state=%q key=%q defer=%q",
+			detail.Run.State, detail.Run.ConcurrencyKey, detail.Run.DeferReason)
 	}
 }
