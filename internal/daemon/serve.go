@@ -291,6 +291,7 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 func newEngine(cfg Config, st *store.Store, clk clock.Clock) *engine.Engine {
 	return &engine.Engine{
 		Store:    st,
+		StateDir: cfg.StateDir,
 		LogRoot:  logsink.NewRoot(cfg.StateDir),
 		Clock:    clk,
 		Owner:    cfg.owner(),

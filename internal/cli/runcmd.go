@@ -138,10 +138,11 @@ func runRun(ctx context.Context, env Env, g *globals, out *ui, jobName string, f
 	say(out, "run %s  job %s", queued.Run.ID, queued.Run.JobName)
 
 	executor := &engine.Engine{
-		Store:   s,
-		LogRoot: logsink.NewRoot(stateDir),
-		Clock:   clkOf(env),
-		Owner:   actor,
+		Store:    s,
+		StateDir: stateDir,
+		LogRoot:  logsink.NewRoot(stateDir),
+		Clock:    clkOf(env),
+		Owner:    actor,
 	}
 	// A foreground run renews its lease from its own goroutine: a long step
 	// must never cost the executor its claim just because the renewal could

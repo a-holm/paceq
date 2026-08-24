@@ -161,7 +161,7 @@ func main() {
 		}
 		defer f.Close()
 		for _, line := range []string{
-			`{"artifact":{"name":"out.txt","bytes":3}}`,
+			`{"artifact":{"name":"out.txt","uri":"file:///tmp/out.txt","size_bytes":3}}`,
 			`{"params":{"rows":"42"}}`,
 		} {
 			if _, err := fmt.Fprintln(f, line); err != nil {
@@ -257,6 +257,110 @@ func main() {
 		time.Sleep(d)
 		fmt.Fprintf(f, "end %s %d\n", os.Getenv("PACEQ_SENSOR"), time.Now().UnixNano())
 		_ = f.Close()
+
+	case "require-empty-output":
+		// The output contract begins before exec: the file must exist,
+		// empty and 0600, the moment the command starts. It also publishes
+		// the path it was handed, so a test can pin where paceq put it.
+		path := os.Getenv("PACEQ_OUTPUT")
+		if path == "" {
+			die("require-empty-output: PACEQ_OUTPUT is not set")
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			die("require-empty-output: %v", err)
+		}
+		if info.Size() != 0 {
+			die("require-empty-output: output is %d bytes at start", info.Size())
+		}
+		if perm := info.Mode().Perm(); perm != 0o600 {
+			die("require-empty-output: output mode is %o, want 0600", perm)
+		}
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			die("require-empty-output: %v", err)
+		}
+		fmt.Fprintln(f, `{"artifact":{"name":"output-path","uri":`+strconv.Quote(path)+`}}`)
+		f.Close()
+
+	case "write-broken-output":
+		path := os.Getenv("PACEQ_OUTPUT")
+		if path == "" {
+			die("write-broken-output: PACEQ_OUTPUT is not set")
+		}
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			die("write-broken-output: %v", err)
+		}
+		fmt.Fprintln(f, `{this is not json`)
+		fmt.Fprintln(f, `{"artifact":{"name":"kept","uri":"/kept"}}`)
+		f.Close()
+
+	case "write-then-exit":
+		code, err := strconv.Atoi(arg(args, 0))
+		if err != nil {
+			die("write-then-exit: bad code %q", arg(args, 0))
+		}
+		path := os.Getenv("PACEQ_OUTPUT")
+		if path == "" {
+			die("write-then-exit: PACEQ_OUTPUT is not set")
+		}
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			die("write-then-exit: %v", err)
+		}
+		fmt.Fprintln(f, `{"artifact":{"name":"doomed","uri":"/doomed"}}`)
+		f.Close()
+		os.Exit(code)
+
+	case "publish-input-uri":
+		// The two-step handoff: read the merged upstream references out of
+		// $PACEQ_INPUTS and republish one uri under a new name. A downstream
+		// step that saw nothing publishes the empty marker instead.
+		name := arg(args, 0)
+		want := arg(args, 1)
+		uri := "(none)"
+		var inputs struct {
+			Artifacts map[string]struct {
+				URI string `json:"uri"`
+			} `json:"artifacts"`
+		}
+		if raw := os.Getenv("PACEQ_INPUTS"); raw != "" && raw != "null" {
+			if err := json.Unmarshal([]byte(raw), &inputs); err != nil {
+				die("publish-input-uri: $PACEQ_INPUTS is not JSON: %v", err)
+			}
+			if ref, ok := inputs.Artifacts[want]; ok && ref.URI != "" {
+				uri = ref.URI
+			}
+		}
+		path := os.Getenv("PACEQ_OUTPUT")
+		if path == "" {
+			die("publish-input-uri: PACEQ_OUTPUT is not set")
+		}
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			die("publish-input-uri: %v", err)
+		}
+		fmt.Fprintln(f, `{"artifact":{"name":`+strconv.Quote(name)+`,"uri":`+strconv.Quote(uri)+`}}`)
+		f.Close()
+
+	case "inputs-must-not-contain":
+		// A side-by-side step must be invisible: fail loudly if the named
+		// marker appears anywhere in $PACEQ_INPUTS.
+		sub := arg(args, 0)
+		raw := os.Getenv("PACEQ_INPUTS")
+		fileRaw := ""
+		if p := os.Getenv("PACEQ_INPUTS_FILE"); p != "" {
+			b, err := os.ReadFile(p)
+			if err != nil {
+				die("inputs-must-not-contain: %v", err)
+			}
+			fileRaw = string(b)
+		}
+		if strings.Contains(raw, sub) || strings.Contains(fileRaw, sub) {
+			fmt.Printf("inputs leaked %q\n", sub)
+			os.Exit(8)
+		}
 
 	default:
 		die("unknown mode %q", mode)

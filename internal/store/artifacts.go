@@ -173,3 +173,43 @@ func attachArtifacts(ctx context.Context, r reader, runID string, steps []Step) 
 	}
 	return nil
 }
+
+// ArtifactOwner says who currently holds an artifact name inside one run,
+// and where that holder sits in the spec order. The engine consults it
+// before a verdict so a colliding reference resolves deterministically
+// instead of surprising the UNIQUE constraint.
+type ArtifactOwner struct {
+	Name     string
+	StepName string
+	Idx      int
+}
+
+// RunArtifactOwners maps every published name of a run to its holder.
+func (s *Store) RunArtifactOwners(ctx context.Context, runID string) (map[string]ArtifactOwner, error) {
+	out := map[string]ArtifactOwner{}
+	err := s.withRead(ctx, func(ctx context.Context, r reader) error {
+		rows, err := r.QueryContext(ctx, `SELECT a.name, a.step_name, st.idx
+			FROM artifacts a
+			JOIN steps st ON st.run_id = a.run_id AND st.name = a.step_name
+			WHERE a.run_id = ?`, runID)
+		if err != nil {
+			return fmt.Errorf("read the artifact owners of run %s: %w", runID, err)
+		}
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			var o ArtifactOwner
+			if err := rows.Scan(&o.Name, &o.StepName, &o.Idx); err != nil {
+				return fmt.Errorf("scan an artifact owner: %w", err)
+			}
+			out[o.Name] = o
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("scan an artifact owner: %w", err)
+		}
+		return rows.Close()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
