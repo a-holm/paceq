@@ -475,19 +475,6 @@ func restoreIndex(t *testing.T, s *Store) {
 	}
 }
 
-func readRunKey(t *testing.T, s *Store, runID string) string {
-	t.Helper()
-	var got any
-	if err := s.r.QueryRowContext(context.Background(),
-		`SELECT concurrency_key FROM runs WHERE id = ?`, runID).Scan(&got); err != nil {
-		t.Fatalf("read the run: %v", err)
-	}
-	if got == nil {
-		return ""
-	}
-	return got.(string)
-}
-
 // The claim side of the model (#17): a keyless deferral is INVISIBLE to the
 // ordinary queue. It can never be claimed into running while its wanted key
 // may be held; the only way out is the claim pass's own keyed start, which
