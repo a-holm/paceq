@@ -23,7 +23,9 @@ steps:
 
 sensors:
   - interval: 15000ms
-    type: file
+    kind: exec
+    run:
+      - /srv/etl/nye-objekter.sh
     name: dropzone
 schedules:
   - timezone: Europe/Oslo

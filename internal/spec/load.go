@@ -143,3 +143,40 @@ func dedupe(sorted []string) []string {
 	}
 	return out
 }
+
+// NamedJob is one parsed job and the path it came from, the input the checks
+// that need the whole catalog run over.
+type NamedJob struct {
+	Path string
+	Job  *Job
+}
+
+// CheckGlobalSensorNames rejects two jobs that define the same sensor name. A
+// sensor name is the sensor row's primary key across every job, so two owners
+// of one name cannot both materialise; the later apply would silently steal
+// the row from the first. Each diagnostic points at one conflicting job and
+// names the file that already owns the name.
+func CheckGlobalSensorNames(jobs []NamedJob) diag.List {
+	var out diag.List
+	owner := map[string]string{}
+	for _, named := range jobs {
+		for _, sensor := range named.Job.Sensors {
+			if sensor.Name == "" {
+				continue
+			}
+			if first, taken := owner[sensor.Name]; taken {
+				out = append(out, diag.New(CodeSensorNameTaken, diag.SeverityError, named.Path, diag.Position{},
+					"the sensor "+sensor.Name+" is already used by the job in "+first,
+					"A sensor name is the primary key its row lives under across every job,\n"+
+						"so two jobs can never both own "+sensor.Name+". The later apply would\n"+
+						"silently move the row from the first job to the second:\n\n"+
+						"    "+first+"          already owns it\n"+
+						"    "+named.Path+"   is the job trying to take it\n\n"+
+						"Rename the sensor in one of the files."))
+				continue
+			}
+			owner[sensor.Name] = named.Path
+		}
+	}
+	return out
+}

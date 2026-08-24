@@ -52,7 +52,7 @@ func TestFromIRRoundTripsThroughCanonical(t *testing.T) {
 				},
 			},
 			Schedules: []Schedule{{Name: "nightly", Cron: "0 2 * * *", Timezone: "Europe/Oslo"}},
-			Sensors:   []Sensor{{Name: "dropbox", Type: "exec", Interval: 30 * time.Second}},
+			Sensors:   []Sensor{{Name: "dropbox", Kind: "exec", Run: []string{"/bin/watch"}, Interval: 30 * time.Second}},
 		},
 	}
 

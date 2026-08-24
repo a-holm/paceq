@@ -66,6 +66,32 @@ const (
 	// CodeInheritEnv is the warning that a job takes variables from the
 	// environment paceq itself was started in.
 	CodeInheritEnv = "W1002"
+
+	// CodeSensorBadName is a sensor name that is missing or does not match
+	// NamePattern.
+	CodeSensorBadName = "PQ4101"
+	// CodeSensorNameTaken is a sensor name another sensor in the job, or a
+	// sensor in another job, already carries.
+	CodeSensorNameTaken = "PQ4102"
+	// CodeSensorKind is a kind other than exec: in 1.0 the built in sensor
+	// types arrive in v0.3, not earlier.
+	CodeSensorKind = "PQ4103"
+	// CodeSensorRun is run written as a string, as an empty list, or with an
+	// empty argument in it.
+	CodeSensorRun = "PQ4104"
+	// CodeSensorIntervalMin is an interval under the one second floor.
+	CodeSensorIntervalMin = "PQ4105"
+	// CodeSensorMinInterval is a min_interval over the interval itself.
+	CodeSensorMinInterval = "PQ4106"
+	// CodeSensorTimeout is a timeout outside the [1s, 5m] range.
+	CodeSensorTimeout = "PQ4107"
+	// CodeSensorTriggers is a max_triggers_per_tick outside [1, 10000].
+	CodeSensorTriggers = "PQ4108"
+	// CodeSensorWorkdir is the warning that a workdir does not exist, or is
+	// not an absolute path.
+	CodeSensorWorkdir = "PQ4109"
+	// CodeSensorEnvKey is an env key with the reserved PULSEQ_ prefix.
+	CodeSensorEnvKey = "PQ4110"
 )
 
 // Codes is every code this package can raise, in the order they are declared.
@@ -98,5 +124,15 @@ func Codes() []string {
 		CodeUnknownTimezone,
 		CodeShell,
 		CodeInheritEnv,
+		CodeSensorBadName,
+		CodeSensorNameTaken,
+		CodeSensorKind,
+		CodeSensorRun,
+		CodeSensorIntervalMin,
+		CodeSensorMinInterval,
+		CodeSensorTimeout,
+		CodeSensorTriggers,
+		CodeSensorWorkdir,
+		CodeSensorEnvKey,
 	}
 }

@@ -2,8 +2,10 @@ package spec
 
 import (
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/goccy/go-yaml/ast"
 
@@ -18,7 +20,7 @@ var (
 	stepFields     = []string{"name", "run", "shell", "workdir", "timeout", "retry", "needs"}
 	retryFields    = []string{"max", "backoff", "initial", "max_delay", "jitter"}
 	scheduleFields = []string{"name", "cron", "timezone", "overlap"}
-	sensorFields   = []string{"name", "type", "interval"}
+	sensorFields   = []string{"name", "kind", "run", "workdir", "env", "interval", "min_interval", "timeout", "max_triggers_per_tick", "paused", "description"}
 )
 
 // commonMistakes are the names people arrive with, from cron, from Compose,
@@ -388,42 +390,301 @@ func (d *decoder) sensors(node ast.Node) []Sensor {
 	if !ok {
 		return nil
 	}
+	if len(sequence.Values) > MaxSteps {
+		d.error(CodeTooManySteps, position(node),
+			fmt.Sprintf("the job has %d sensors, and paceq runs at most %d", len(sequence.Values), MaxSteps),
+			fmt.Sprintf("Split them between jobs, or raise the ceiling. %d is the same number as the\n", MaxSteps)+
+				"step ceiling, because a file that large is not something anybody reads at 03:14.")
+		return nil
+	}
 
 	sensors := make([]Sensor, 0, len(sequence.Values))
 	for i, value := range sequence.Values {
 		where := fmt.Sprintf("sensor %d", i+1)
+		positions := sensorPositions{name: position(value)}
 		mapping, ok := d.mapping(value, where)
 		if !ok {
+			d.sensorPos = append(d.sensorPos, positions)
 			continue
 		}
 
-		sensor := Sensor{}
+		sensor := Sensor{
+			Kind:               DefaultSensorKind,
+			Timeout:            DefaultSensorTimeout,
+			MaxTriggersPerTick: DefaultSensorMaxTriggers,
+		}
 		seen := d.fields(mapping, "a sensor", sensorFields, func(key string, value ast.Node) {
 			switch key {
 			case "name":
+				positions.name = position(value)
 				sensor.Name = d.name(value, where+" name")
-			case "type":
-				sensor.Type = d.name(value, where+" type")
+			case "kind":
+				sensor.Kind = d.sensorKind(value, where)
+			case "run":
+				sensor.Run = d.sensorRun(value, where)
+			case "workdir":
+				positions.workdir = position(value)
+				sensor.Workdir = d.text(value, where+" workdir")
+			case "env":
+				sensor.Env = d.sensorEnv(value, where)
 			case "interval":
-				sensor.Interval = d.timeout(value, 0)
+				sensor.Interval = d.sensorInterval(value, where)
+			case "min_interval":
+				sensor.MinInterval = d.timeout(value, 0)
+			case "timeout":
+				sensor.Timeout = d.sensorTimeout(value, where)
+			case "max_triggers_per_tick":
+				sensor.MaxTriggersPerTick = d.sensorTriggers(value, where)
+			case "paused":
+				sensor.Paused = d.flag(value, where+" paused")
+			case "description":
+				sensor.Description = d.text(value, where+" description")
 			}
 		})
-		for _, field := range sensorFields {
-			if seen[field] {
-				continue
-			}
-			d.error(CodeMissingField, position(value),
-				fmt.Sprintf("%s has no %s", where, field),
-				"A sensor says what it watches and how often:\n\n"+
+		d.sensorPos = append(d.sensorPos, positions)
+
+		if !seen["name"] {
+			d.error(CodeSensorBadName, startPosition(mapping),
+				fmt.Sprintf("%s has no name", where),
+				"A sensor is named so a failure can say which one fired, and so the row it\n"+
+					"materialises into has a key:\n\n"+
 					"    sensors:\n"+
 					"      - name: dropzone\n"+
-					"        type: file\n"+
-					"        interval: 15s\n\n"+
-					"What each type accepts beyond that arrives with the sensors in M3-01.")
+					"        run: [\"/srv/etl/nye-objekter.sh\"]\n"+
+					"        interval: 15s")
+		}
+		if !seen["run"] {
+			d.error(CodeSensorRun, startPosition(mapping),
+				fmt.Sprintf("%s has no run", where),
+				"A sensor runs a command, given as a list of arguments:\n\n"+
+					"    run: [\"/srv/etl/nye-objekter.sh\"]")
+		}
+		if !seen["interval"] || sensor.Interval == 0 {
+			d.error(CodeSensorIntervalMin, startPosition(mapping),
+				fmt.Sprintf("%s has no interval", where),
+				"A sensor is evaluated on an interval, and needs one:\n\n"+
+					"    interval: 15s")
+		}
+		if sensor.MinInterval == 0 {
+			// The default lower bound is one second. A validated interval is
+			// never under it, so min(interval, 1s) is always 1s.
+			sensor.MinInterval = SensorIntervalMin
+		}
+		if sensor.MinInterval > sensor.Interval && sensor.Interval > 0 {
+			d.error(CodeSensorMinInterval, startPosition(mapping),
+				fmt.Sprintf("%s begins evaluations no more often than every %s, and tries to end them after %s",
+					where, FormatDuration(sensor.MinInterval), FormatDuration(sensor.Interval)),
+				"min_interval is the absolute lower bound between two starts, and interval is the\n"+
+					"desired frequency. The floor cannot be above the rhythm that drives it:\n\n"+
+					"    interval: 60s\n"+
+					"    min_interval: 10s")
+		}
+		if sensor.Workdir != "" && !filepath.IsAbs(sensor.Workdir) {
+			d.warn(CodeSensorWorkdir, positions.workdir,
+				fmt.Sprintf("%s workdir %q is not an absolute path", where, sensor.Workdir),
+				"Paceq starts the sensor process itself, so a relative name has no directory to\n"+
+					"be relative to, and the directory has to exist when the sensor starts:\n\n"+
+					"    workdir: /srv/etl")
 		}
 		sensors = append(sensors, sensor)
 	}
 	return sensors
+}
+
+// sensorKind reads the kind field. There is exactly one kind in 1.0, exec; a
+// value that names a built in type is refused against the release that brings
+// it, so nobody ships a sensor that silently means nothing.
+func (d *decoder) sensorKind(node ast.Node, where string) string {
+	value, ok := d.stringValue(node, where+" kind")
+	if !ok {
+		return DefaultSensorKind
+	}
+	if value == DefaultSensorKind {
+		return value
+	}
+	d.error(CodeSensorKind, position(node),
+		fmt.Sprintf("%s is %q, and exec is the only kind paceq accepts in 1.0", where, value),
+		"The built in sensor types file, http and sql arrive in v0.3 (M7-03). Until then a\n"+
+			"sensor runs a subprocess that writes JSON to stdout:\n\n"+
+			"    kind: exec\n"+
+			"    run: [\"/srv/etl/nye-objekter.sh\"]")
+	return DefaultSensorKind
+}
+
+// sensorRun reads run as argv. There is no string form, none of it is ever
+// split or expanded by a shell, and every element has to carry a command or
+// an argument: an empty string would be a hole where an argument is meant to
+// be (08 section 3.2, the same rule steps obey).
+func (d *decoder) sensorRun(node ast.Node, where string) []string {
+	resolved, ok := d.resolve(node, where+" run")
+	if !ok {
+		return nil
+	}
+	sequence, isSequence := resolved.(*ast.SequenceNode)
+	if !isSequence {
+		d.error(CodeSensorRun, position(resolved),
+			fmt.Sprintf("run in %s is %s, and run is a list of arguments", where, typeName(resolved)),
+			"There is no string form. paceq starts the sensor process itself, so it never\n"+
+				"splits a command on spaces, and a file name with a space in it stays one\n"+
+				"argument:\n\n"+
+				"    run: [\"/usr/bin/ls\", \"/srv/dropzone\"]\n\n"+
+				"or, one element per line:\n\n"+
+				"    run:\n"+
+				"      - /srv/etl/nye-objekter.sh")
+		return nil
+	}
+	if len(sequence.Values) == 0 {
+		d.error(CodeSensorRun, position(resolved),
+			fmt.Sprintf("run in %s is an empty list", where),
+			"The first element is the program to start, so the list needs at least one:\n\n"+
+				"    run: [\"/srv/etl/nye-objekter.sh\"]")
+		return nil
+	}
+
+	argv := make([]string, 0, len(sequence.Values))
+	for i, value := range sequence.Values {
+		argument, ok := d.stringValue(value, fmt.Sprintf("run[%d] in %s", i, where))
+		if !ok {
+			continue
+		}
+		if argument == "" {
+			d.error(CodeSensorRun, position(value),
+				fmt.Sprintf("run[%d] in %s is an empty argument", i, where),
+				"An argument carries a command or a value. An empty string is neither, and it\n"+
+					"would disappear the moment the list is turned into a process:\n\n"+
+					"    run: [\"/usr/bin/env\", \"BUCKET=acme\"]")
+			continue
+		}
+		if strings.ContainsRune(argument, 0) {
+			d.error(CodeBadValue, position(value),
+				fmt.Sprintf("run[%d] in %s carries a NUL byte", i, where),
+				"An argument is handed to the kernel as a NUL terminated string, so it cannot\n"+
+					"contain one. Remove the escape that produced it.")
+			continue
+		}
+		argv = append(argv, argument)
+	}
+	return argv
+}
+
+// sensorInterval reads the interval and enforces the one second floor. The
+// value is a duration; a sensor is never evaluated faster than once a second
+// no matter how fast its source produces work.
+func (d *decoder) sensorInterval(node ast.Node, where string) time.Duration {
+	value := d.timeout(node, 0)
+	if value > 0 && value < SensorIntervalMin {
+		d.error(CodeSensorIntervalMin, position(node),
+			fmt.Sprintf("%s interval is %s, and the lowest it goes is 1s", where, FormatDuration(value)),
+			"Sensors are evaluated by one shared runtime. Sub-second polling is a non-goal,\n"+
+				"and a sensor that pushes faster is better off as a push based source:\n\n"+
+				"    interval: 1s\n\n"+
+				"    interval: 60s    a calmer default for a source that changes slowly")
+		return value
+	}
+	return value
+}
+
+// sensorTimeout reads the timeout and enforces the [1s, 5m] window. Leaving
+// the field out is not an error: the default of 30s is materialised instead.
+func (d *decoder) sensorTimeout(node ast.Node, where string) time.Duration {
+	value := d.timeout(node, DefaultSensorTimeout)
+	if value < SensorTimeoutMin || value > SensorTimeoutMax {
+		d.error(CodeSensorTimeout, position(node),
+			fmt.Sprintf("%s timeout is %s, and paceq allows between 1s and %s",
+				where, FormatDuration(value), FormatDuration(SensorTimeoutMax)),
+			"A sensor that needs more than five minutes should chunk its own work through\n"+
+				"max_triggers_per_tick instead of asking the runtime to wait on it:\n\n"+
+				"    timeout: 30s\n"+
+				"    max_triggers_per_tick: 100")
+		return DefaultSensorTimeout
+	}
+	return value
+}
+
+// sensorTriggers reads how many triggers one evaluation may admit, inside the
+// [1, 10000] window.
+func (d *decoder) sensorTriggers(node ast.Node, where string) int {
+	resolved, ok := d.resolve(node, where+" max_triggers_per_tick")
+	if !ok {
+		return DefaultSensorMaxTriggers
+	}
+	value, isNumber := integerValue(resolved)
+	if !isNumber {
+		written, _ := scalarText(resolved)
+		d.error(CodeBadValue, position(resolved),
+			fmt.Sprintf("%s max_triggers_per_tick is %q, and it is a whole number", where, written),
+			"Write it without quotes or a unit:\n\n"+
+				"    max_triggers_per_tick: 100")
+		return DefaultSensorMaxTriggers
+	}
+	if value < 1 || value > SensorMaxTriggersHi {
+		d.error(CodeSensorTriggers, position(resolved),
+			fmt.Sprintf("%s max_triggers_per_tick is %d, and paceq allows between 1 and %d",
+				where, value, SensorMaxTriggersHi),
+			"It is how many triggers one evaluation may admit, the chunking knob that keeps\n"+
+				"a burst from flooding the queue:\n\n"+
+				"    max_triggers_per_tick: 100")
+		return DefaultSensorMaxTriggers
+	}
+	return int(value)
+}
+
+// sensorEnv reads the env block. It is the model the job's own env block uses,
+// one rule not two, with the reserved prefix bolted on: PULSEQ_ is how paceq
+// itself talks to a sensor process, so a definition that claims a name in that
+// space is refused before the process starts (08 section 3.2).
+func (d *decoder) sensorEnv(node ast.Node, where string) map[string]string {
+	mapping, ok := d.mapping(node, where+" env")
+	if !ok {
+		return nil
+	}
+
+	env := map[string]string{}
+	seen := map[string]bool{}
+	for _, entry := range mapping.Values {
+		if !d.spend(entry, where+" env") {
+			return env
+		}
+		name, ok := d.key(entry, where+" env")
+		if !ok {
+			continue
+		}
+		if seen[name] {
+			d.duplicateKey(name, where+" env", position(entry.Key))
+			continue
+		}
+		seen[name] = true
+
+		if !envNamePattern.MatchString(name) {
+			d.error(CodeBadValue, position(entry.Key),
+				fmt.Sprintf("%q is not a name a process can be given", name),
+				"An environment variable is named with letters, digits and underscores, and\n"+
+					"does not start with a digit.")
+			continue
+		}
+		if strings.HasPrefix(name, "PULSEQ_") {
+			d.error(CodeSensorEnvKey, position(entry.Key),
+				fmt.Sprintf("%q is set in sensor env, and PULSEQ_ is reserved", name),
+				"Paceq itself sets every PULSEQ_ variable a sensor process sees. A definition\n"+
+					"that sets one would be silently overwritten, so it is refused here:\n\n"+
+					"    env:\n"+
+					"      BUCKET: acme-dropzone")
+			continue
+		}
+		value, ok := d.stringValue(entry.Value, where+" env "+name)
+		if !ok {
+			continue
+		}
+		if strings.ContainsRune(value, 0) {
+			d.error(CodeBadValue, position(entry.Value),
+				fmt.Sprintf("the value of %s carries a NUL byte", name),
+				"An environment entry is handed to the kernel as a NUL terminated string, so\n"+
+					"it cannot contain one.")
+			continue
+		}
+		env[name] = value
+	}
+	return env
 }
 
 func (d *decoder) env(node ast.Node) map[string]string {

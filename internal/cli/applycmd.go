@@ -46,6 +46,7 @@ file is recorded or none of them are.`,
 // loadedSpec is one file that parsed clean and is ready for the database.
 type loadedSpec struct {
 	display string
+	job     *spec.Job
 	input   store.JobVersionInput
 	fileSHA string
 	source  []byte
@@ -111,6 +112,7 @@ func runApply(ctx context.Context, env Env, g *globals, out *ui, args []string) 
 		sum := sha256.Sum256(source.Bytes)
 		loaded = append(loaded, loadedSpec{
 			display: file.display,
+			job:     job,
 			input: store.JobVersionInput{
 				JobName:       job.Name,
 				Description:   job.Description,
@@ -118,11 +120,19 @@ func runApply(ctx context.Context, env Env, g *globals, out *ui, args []string) 
 				MaxConcurrent: job.MaxConcurrent,
 				SpecHash:      spec.Hash(spec.Canonical(job)),
 				SpecJSON:      string(spec.Canonical(job)),
+				Sensors:       job.Sensors,
 			},
 			fileSHA: hex.EncodeToString(sum[:]),
 			source:  source.Bytes,
 		})
 	}
+
+	// A sensor name is a primary key across every job, so two files that define
+	// the same one cannot both materialise; the later would silently steal the
+	// row from the first. The conflict is found against the loaded batch and
+	// the files that lose the name are refused here, before the database is
+	// touched, with a diagnostic that names both files.
+	loaded, failed = refuseSensorNameConflicts(loaded, failed)
 
 	var results []store.JobApplyResult
 	if len(loaded) > 0 {
@@ -159,6 +169,38 @@ func firstError(diags diag.List) diag.Diagnostic {
 		}
 	}
 	return diags[0]
+}
+
+// refuseSensorNameConflicts moves into failed any loaded file that tries to
+// take a sensor name another file in the batch already owns. The sensor names
+// are primary keys across every job, so both cannot materialise; refusing the
+// later one here beats a database that would silently reassign the row.
+func refuseSensorNameConflicts(loaded []loadedSpec, failed []failedSpec) ([]loadedSpec, []failedSpec) {
+	named := make([]spec.NamedJob, 0, len(loaded))
+	for _, item := range loaded {
+		if item.job == nil {
+			continue
+		}
+		named = append(named, spec.NamedJob{Path: item.display, Job: item.job})
+	}
+	conflicts := spec.CheckGlobalSensorNames(named)
+	if len(conflicts) == 0 {
+		return loaded, failed
+	}
+
+	byFile := map[string]diag.List{}
+	for _, d := range conflicts {
+		byFile[d.File] = append(byFile[d.File], d)
+	}
+	kept := loaded[:0]
+	for _, item := range loaded {
+		if diags, bad := byFile[item.display]; bad {
+			failed = append(failed, failedSpec{display: item.display, diags: diags, source: item.source})
+			continue
+		}
+		kept = append(kept, item)
+	}
+	return kept, failed
 }
 
 // applyToStore opens the state database and records the batch. The database

@@ -254,11 +254,22 @@ func canonicalSchedules(schedules []Schedule) canonicalArray {
 func canonicalSensors(sensors []Sensor) canonicalArray {
 	out := make(canonicalArray, 0, len(sensors))
 	for _, sensor := range sensors {
-		out = append(out, canonicalObject{
+		object := canonicalObject{
 			{"name", canonicalText(sensor.Name)},
-			{"type", canonicalText(sensor.Type)},
+			{"kind", canonicalText(sensor.Kind)},
+			{"run", canonicalStrings(sensor.Run)},
 			{"interval_ms", canonicalNumber(sensor.Interval.Milliseconds())},
-		})
+			{"min_interval_ms", canonicalNumber(sensor.MinInterval.Milliseconds())},
+			{"timeout_ms", canonicalNumber(sensor.Timeout.Milliseconds())},
+			{"max_triggers_per_tick", canonicalNumber(sensor.MaxTriggersPerTick)},
+			{"paused", canonicalFlag(sensor.Paused)},
+		}
+		object = appendText(object, "workdir", sensor.Workdir)
+		if len(sensor.Env) > 0 {
+			object = append(object, canonicalMember{"env", canonicalStringMap(sensor.Env)})
+		}
+		object = appendText(object, "description", sensor.Description)
+		out = append(out, object)
 	}
 	return out
 }

@@ -255,18 +255,40 @@ func irSensors(val any) ([]Sensor, error) {
 		if !ok {
 			return nil, fmt.Errorf("%s is %T, want an object", where, item)
 		}
-		s := Sensor{}
+		s := Sensor{Kind: DefaultSensorKind}
 		err := eachMember(object, func(key string, val any) error {
 			var err error
 			switch key {
 			case "name":
 				s.Name, err = text(val, where+".name")
-			case "type":
-				s.Type, err = text(val, where+".type")
+			case "kind":
+				s.Kind, err = irSensorKind(val, where)
+			case "run":
+				s.Run, err = irSensorRun(val, where)
+			case "workdir":
+				s.Workdir, err = text(val, where+".workdir")
+			case "env":
+				s.Env, err = textMap(val, where+".env")
 			case "interval_ms":
 				var ms int64
 				ms, err = milliseconds(val, where+".interval_ms")
 				s.Interval = time.Duration(ms) * time.Millisecond
+			case "min_interval_ms":
+				var ms int64
+				ms, err = milliseconds(val, where+".min_interval_ms")
+				s.MinInterval = time.Duration(ms) * time.Millisecond
+			case "timeout_ms":
+				var ms int64
+				ms, err = milliseconds(val, where+".timeout_ms")
+				s.Timeout = time.Duration(ms) * time.Millisecond
+			case "max_triggers_per_tick":
+				var n int64
+				n, err = wholeNumber(val, where+".max_triggers_per_tick")
+				s.MaxTriggersPerTick = int(n)
+			case "paused":
+				s.Paused, err = flag(val, where+".paused")
+			case "description":
+				s.Description, err = text(val, where+".description")
 			default:
 				err = fmt.Errorf("unexpected key %q in %s", key, where)
 			}
@@ -275,9 +297,43 @@ func irSensors(val any) ([]Sensor, error) {
 		if err != nil {
 			return nil, err
 		}
+		if s.Name == "" {
+			return nil, fmt.Errorf("%s carries no name", where)
+		}
+		if len(s.Run) == 0 {
+			return nil, fmt.Errorf("%s carries no run", where)
+		}
 		out = append(out, s)
 	}
 	return out, nil
+}
+
+// irSensorKind reads the kind back. The canonical writer always emits it, and
+// anything but exec is a future document a v1 runtime has no behaviour for.
+func irSensorKind(val any, where string) (string, error) {
+	s, err := text(val, where+".kind")
+	if err != nil {
+		return "", err
+	}
+	if s != DefaultSensorKind {
+		return "", fmt.Errorf("%s.kind is %q, want %q: this document was written for a later runtime", where, s, DefaultSensorKind)
+	}
+	return s, nil
+}
+
+// irSensorRun reads argv back. Order is the meaning, and an empty element is
+// a corrupt document: nothing the v1 writer emits can contain one.
+func irSensorRun(val any, where string) ([]string, error) {
+	items, err := textList(val, where+".run")
+	if err != nil {
+		return nil, err
+	}
+	for i, item := range items {
+		if item == "" {
+			return nil, fmt.Errorf("%s.run[%d] is empty, want a command or an argument", where, i)
+		}
+	}
+	return items, nil
 }
 
 // eachMember walks an object's members once. It exists so every reader above
