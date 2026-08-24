@@ -188,6 +188,23 @@ const (
 // A longer key is a data blob, not a name.
 const MaxConcurrencyKeyLength = 200
 
+// Value resolves the raw key text for one fire. params are the trigger's
+// parameters and runKey is the dedup key the trigger carried. ok is false
+// when this fire has no key at all, which means unlimited; that is a normal
+// outcome for the param form, never an error, because params may come from a
+// sensor payload that simply lacked the field.
+func (k *ConcurrencyKey) Value(params map[string]string, runKey string) (value string, ok bool) {
+	switch {
+	case k.FromRunKey:
+		return runKey, runKey != ""
+	case k.Param != "":
+		v := params[k.Param]
+		return v, v != ""
+	default:
+		return k.Constant, true
+	}
+}
+
 // Step is one command in a job.
 type Step struct {
 	Name string

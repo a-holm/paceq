@@ -381,6 +381,18 @@ func irConcurrencyKey(val any) (*ConcurrencyKey, error) {
 	k := &ConcurrencyKey{}
 	err := eachMember(object, func(key string, v any) error {
 		switch key {
+		case "constant":
+			s, err := text(v, where+".constant")
+			if err != nil {
+				return err
+			}
+			if s == "" {
+				return fmt.Errorf("%s.constant is an empty string", where)
+			}
+			if len(s) > MaxConcurrencyKeyLength {
+				return fmt.Errorf("%s.constant is %d characters, want at most %d", where, len(s), MaxConcurrencyKeyLength)
+			}
+			k.Constant = s
 		case "param":
 			s, err := text(v, where+".param")
 			if err != nil {
@@ -407,8 +419,18 @@ func irConcurrencyKey(val any) (*ConcurrencyKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	if (k.Param != "") == k.FromRunKey {
-		return nil, fmt.Errorf("%s carries exactly one of param or from", where)
+	forms := 0
+	if k.Constant != "" {
+		forms++
+	}
+	if k.Param != "" {
+		forms++
+	}
+	if k.FromRunKey {
+		forms++
+	}
+	if forms != 1 {
+		return nil, fmt.Errorf("%s carries exactly one of constant, param or from", where)
 	}
 	return k, nil
 }

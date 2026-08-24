@@ -9,6 +9,7 @@ import (
 
 	"github.com/a-holm/paceq/internal/faults"
 	"github.com/a-holm/paceq/internal/id"
+	"github.com/a-holm/paceq/internal/model"
 	"github.com/a-holm/paceq/internal/reason"
 	"github.com/a-holm/paceq/internal/spec"
 )
@@ -498,8 +499,9 @@ WHERE j.name = ?`, in.Schedule.JobName).Scan(&versionID, &specJSON); err != nil 
 	}
 
 	deferred := active >= limit
+	concKey := resolvedConcurrencyKey(job, "{}", in.RunKey)
 	run, err := s.materializeTickRun(tx, in, now, at, tickID, sourceName, fireAt, actor,
-		versionID, job, deferred, blocking, active, limit)
+		versionID, job, deferred, blocking, active, limit, concKey)
 	if err != nil {
 		return Run{}, err
 	}
@@ -535,6 +537,7 @@ func markTickStoodDownTx(tx *sql.Tx, tickID string, at int64,
 func (s *Store) materializeTickRun(tx *sql.Tx, in TickInput, now time.Time, at int64,
 	tickID, sourceName string, fireAt time.Time, actor string,
 	versionID string, job *spec.Job, deferred bool, blocking string, active, limit int,
+	concKey string,
 ) (Run, error) {
 	runID, err := id.New(now)
 	if err != nil {
@@ -581,6 +584,8 @@ ON CONFLICT(source_id, epoch, run_key) DO NOTHING`,
 		UpdatedAt:    now,
 	}
 
+	run.ConcurrencyKey = concKey
+
 	availableAt := now
 	eventKind := "run.queued"
 	var eventCode reason.Code
@@ -598,16 +603,72 @@ ON CONFLICT(source_id, epoch, run_key) DO NOTHING`,
 		eventData = run.ReasonData
 	}
 
-	if _, err := tx.Exec(`INSERT INTO runs
+	// Insert-first against the partial unique index (#17). The conflict
+	// target names ux_runs_conc_key by its exact predicate, so only a held
+	// key is ignored and any other refusal still aborts. written==0 IS the
+	// conflict signal; nothing was read ahead of it.
+	result, err := tx.Exec(`INSERT INTO runs
 (id, job_name, job_version_id, trigger_id, origin, run_key, state, available_at,
  defer_reason, reason_code, reason_data, scheduled_for, params_json, attempt,
- max_attempts, created_at, updated_at)
-VALUES (?, ?, ?, ?, 'schedule', ?, 'queued', ?, ?, ?, ?, ?, '{}', 0, 1, ?, ?)`,
+ max_attempts, created_at, updated_at, concurrency_key)
+VALUES (?, ?, ?, ?, 'schedule', ?, 'queued', ?, ?, ?, ?, ?, '{}', 0, 1, ?, ?, ?)
+ON CONFLICT (concurrency_key) WHERE concurrency_key IS NOT NULL
+AND state IN ('queued', 'running') DO NOTHING`,
 		run.ID, run.JobName, run.JobVersionID, nullIfEmpty(run.TriggerID), in.RunKey,
 		availableAt.UnixMilli(), nullIfEmpty(run.DeferReason),
 		nullIfEmpty(run.ReasonCode), nullIfEmpty(run.ReasonData),
-		fireAt.UnixMilli(), at, at); err != nil {
+		fireAt.UnixMilli(), at, at, nullIfEmpty(concKey))
+	if err != nil {
 		return Run{}, fmt.Errorf("create the run of schedule %s: %w", sourceName, err)
+	}
+	written, err := result.RowsAffected()
+	if err != nil {
+		return Run{}, fmt.Errorf("create the run of schedule %s: %w", sourceName, err)
+	}
+	if written == 0 && concKey != "" {
+		// The key is held. The insert wrote nothing; the policy decides what
+		// this fire becomes.
+		blockingRun := blockingRunForKeyTx(tx, concKey)
+		data := concDeferDataJSON(concKey, blockingRun)
+		if job.OnConflict == spec.OnConflictSkip {
+			// No run, no steps, no history beyond the record of the
+			// refusal itself. The dedup registration this fire made for
+			// its own id is withdrawn, so a later evaluation of the same
+			// event can try again instead of folding into a run that
+			// never existed.
+			if err := rejectTriggerConcurrencyKeyTx(tx, triggerID, sourceName, 0, in.RunKey, runID, blockingRun, concKey); err != nil {
+				return Run{}, err
+			}
+			text := fmt.Sprintf("the run %s holds concurrency key %s", blockingRun, concKey)
+			if err := markTickStoodDownTx(tx, tickID, at, reason.TICKSkippedConcurrency, text, data); err != nil {
+				return Run{}, err
+			}
+			return Run{}, nil
+		}
+		// Defer (the default): store the loser queued but KEYLESS, naming
+		// both the wanted key and the blocker. Holding the key here would
+		// collide with the very blocker that caused the deferral, so the
+		// deferred run carries none at all (model comment:
+		// concurrency_key.go).
+		availableAt = now.Add(DefaultDeferBackoff)
+		run.ConcurrencyKey = ""
+		run.DeferReason = model.DeferReasonConcurrencyKey
+		run.ReasonCode = string(reason.RUNDeferredConcurrencyKey)
+		run.ReasonData = data
+		eventKind = "run.deferred"
+		eventCode = reason.RUNDeferredConcurrencyKey
+		eventData = data
+		if _, err := tx.Exec(`INSERT INTO runs
+(id, job_name, job_version_id, trigger_id, origin, run_key, state, available_at,
+ defer_reason, reason_code, reason_data, scheduled_for, params_json, attempt,
+ max_attempts, created_at, updated_at, concurrency_key)
+VALUES (?, ?, ?, ?, 'schedule', ?, 'queued', ?, ?, ?, ?, ?, '{}', 0, 1, ?, ?, ?)`,
+			run.ID, run.JobName, run.JobVersionID, nullIfEmpty(run.TriggerID), in.RunKey,
+			availableAt.UnixMilli(), nullIfEmpty(run.DeferReason),
+			nullIfEmpty(run.ReasonCode), nullIfEmpty(run.ReasonData),
+			fireAt.UnixMilli(), at, at, nil); err != nil {
+			return Run{}, fmt.Errorf("create the deferred run of schedule %s: %w", sourceName, err)
+		}
 	}
 
 	if err := insertSteps(tx, run.ID, job.Steps); err != nil {
@@ -622,7 +683,10 @@ VALUES (?, ?, ?, ?, 'schedule', ?, 'queued', ?, ?, ?, ?, ?, '{}', 0, 1, ?, ?)`,
 		ToState: "queued",
 		Actor:   actor,
 	}
-	if deferred {
+	if run.DeferReason != "" {
+		// Both deferral shapes land here: a job-overlap hold (#68) and a
+		// key hold (#17) read as one deferred row with its reason beside
+		// it, which is what the display and fsck I14 already expect.
 		run.AvailableAt = availableAt
 		event.ReasonCode = string(eventCode)
 		event.DetailJSON = eventData
