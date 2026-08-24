@@ -1,0 +1,127 @@
+# AC-14: what a step publishes is on the user's side of the store. `runs
+# artifacts` answers with every reference a run holds, and `runs show`
+# carries each step's references in its record beside the verdict, so one
+# jq program reads both.
+
+exec paceq init
+cp artefacts.yaml jobs/artefacts.yaml
+exec paceq apply
+
+# The producer publishes a reference; the consumer reads it from
+# $PACEQ_INPUTS and republishes the uri under its own name.
+env PULSEQ_FAKE_CLOCK=2026-09-24T09:05:00Z
+exec paceq run artefacts
+
+writeid run.id
+
+# The show record carries each step's references beside its verdict.
+wantexit 0 show.json show_err.txt runs show @run.id -o json
+maskfile show.json
+cmpjson show.json expected_show.json
+
+# runs artifacts lists every reference of the run, by step and name.
+wantexit 0 artifacts.json artifacts_err.txt runs artifacts @run.id -o json
+maskfile artifacts.json
+cmpjson artifacts.json expected_artifacts.json
+
+# A human at a terminal reads the same facts as words.
+wantexit 0 artifacts.txt - runs artifacts @run.id -o text
+grep 'produce' artifacts.txt
+grep 'consume' artifacts.txt
+grep 'out.txt' artifacts.txt
+grep 'file:///tmp/out.txt' artifacts.txt
+
+# The text form of runs show names what each step published under its line.
+wantexit 0 show_text.txt - runs show @run.id -o text
+grep 'out.txt' show_text.txt
+grep 'seen' show_text.txt
+
+# A run whose steps published nothing answers with an empty list, not an
+# error: most steps publish nothing.
+cp plain.yaml jobs/plain.yaml
+exec paceq apply
+env PULSEQ_FAKE_CLOCK=2026-09-24T09:10:00Z
+exec paceq run plain
+writeid plain.id
+wantexit 0 empty.json empty_err.txt runs artifacts @plain.id -o json
+cmpjson empty.json expected_empty.json
+
+-- artefacts.yaml --
+name: artefacts
+description: Publish one reference downstream.
+steps:
+  - name: produce
+    run: ["/bin/sh", "-c", "echo '{\"artifact\":{\"name\":\"out.txt\",\"uri\":\"file:///tmp/out.txt\",\"size_bytes\":3}}' > \"$PACEQ_OUTPUT\""]
+  - name: consume
+    needs: [produce]
+    run: ["/bin/sh", "-c", "echo '{\"artifact\":{\"name\":\"seen\",\"uri\":\"file:///tmp/out.txt\"}}' > \"$PACEQ_OUTPUT\""]
+
+-- plain.yaml --
+name: plain
+description: Publishes nothing at all.
+steps:
+  - name: only
+    run: ["/bin/echo", "nothing to publish"]
+
+-- expected_show.json --
+{
+  "run": {
+    "created_at": "2026-09-24T09:05:00Z",
+    "finished_at": "2026-09-24T09:05:00Z",
+    "id": "<RUN1>",
+    "job": "artefacts",
+    "origin": "manual",
+    "reason_code": "RUN_SUCCEEDED",
+    "started_at": "2026-09-24T09:05:00Z",
+    "state": "succeeded",
+    "steps": [
+      {
+        "artifacts": [
+          {
+            "name": "out.txt",
+            "size_bytes": 3,
+            "uri": "file:///tmp/out.txt"
+          }
+        ],
+        "exit_code": 0,
+        "log_path": "2026-09-24/<RUN1>/produce.1.ndjson",
+        "name": "produce",
+        "reason_code": "STEP_SUCCEEDED",
+        "state": "succeeded"
+      },
+      {
+        "artifacts": [
+          {
+            "name": "seen",
+            "uri": "file:///tmp/out.txt"
+          }
+        ],
+        "exit_code": 0,
+        "log_path": "2026-09-24/<RUN1>/consume.1.ndjson",
+        "name": "consume",
+        "reason_code": "STEP_SUCCEEDED",
+        "state": "succeeded"
+      }
+    ]
+  }
+}
+
+-- expected_artifacts.json --
+[
+  {
+    "created_at": "2026-09-24T09:05:00Z",
+    "name": "out.txt",
+    "size_bytes": 3,
+    "step": "produce",
+    "uri": "file:///tmp/out.txt"
+  },
+  {
+    "created_at": "2026-09-24T09:05:00Z",
+    "name": "seen",
+    "step": "consume",
+    "uri": "file:///tmp/out.txt"
+  }
+]
+
+-- expected_empty.json --
+[]

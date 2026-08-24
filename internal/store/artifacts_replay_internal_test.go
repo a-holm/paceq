@@ -56,7 +56,7 @@ func TestCopyArtifactRefsCarriesTheReferencesAndNothingElse(t *testing.T) {
 	var copied int
 	if err := s.withTx(ctx, func(tx *sql.Tx) error {
 		var err error
-		copied, err = copyArtifactRefsTx(tx, orig.ID, replayed.ID, at)
+		copied, err = copyAllArtifactRefsTx(tx, orig.ID, replayed.ID, at)
 		return err
 	}); err != nil {
 		t.Fatalf("copy the references: %v", err)
@@ -126,7 +126,7 @@ func TestCopyArtifactRefsCopiesNothingFromAnEmptyRun(t *testing.T) {
 	var copied int
 	if err := s.withTx(ctx, func(tx *sql.Tx) error {
 		var err error
-		copied, err = copyArtifactRefsTx(tx, orig.ID, replayed.ID, time.UnixMilli(2000))
+		copied, err = copyAllArtifactRefsTx(tx, orig.ID, replayed.ID, time.UnixMilli(2000))
 		return err
 	}); err != nil {
 		t.Fatalf("copy the references: %v", err)

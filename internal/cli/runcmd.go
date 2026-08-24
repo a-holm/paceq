@@ -254,12 +254,24 @@ func unknownJobError(ctx context.Context, s *store.Store, name string) error {
 
 // stepRecord is one step of the machine readable result.
 type stepRecord struct {
-	Name       string `json:"name"`
-	State      string `json:"state"`
-	ReasonCode string `json:"reason_code,omitempty"`
-	ExitCode   *int   `json:"exit_code,omitempty"`
-	DurationMS int64  `json:"duration_ms,omitempty"`
-	LogPath    string `json:"log_path,omitempty"`
+	Name       string        `json:"name"`
+	State      string        `json:"state"`
+	ReasonCode string        `json:"reason_code,omitempty"`
+	ExitCode   *int          `json:"exit_code,omitempty"`
+	DurationMS int64         `json:"duration_ms,omitempty"`
+	LogPath    string        `json:"log_path,omitempty"`
+	Artifacts  []artifactRef `json:"artifacts,omitempty"`
+}
+
+// artifactRef is one reference a step published through its $PACEQ_OUTPUT
+// (#13). It is a claim the step made, never a file paceq opened: the uri is
+// data, and size and checksum say only what the step said about them.
+type artifactRef struct {
+	Name      string `json:"name"`
+	URI       string `json:"uri"`
+	SizeBytes *int64 `json:"size_bytes,omitempty"`
+	Checksum  string `json:"checksum,omitempty"`
+	MediaType string `json:"media_type,omitempty"`
 }
 
 // runDetailRecord is the run as a script reads it. The shape is the same one
@@ -316,6 +328,16 @@ func writeRunRecord(out *ui, detail store.RunDetail) error {
 			code := step.ExitCode
 			exit = &code
 		}
+		refs := make([]artifactRef, 0, len(step.Artifacts))
+		for _, a := range step.Artifacts {
+			refs = append(refs, artifactRef{
+				Name:      a.Name,
+				URI:       a.URI,
+				SizeBytes: a.SizeBytes,
+				Checksum:  a.Checksum,
+				MediaType: a.MediaType,
+			})
+		}
 		record.Steps = append(record.Steps, stepRecord{
 			Name:       step.Name,
 			State:      step.State,
@@ -323,6 +345,7 @@ func writeRunRecord(out *ui, detail store.RunDetail) error {
 			ExitCode:   exit,
 			DurationMS: step.DurationMS,
 			LogPath:    step.LogPath,
+			Artifacts:  refs,
 		})
 	}
 	return out.json(runEnvelope{Run: record})
