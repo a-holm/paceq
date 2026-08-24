@@ -82,6 +82,8 @@ Codes stored on the steps table, one row per step of a run.
 | `STEP_FAILED_SIGNAL` | killed by a signal | yes | `cancelled`, `exit_code`, `signal` |
 | `STEP_FAILED_SPAWN` | the command never started | yes | `argv0`, `errno`, `workdir` |
 | `STEP_FAILED_TIMEOUT` | killed at the deadline | yes | `timeout_ms` |
+| `STEP_OUTPUT_INVALID` | output had lines that could not be read | no | `count`, `first_line` |
+| `STEP_OUTPUT_TRUNCATED` | output was cut off at a bound | no | `bound`, `limit` |
 | `STEP_RETRIES_EXHAUSTED` | failed with no retries left | yes | `attempt`, `max_attempts` |
 | `STEP_RETRY_SCHEDULED` | failed, will retry | no | `attempt`, `backoff_ms`, `next_attempt_at` |
 | `STEP_SKIPPED_REPLAY_REUSED` | reused from the replayed run, not run again | yes | `replayed_from` |
@@ -643,6 +645,36 @@ What to do next:
 - a step that always needs just over its timeout is telling you its input grew
 
 Promised reason_data keys: timeout_ms.
+
+### STEP_OUTPUT_INVALID
+
+output had lines that could not be read. [step level]
+
+One or more lines in the step's $PACEQ_OUTPUT file were not valid NDJSON of
+the contract's two shapes, so they were dropped and named here instead of
+failing the step: the command exited on its own terms, and its exit code
+remains the verdict. Every line that did parse was kept.
+
+What to do next:
+- read the first_line fact: that is where the unreadable output starts
+- check the writing side emits one JSON object per line to $PACEQ_OUTPUT
+
+Promised reason_data keys: count, first_line.
+
+### STEP_OUTPUT_TRUNCATED
+
+output was cut off at a bound. [step level]
+
+The step's $PACEQ_OUTPUT file crossed a hard bound (1 MiB of file, 1000
+lines, or 64 KiB in one line), so reading stopped there and the fact is
+recorded instead of failing the step. The lines before the cut were kept;
+everything from the bound on was never read.
+
+What to do next:
+- read the bound fact to see which limit bit: file_bytes, lines or line_bytes
+- a step that regularly hits a bound should emit fewer, smaller references
+
+Promised reason_data keys: bound, limit.
 
 ### STEP_RETRIES_EXHAUSTED
 

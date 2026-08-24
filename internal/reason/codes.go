@@ -88,6 +88,12 @@ var (
 	STEPFailedExecutorLost     = stepCode("FAILED_EXECUTOR_LOST")
 	STEPCancelled              = stepCode("CANCELLED")
 
+	// The output warnings (#13). Both name facts about $PACEQ_OUTPUT that
+	// an operator must see, and neither may end a step: a parse warning
+	// beside exit 0 is information, not a verdict.
+	STEPOutputInvalid   = stepCode("OUTPUT_INVALID")
+	STEPOutputTruncated = stepCode("OUTPUT_TRUNCATED")
+
 	LEASEAcquired  = leaseCode("ACQUIRED")
 	LEASELost      = leaseCode("LOST")
 	LEASETakenOver = leaseCode("TAKEN_OVER")
@@ -616,6 +622,34 @@ func newCatalog() map[Code]Entry {
 			},
 			DataKeys: []string{"upstream"},
 			Terminal: true,
+		},
+		{
+			Code:  STEPOutputInvalid,
+			Level: LevelStep,
+			Short: "output had lines that could not be read",
+			Explanation: "One or more lines in the step's $PACEQ_OUTPUT file were not valid NDJSON " +
+				"of the contract's two shapes, so they were dropped and named here instead of " +
+				"failing the step: the command exited on its own terms, and its exit code remains " +
+				"the verdict. Every line that did parse was kept.",
+			Remedy: []string{
+				"read the first_line fact: that is where the unreadable output starts",
+				"check the writing side emits one JSON object per line to $PACEQ_OUTPUT",
+			},
+			DataKeys: []string{"count", "first_line"},
+		},
+		{
+			Code:  STEPOutputTruncated,
+			Level: LevelStep,
+			Short: "output was cut off at a bound",
+			Explanation: "The step's $PACEQ_OUTPUT file crossed a hard bound (1 MiB of file, 1000 " +
+				"lines, or 64 KiB in one line), so reading stopped there and the fact is recorded " +
+				"instead of failing the step. The lines before the cut were kept; everything from " +
+				"the bound on was never read.",
+			Remedy: []string{
+				"read the bound fact to see which limit bit: file_bytes, lines or line_bytes",
+				"a step that regularly hits a bound should emit fewer, smaller references",
+			},
+			DataKeys: []string{"bound", "limit"},
 		},
 		{
 			Code:  STEPRetryScheduled,
