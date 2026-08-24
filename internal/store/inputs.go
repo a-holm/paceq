@@ -33,9 +33,9 @@ type InputsRef struct {
 
 // InputCollision records one name two contributors claimed, winner first.
 type InputCollision struct {
-	Name   string
-	Winner string
-	Loser  string
+	Name   string `json:"name"`
+	Winner string `json:"winner"`
+	Loser  string `json:"loser"`
 }
 
 // Inputs is the whole payload for one step's environment.

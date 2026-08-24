@@ -427,6 +427,31 @@ func main() {
 			die("inputs-file-holds: artifacts[%q] = %+v, want uri %q", name, ref, uri)
 		}
 
+	case "inputs-file-holds-param":
+		// Prove both halves of the spill contract and that the file is the
+		// actual merged document rather than merely an existing path.
+		name := arg(args, 0)
+		if raw := os.Getenv("PACEQ_INPUTS"); raw != "null" {
+			die("inputs-file-holds-param: PACEQ_INPUTS is %d bytes, want the literal null once spilled", len(raw))
+		}
+		p := os.Getenv("PACEQ_INPUTS_FILE")
+		if p == "" {
+			die("inputs-file-holds-param: PACEQ_INPUTS_FILE is not set")
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			die("inputs-file-holds-param: %v", err)
+		}
+		var inputs struct {
+			Params map[string]string `json:"params"`
+		}
+		if err := json.Unmarshal(b, &inputs); err != nil {
+			die("inputs-file-holds-param: the spilled file is not JSON: %v", err)
+		}
+		if len(inputs.Params[name]) != 24*1024 {
+			die("inputs-file-holds-param: params[%q] is %d bytes, want 24576", name, len(inputs.Params[name]))
+		}
+
 	default:
 		die("unknown mode %q", mode)
 	}

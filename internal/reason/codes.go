@@ -95,6 +95,11 @@ var (
 	STEPOutputTruncated = stepCode("OUTPUT_TRUNCATED")
 	STEPOutputCollision = stepCode("OUTPUT_COLLISION")
 
+	// The input warning (#13): a params key two upstream steps claimed.
+	// The merge still resolves deterministically; this code is the record
+	// that the resolution happened and who lost.
+	STEPInputCollision = stepCode("INPUT_COLLISION")
+
 	LEASEAcquired  = leaseCode("ACQUIRED")
 	LEASELost      = leaseCode("LOST")
 	LEASETakenOver = leaseCode("TAKEN_OVER")
@@ -663,6 +668,20 @@ func newCatalog() map[Code]Entry {
 			Remedy: []string{
 				"rename one of the colliding artifacts so both survive",
 				"if the collision is intended, the later step owns the name and this warning is the record",
+			},
+			DataKeys: []string{"name", "winner", "loser"},
+		},
+		{
+			Code:  STEPInputCollision,
+			Level: LevelStep,
+			Short: "an upstream params key was claimed twice",
+			Explanation: "Two steps upstream of this one emitted the same params key, so the merged " +
+				"$PACEQ_INPUTS carries one value for it. The winner is deterministic: the verdict " +
+				"latest in the spec order takes the key. The loser is named here so nothing " +
+				"disappears without a trace.",
+			Remedy: []string{
+				"rename one of the colliding params keys so both values survive the merge",
+				"if the overwrite is intended, this warning is the record of which value won",
 			},
 			DataKeys: []string{"name", "winner", "loser"},
 		},

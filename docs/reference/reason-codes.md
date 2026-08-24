@@ -82,6 +82,7 @@ Codes stored on the steps table, one row per step of a run.
 | `STEP_FAILED_SIGNAL` | killed by a signal | yes | `cancelled`, `exit_code`, `signal` |
 | `STEP_FAILED_SPAWN` | the command never started | yes | `argv0`, `errno`, `workdir` |
 | `STEP_FAILED_TIMEOUT` | killed at the deadline | yes | `timeout_ms` |
+| `STEP_INPUT_COLLISION` | an upstream params key was claimed twice | no | `name`, `winner`, `loser` |
 | `STEP_OUTPUT_COLLISION` | two upstream steps published one name | no | `name`, `winner`, `loser` |
 | `STEP_OUTPUT_INVALID` | output had lines that could not be read | no | `count`, `first_line` |
 | `STEP_OUTPUT_TRUNCATED` | output was cut off at a bound | no | `bound`, `limit` |
@@ -646,6 +647,21 @@ What to do next:
 - a step that always needs just over its timeout is telling you its input grew
 
 Promised reason_data keys: timeout_ms.
+
+### STEP_INPUT_COLLISION
+
+an upstream params key was claimed twice. [step level]
+
+Two steps upstream of this one emitted the same params key, so the merged
+$PACEQ_INPUTS carries one value for it. The winner is deterministic: the
+verdict latest in the spec order takes the key. The loser is named here so
+nothing disappears without a trace.
+
+What to do next:
+- rename one of the colliding params keys so both values survive the merge
+- if the overwrite is intended, this warning is the record of which value won
+
+Promised reason_data keys: name, winner, loser.
 
 ### STEP_OUTPUT_COLLISION
 

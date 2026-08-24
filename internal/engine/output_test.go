@@ -2,11 +2,15 @@ package engine_test
 
 import (
 	"context"
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/a-holm/paceq/internal/engine"
 	"github.com/a-holm/paceq/internal/reason"
+	"github.com/a-holm/paceq/internal/store"
 )
 
 // The publication half of #13 at engine level: the output file exists empty
@@ -200,6 +204,55 @@ func TestExecuteRunHandsUpstreamReferencesToTheDownstreamStep(t *testing.T) {
 	}
 }
 
+// A params key two upstream steps claimed resolves deterministically (the
+// later verdict takes it), and the losing claim is logged as a warning on
+// the consumer, not dropped: nothing about a step's inputs may disappear
+// without a trace.
+func TestExecuteRunLogsAWarningWhenUpstreamParamsCollide(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	runID := f.aQueuedRun(t, []string{"first", "second", "consume"},
+		[]string{"write-output", "write-output", "publish-input-uri seen out.txt"},
+		map[string]string{"second": "first", "consume": "second"}, 30_000)
+
+	if state := f.mustFinish(t, runID); state != "succeeded" {
+		t.Fatalf("run ended %s, want succeeded: a params-key collision is a warning, never a verdict", state)
+	}
+
+	events, err := f.Store.RunEvents(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var event *store.RunEvent
+	for i := range events {
+		if events[i].Kind == "step.inputs_collision" && events[i].StepName == "consume" {
+			event = &events[i]
+		}
+	}
+	if event == nil {
+		t.Fatalf("no step.inputs_collision event on consume among %+v", events)
+	}
+	if event.ReasonCode != string(reason.STEPInputCollision) {
+		t.Errorf("reason_code = %s, want %s", event.ReasonCode, reason.STEPInputCollision)
+	}
+	var detail struct {
+		Collisions []struct {
+			Name   string `json:"name"`
+			Winner string `json:"winner"`
+			Loser  string `json:"loser"`
+		} `json:"collisions"`
+	}
+	if err := json.Unmarshal([]byte(event.DetailJSON), &detail); err != nil {
+		t.Fatalf("event detail %s is not JSON: %v", event.DetailJSON, err)
+	}
+	if len(detail.Collisions) != 1 ||
+		detail.Collisions[0].Name != "rows" ||
+		detail.Collisions[0].Winner != "second" ||
+		detail.Collisions[0].Loser != "first" {
+		t.Errorf("collisions = %+v, want one naming rows, second over first", detail.Collisions)
+	}
+}
+
 func TestASideStepStaysInvisibleToItsNeighboursInputs(t *testing.T) {
 	f := newFixture(t)
 	runID := f.aQueuedRun(t, []string{"produce", "side", "consume"},
@@ -217,18 +270,33 @@ func TestASideStepStaysInvisibleToItsNeighboursInputs(t *testing.T) {
 
 func TestExecuteRunSpillsOversizedInputsBesideTheAttempt(t *testing.T) {
 	f := newFixture(t)
-	// The producer's params push the merged document past 128 KiB, so the
-	// consumer must read it through $PACEQ_INPUTS_FILE with $PACEQ_INPUTS
-	// parked at the literal null, and still find produce's reference in it.
+	// The producer's eight 24 KiB params push the merged document past
+	// 128 KiB. The consumer proves the inline value is parked at null and
+	// the file carries the producer's last emitted param.
 	runID := f.aQueuedRun(t, []string{"produce", "consume"},
 		[]string{
-			"write-output",
 			"write-big-output 8",
-			"inputs-file-holds out.txt file:///tmp/out.txt",
+			"inputs-file-holds-param blob7",
 		},
 		map[string]string{"consume": "produce"}, 30_000)
 
 	if state := f.mustFinish(t, runID); state != "succeeded" {
-		t.Fatalf("run ended %s, want succeeded", state)
+		t.Fatalf("run ended %s, want succeeded: the consumer never saw the spilled contract", state)
+	}
+
+	// The spill landed beside the attempt's other files and carries the
+	// whole oversized params document that forced it.
+	raw, err := os.ReadFile(filepath.Join(f.StateDir, "runs", runID, "consume.1.inputs.json"))
+	if err != nil {
+		t.Fatalf("read the spilled inputs of consume: %v", err)
+	}
+	if len(raw) <= engine.MaxInlineInputsBytes {
+		t.Errorf("the spill holds %d bytes, want more than the %d inline bound",
+			len(raw), engine.MaxInlineInputsBytes)
+	}
+	for _, want := range []string{`"blob0"`, `"blob7"`} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("the spilled document is missing %s", want)
+		}
 	}
 }
