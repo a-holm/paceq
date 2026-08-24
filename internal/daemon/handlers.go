@@ -133,12 +133,70 @@ func handleRetryRun(w http.ResponseWriter, r *http.Request, st *store.Store) {
 	})
 }
 
+// handleReplayRun handles POST /v1/runs/{id}/replay. It is the daemon's
+// half of the operator replay (M4-04): the materialization is the same one
+// transaction the direct path runs, frozen to the job version the source
+// ran, and the actor is recorded as "api" because the person's client spoke
+// HTTP. The body may carry the reuse rules; both mean what they mean on the
+// direct path, and giving both at once is refused by the store itself.
+func handleReplayRun(w http.ResponseWriter, r *http.Request, st *store.Store) {
+	if r.Method != http.MethodPost {
+		writeHealth(w, http.StatusMethodNotAllowed, map[string]any{"error": "use POST"})
+		return
+	}
+	runID := r.PathValue("id")
+	if runID == "" {
+		writeHealth(w, http.StatusBadRequest, map[string]any{"error": "missing run id"})
+		return
+	}
+	var body struct {
+		From   string `json:"from"`
+		Failed bool   `json:"failed"`
+	}
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
+			writeHealth(w, http.StatusBadRequest, map[string]any{
+				"code":  "bad_request",
+				"error": "the body is not JSON a replay can read: " + err.Error(),
+			})
+			return
+		}
+	}
+	opts := store.ReplayOpts{Actor: "api"}
+	if body.From != "" {
+		opts.From = &body.From
+	}
+	if body.Failed {
+		opts.FailedOnly = true
+	}
+
+	res, err := st.MaterializeReplay(r.Context(), runID, opts)
+	if err != nil {
+		switch {
+		case errors.Is(err, store.ErrNotFound), errors.Is(err, store.ErrRunNotFound):
+			writeHealth(w, http.StatusNotFound, map[string]any{"code": "not_found", "error": err.Error()})
+		case errors.Is(err, store.ErrConflictingReuse),
+			errors.Is(err, store.ErrRunNotTerminal),
+			errors.Is(err, store.ErrStepNotInThisRun):
+			writeHealth(w, http.StatusConflict, map[string]any{"code": "invalid_state", "error": err.Error()})
+		default:
+			writeHealth(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		}
+		return
+	}
+	writeHealth(w, http.StatusOK, map[string]any{
+		"run_id": res.NewRunID,
+		"reused": res.Reused,
+		"rerun":  res.Rerun,
+	})
+}
+
 // writeReopenRefusal renders one refused reopen with its class. The classes
 // are the CLI's vocabulary, not SQLite's: a script branching on them never
 // has to parse prose.
 func writeReopenRefusal(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, store.ErrNotFound):
+	case errors.Is(err, store.ErrNotFound), errors.Is(err, store.ErrRunNotFound):
 		writeHealth(w, http.StatusNotFound, map[string]any{"code": "not_found", "error": err.Error()})
 	case errors.Is(err, store.ErrRunNotRetryable),
 		errors.Is(err, store.ErrNothingToReopen),
