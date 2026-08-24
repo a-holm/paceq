@@ -364,6 +364,55 @@ func TestDepthOverTheCeilingIsRefused(t *testing.T) {
 	}
 }
 
+// TestDepthExactlyAtTheCeilingAccepted pins the inclusive end of the depth
+// ceiling: a chain whose deepest step sits exactly MaxDAGDepth edges from the
+// top parses clean. A comparison that drifts one step over (>= instead of >)
+// refuses legal pipelines, and no shipped test noticed because every shipped
+// depth test is one-over refusal only.
+func TestDepthExactlyAtTheCeilingAccepted(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("name: report\nsteps:\n")
+	// MaxDAGDepth+1 steps chained make the deepest one exactly
+	// MaxDAGDepth edges from the top.
+	for i := range spec.MaxDAGDepth + 1 {
+		fmt.Fprintf(&b, "  - name: s%d\n    run: [\"/bin/true\"]\n", i)
+		if i > 0 {
+			fmt.Fprintf(&b, "    needs: [s%d]\n", i-1)
+		}
+	}
+	job, diags := spec.Parse("deep-ok.yaml", []byte(b.String()))
+	if diags.HasErrors() {
+		t.Fatalf("a chain exactly %d deep was refused:\n%s", spec.MaxDAGDepth, renderDiagnostics(t, diags))
+	}
+	if len(job.Steps) != spec.MaxDAGDepth+1 {
+		t.Errorf("got %d steps, want %d", len(job.Steps), spec.MaxDAGDepth+1)
+	}
+}
+
+// TestFanOutExactlyAtTheCeilingIsAccepted pins both directions of the fan-out
+// ceiling at its boundary: one root that exactly MaxFanOut steps wait on, and
+// one step that names exactly MaxFanOut needs. Both parse clean; a comparison
+// that slips to >= refuses a legal graph nobody else would catch.
+func TestFanOutExactlyAtTheCeilingIsAccepted(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("name: report\nsteps:\n")
+	b.WriteString("  - name: root\n    run: [\"/bin/true\"]\n")
+	fanNeeds := make([]string, 0, spec.MaxFanOut)
+	for i := range spec.MaxFanOut {
+		fmt.Fprintf(&b, "  - name: leaf%d\n    run: [\"/bin/true\"]\n    needs: [root]\n", i)
+		fanNeeds = append(fanNeeds, fmt.Sprintf("leaf%d", i))
+	}
+	fmt.Fprintf(&b, "  - name: fan\n    run: [\"/bin/true\"]\n    needs: [%s]\n", strings.Join(fanNeeds, ","))
+
+	job, diags := spec.Parse("fan-ok.yaml", []byte(b.String()))
+	if diags.HasErrors() {
+		t.Fatalf("a fan of exactly %d was refused:\n%s", spec.MaxFanOut, renderDiagnostics(t, diags))
+	}
+	if len(job.Steps) != spec.MaxFanOut+2 {
+		t.Errorf("got %d steps, want %d", len(job.Steps), spec.MaxFanOut+2)
+	}
+}
+
 func hasCode(diags diag.List, code string) bool {
 	for _, d := range diags {
 		if d.Code == code {
