@@ -86,7 +86,7 @@ type StepOutput struct {
 // an invalid-output warning, because the facts belong beside the verdict,
 // not in the error path.
 func ReadStepOutput(path string) (StepOutput, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 - the path comes from prepareStepOutput inside the state directory, never from job input
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return StepOutput{}, nil
