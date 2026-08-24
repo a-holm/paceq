@@ -366,6 +366,34 @@ var catalogue = map[string]explanation{
 			"paceq validate --strict  turns this warning into a failure, for CI",
 		},
 	},
+	spec.CodeConcurrencyTemplating: {
+		Code:  spec.CodeConcurrencyTemplating,
+		Title: "the concurrency key uses templating, which does not exist",
+		Explanation: "Templating in configuration values is refused for all of 1.0: it turns a " +
+			"definition into a program, and an untrusted value into an execution context. A " +
+			"concurrency key that needs part of its value from the fire carries one of two " +
+			"closed forms instead: a named parameter read at fire time, or the trigger's run " +
+			"key. There is no expression language and there are no exceptions.",
+		Next: []string{
+			"concurrency_key: {param: kunde}  reads params[\"kunde\"] when the fire happens",
+			"concurrency_key: {from: run_key}  follows the trigger's dedup key",
+			"a fixed value needs no form at all: concurrency_key: \"nightly-report\"",
+		},
+	},
+	spec.CodeConcurrencyParamUnresolved: {
+		Code:  spec.CodeConcurrencyParamUnresolved,
+		Title: "the concurrency key reads a trigger parameter a fire may not carry",
+		Explanation: "A key written as {param: name} resolves per fire. paceq cannot know at " +
+			"apply time whether every future trigger will carry that parameter, and the rule " +
+			"when it does not is deliberately gentle: the run gets no key at all and is " +
+			"unlimited, because refusing the run would turn a missing sensor field into an " +
+			"outage. The warning exists so the choice is made with open eyes.",
+		Next: []string{
+			"schedules never carry params, so a scheduled fire of this job is always unlimited",
+			"a constant or {from: run_key} never leaves a fire unkeyed",
+			"paceq validate --strict  turns this warning into a failure, for CI",
+		},
+	},
 	"PQ5001": {
 		Code:  "PQ5001",
 		Title: "the state is readable by other users",

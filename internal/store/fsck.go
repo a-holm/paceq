@@ -21,7 +21,8 @@ import (
 //   - I11 The fencing token never falls: the lease_epoch values recorded in
 //         a run's event history are non-decreasing and end at the row's own
 //         epoch.
-//   - I12 No job runs more than max_concurrent allows (#68).
+//   - I12 No job runs more than max_concurrent allows (#68), and no
+//         concurrency key is held by more than one active run (#17).
 //   - I13 Timestamps are monotone: created <= started <= finished, and no
 //         stamp sits at zero where one exists at all.
 //   - I14 A queued run held for the future carries its defer reason.
@@ -429,6 +430,15 @@ ORDER BY run_id, id`)
 		return nil, err
 	}
 	out = append(out, active...)
+
+	// I12 keys: no concurrency key is held by more than one active run
+	// (#17). The partial unique index makes the state unreachable through
+	// the code; the sweep names it when something outside the code made it.
+	keyed, err := s.ActiveConcurrencyKeyViolations(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, keyed...)
 
 	// The reason code rule, swept along with everything else.
 	unexplained, err := s.UnexplainedReasons(ctx)

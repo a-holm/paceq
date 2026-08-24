@@ -28,12 +28,14 @@ steps:
 -- run_record_golden.json --
 {
   "run": {
+    "available_at": "2026-09-24T09:00:00Z",
     "created_at": "2026-09-24T09:00:00Z",
     "finished_at": "2026-09-24T09:00:00Z",
     "id": "<RUN1>",
     "job": "nice",
     "origin": "manual",
     "reason_code": "RUN_SUCCEEDED",
+    "reason_data": "{}",
     "started_at": "2026-09-24T09:00:00Z",
     "state": "succeeded",
     "steps": [

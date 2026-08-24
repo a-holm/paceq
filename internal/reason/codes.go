@@ -55,22 +55,25 @@ var (
 	TICKMissedClockJump        = tickCode("MISSED_CLOCK_JUMP")
 	TICKErrorDaemonCrashed     = tickCode("ERROR_DAEMON_CRASHED")
 
-	TRIGGERAccepted           = triggerCode("ACCEPTED")
-	TRIGGERDedupedRunKey      = triggerCode("DEDUPED_RUN_KEY")
-	TRIGGERRejectedJobUnknown = triggerCode("REJECTED_JOB_UNKNOWN")
-	TRIGGERRejectedJobPaused  = triggerCode("REJECTED_JOB_PAUSED")
-	TRIGGERRejectedPayload    = triggerCode("REJECTED_PAYLOAD")
+	TRIGGERAccepted               = triggerCode("ACCEPTED")
+	TRIGGERDedupedRunKey          = triggerCode("DEDUPED_RUN_KEY")
+	TRIGGERRejectedJobUnknown     = triggerCode("REJECTED_JOB_UNKNOWN")
+	TRIGGERRejectedJobPaused      = triggerCode("REJECTED_JOB_PAUSED")
+	TRIGGERRejectedPayload        = triggerCode("REJECTED_PAYLOAD")
+	TRIGGERRejectedConcurrencyKey = triggerCode("REJECTED_CONCURRENCY_KEY")
 
-	RUNQueuedConcurrency   = runCode("QUEUED_CONCURRENCY")
-	RUNReopenedOperator    = runCode("REOPENED_OPERATOR")
-	RUNCancelledManual     = runCode("CANCELLED_MANUAL")
-	RUNCancelledShutdown   = runCode("CANCELLED_SHUTDOWN")
-	RUNInterruptedShutdown = runCode("INTERRUPTED_SHUTDOWN")
-	RUNTimedOut            = runCode("TIMED_OUT")
-	RUNFailedStep          = runCode("FAILED_STEP")
-	RUNSucceeded           = runCode("SUCCEEDED")
-	RUNOrphanedReconciled  = runCode("ORPHANED_RECONCILED")
-	RUNPoisoned            = runCode("POISONED")
+	RUNQueuedConcurrency      = runCode("QUEUED_CONCURRENCY")
+	RUNReopenedOperator       = runCode("REOPENED_OPERATOR")
+	RUNDeferredConcurrencyKey = runCode("DEFERRED_CONCURRENCY_KEY")
+	RUNCancelledSuperseded    = runCode("CANCELLED_SUPERSEDED") // reserved (#17), no policy behind it in 1.0
+	RUNCancelledManual        = runCode("CANCELLED_MANUAL")
+	RUNCancelledShutdown      = runCode("CANCELLED_SHUTDOWN")
+	RUNInterruptedShutdown    = runCode("INTERRUPTED_SHUTDOWN")
+	RUNTimedOut               = runCode("TIMED_OUT")
+	RUNFailedStep             = runCode("FAILED_STEP")
+	RUNSucceeded              = runCode("SUCCEEDED")
+	RUNOrphanedReconciled     = runCode("ORPHANED_RECONCILED")
+	RUNPoisoned               = runCode("POISONED")
 
 	STEPSucceeded              = stepCode("SUCCEEDED")
 	STEPSkippedReplayReused    = stepCode("SKIPPED_REPLAY_REUSED")
@@ -396,6 +399,22 @@ func newCatalog() map[Code]Entry {
 		},
 
 		{
+			Code:  TRIGGERRejectedConcurrencyKey,
+			Level: LevelTrigger,
+			Short: "another run holds the concurrency key",
+			Explanation: "The job carries a concurrency_key, another active run already held " +
+				"it, and the job's on_conflict policy is skip. The fire therefore created no " +
+				"run at all: the trigger row is the whole record that the event happened and " +
+				"was refused, with the holding run named beside it.",
+			Remedy: []string{
+				"reason_data on this trigger names the run that holds the key",
+				"if waiting would be better than dropping, set on_conflict: defer on the job",
+			},
+			DataKeys: []string{"blocking_run_id", "concurrency_key"},
+			Terminal: true,
+		},
+
+		{
 			Code:  RUNQueuedConcurrency,
 			Level: LevelRun,
 			Short: "held back by a concurrency limit",
@@ -423,6 +442,20 @@ func newCatalog() map[Code]Entry {
 			},
 			DataKeys: []string{"only_step", "forced"},
 			Terminal: true,
+		},
+		{
+			Code:  RUNDeferredConcurrencyKey,
+			Level: LevelRun,
+			Short: "waiting for the concurrency key to free",
+			Explanation: "Another active run held this job's concurrency_key when this run " +
+				"materialised, so it was stored queued but keyless: it holds nothing, blocks " +
+				"nothing, and waits for the claim pass to give it the key back once no other " +
+				"run holds it. The wanted key and the blocking run are both in reason_data.",
+			Remedy: []string{
+				"waiting is normal; the claim pass retries every tick once available_at arrives",
+				"reason_data names the run that blocked this one, if you need to know who",
+			},
+			DataKeys: []string{"blocking_run_id", "concurrency_key"},
 		},
 		{
 			Code:  RUNCancelledManual,

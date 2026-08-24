@@ -31,7 +31,17 @@ import (
 // a read-then-write window (07 section 4.1). The machine's EvStepStarted is
 // the sequential path; the claim cannot consult it without reopening that
 // window. The event the claim writes is the same shape the machine would
-// have emitted. A fourth file matching the pattern is a defect.
+// have emitted.
+//
+// concurrency_key.go (M4-06, #17) is the second, same-shaped exception: its
+// keyed start has to flip a keyless deferred queued run to running in the
+// same UPDATE that atomically restores its concurrency_key, guarded by the
+// NOT EXISTS active-holder check, or the admit and the key restore split into
+// a read-then-write window exactly like the claim's. The partial unique index
+// stands behind every writer this statement does not cover. Its queued rows
+// hold no lease, so there is no token to fence with; the claim mints the
+// epoch, as the batch claim does (the nolint:fencing marker is required by
+// the fencing test).
 var stateUpdatePattern = regexp.MustCompile(`UPDATE\s+(runs|steps)\b`)
 
 // transitionFiles are the only files in the module allowed to match it.
@@ -45,11 +55,12 @@ var stateUpdatePattern = regexp.MustCompile(`UPDATE\s+(runs|steps)\b`)
 // the layer; the file is listed here because the reopen is, by definition,
 // a state update no other file may perform.
 var transitionFiles = map[string]bool{
-	"internal/store/transitions.go": true,
-	"internal/store/runlease.go":    true,
-	"internal/store/inject.go":      true,
-	"internal/store/claim.go":       true,
-	"internal/store/reopen.go":      true,
+	"internal/store/transitions.go":     true,
+	"internal/store/runlease.go":        true,
+	"internal/store/inject.go":          true,
+	"internal/store/claim.go":           true,
+	"internal/store/reopen.go":          true,
+	"internal/store/concurrency_key.go": true,
 }
 
 func TestStateUpdatesStayInTheTransitionLayer(t *testing.T) {

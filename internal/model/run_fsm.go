@@ -20,6 +20,15 @@ const DeferReasonAfterShutdown = "requeued_after_shutdown"
 // the schema's CHECK and fsck I14 look for come from one file.
 const DeferReasonConcurrency = "concurrency"
 
+// DeferReasonConcurrencyKey is what a run materialised under a held
+// concurrency_key says about itself (#17). It is a different word from
+// DeferReasonConcurrency on purpose: the two deferrals look alike in the row
+// (queued, available_at ahead) but release differently. A job-overlap deferral
+// claims like any queued run once it is due; a key deferral may not claim at
+// all until the claim pass gives it its key back. The claim predicate tells
+// the two apart by this word.
+const DeferReasonConcurrencyKey = "concurrency_key"
+
 // NextRunState is the run machine, and the only place that decides what a run
 // may do next. It reads nothing but its arguments: no database, no clock, no
 // package level state, so the same three inputs always give the same three

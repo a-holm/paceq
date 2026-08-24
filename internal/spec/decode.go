@@ -16,7 +16,7 @@ import (
 // list a misspelling is measured against, so a field added to a struct and not
 // to its list here is a field the parser refuses.
 var (
-	jobFields      = []string{"name", "description", "env", "env_file", "inherit_env", "workdir", "timeout", "max_concurrent", "max_parallel", "steps", "schedules", "sensors"}
+	jobFields      = []string{"name", "description", "env", "env_file", "inherit_env", "workdir", "timeout", "max_concurrent", "max_parallel", "concurrency_key", "on_conflict", "steps", "schedules", "sensors"}
 	stepFields     = []string{"name", "run", "shell", "workdir", "timeout", "retry", "needs"}
 	retryFields    = []string{"max", "backoff", "initial", "max_delay", "jitter"}
 	scheduleFields = []string{"name", "cron", "timezone", "overlap"}
@@ -60,7 +60,7 @@ var commonMistakes = map[string]string{
 var envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func (d *decoder) job(node ast.Node) *Job {
-	job := &Job{Timeout: DefaultTimeout, MaxConcurrent: DefaultMaxConcurrent, MaxParallel: DefaultMaxParallel}
+	job := &Job{Timeout: DefaultTimeout, MaxConcurrent: DefaultMaxConcurrent, MaxParallel: DefaultMaxParallel, OnConflict: DefaultOnConflict}
 
 	mapping, ok := d.mapping(node, "the job file")
 	if !ok {
@@ -87,6 +87,10 @@ func (d *decoder) job(node ast.Node) *Job {
 			job.MaxConcurrent = d.maxConcurrent(value)
 		case "max_parallel":
 			job.MaxParallel = d.maxParallel(value)
+		case "concurrency_key":
+			job.ConcurrencyKey = d.concurrencyKey(value)
+		case "on_conflict":
+			job.OnConflict = d.oneOf(value, "on_conflict", OnConflictDefer, OnConflictSkip)
 		case "steps":
 			job.Steps = d.steps(value)
 		case "schedules":
@@ -111,6 +115,130 @@ func (d *decoder) job(node ast.Node) *Job {
 				"        run: [\"/bin/echo\", \"hello\"]")
 	}
 	return job
+}
+
+// concurrencyKey reads the closed grammar of #17. A scalar is the constant
+// form; a mapping carries exactly one of param or from. There is no
+// templating: {{...}} in a constant is refused with the decision named in the
+// message, because templating in configuration values was declined for all of
+// 1.0 (an injection risk and a complexity spiral for what a third form does).
+func (d *decoder) concurrencyKey(node ast.Node) *ConcurrencyKey {
+	resolved, ok := d.resolve(node, "concurrency_key")
+	if !ok {
+		return nil
+	}
+	if text, isScalar := scalarText(resolved); isScalar {
+		return d.constantConcurrencyKey(resolved, text)
+	}
+	mapping, ok := d.mapping(node, "concurrency_key")
+	if !ok {
+		return nil
+	}
+
+	key := &ConcurrencyKey{}
+	seenParam, seenFrom := false, false
+	fromRejected := false
+	var paramPos diag.Position
+	d.fields(mapping, "a concurrency key", []string{"param", "from"}, func(form string, value ast.Node) {
+		switch form {
+		case "param":
+			seenParam = true
+			paramPos = position(value)
+			key.Param = d.text(value, "concurrency_key param")
+		case "from":
+			seenFrom = true
+			source := d.text(value, "concurrency_key from")
+			if source != "" && source != "run_key" {
+				d.error(CodeBadValue, position(value),
+					fmt.Sprintf("concurrency_key from is %q, and run_key is the only source", source),
+					"The key can follow the trigger's dedup key, which makes every distinct\n"+
+						"event its own concurrency class:\n\n"+
+						"    concurrency_key:\n"+
+						"      from: run_key")
+				fromRejected = true
+				return
+			}
+			key.FromRunKey = true
+		}
+	})
+	if fromRejected {
+		return nil
+	}
+
+	switch {
+	case seenParam && seenFrom:
+		d.error(CodeBadValue, paramPos,
+			"a concurrency key is one of param or from, not both",
+			"Pick the one form that says where the value comes from:\n\n"+
+				"    concurrency_key:\n"+
+				"      param: kunde\n"+
+				"# or\n"+
+				"    concurrency_key:\n"+
+				"      from: run_key")
+		return nil
+	case seenParam:
+		if key.Param == "" {
+			d.error(CodeBadValue, paramPos,
+				"the parameter name in concurrency_key is empty",
+				"Name the parameter the key reads at fire time:\n\n"+
+					"    concurrency_key:\n"+
+					"      param: kunde")
+			return nil
+		}
+		// The warning is the whole contract of the param form: paceq cannot
+		// know at apply time whether every trigger will carry it, and a fire
+		// without it runs with no key at all. That is a decision to make with
+		// open eyes, not an error, because params may come from a sensor.
+		d.warn(CodeConcurrencyParamUnresolved, paramPos,
+			fmt.Sprintf("concurrency_key reads the parameter %q: a trigger without it runs with no key, which means unlimited", key.Param),
+			"The key resolves per fire. A schedule fires with no params at all, so a\n"+
+				"scheduled fire of this job is always unlimited; a sensor carries params,\n"+
+				"so check the payload it emits:\n\n"+
+				"    concurrency_key:\n"+
+				"      param: "+key.Param+"\n\n"+
+				"A constant or {from: run_key} never leaves a fire unkeyed.")
+		return &ConcurrencyKey{Param: key.Param}
+	case seenFrom && key.FromRunKey:
+		return &ConcurrencyKey{FromRunKey: true}
+	default:
+		d.error(CodeBadValue, position(resolved),
+			"a concurrency key mapping needs one of param or from",
+			"The grammar is three forms and nothing else:\n\n"+
+				"    concurrency_key: \"nightly-report\"\n"+
+				"    concurrency_key: {param: kunde}\n"+
+				"    concurrency_key: {from: run_key}")
+		return nil
+	}
+}
+
+// constantConcurrencyKey reads the constant form: text as written, with the
+// templating refusal and the length cap applied.
+func (d *decoder) constantConcurrencyKey(node ast.Node, text string) *ConcurrencyKey {
+	if strings.Contains(text, "{{") {
+		d.error(CodeConcurrencyTemplating, position(node),
+			fmt.Sprintf("concurrency_key is %q, and paceq refuses templating in key values", text),
+			"Templating in configuration is refused for all of 1.0: it is an injection\n"+
+				"risk and turns a definition into a program nobody can read. Three closed\n"+
+				"forms carry every case it would:\n\n"+
+				"    concurrency_key: \"nightly-report\"\n"+
+				"    concurrency_key: {param: kunde}\n"+
+				"    concurrency_key: {from: run_key}")
+		return nil
+	}
+	if len(text) > MaxConcurrencyKeyLength {
+		d.error(CodeBadValue, position(node),
+			fmt.Sprintf("concurrency_key is %d characters, and %d is the most a key may carry", len(text), MaxConcurrencyKeyLength),
+			"A key names a mutual exclusion class; it is not a place for data. Shorten it.")
+		return nil
+	}
+	if text == "" {
+		d.error(CodeBadValue, position(node),
+			"concurrency_key is an empty string",
+			"Leave the field out when every run should be unlimited, or name the value:\n\n"+
+				"    concurrency_key: \"nightly-report\"")
+		return nil
+	}
+	return &ConcurrencyKey{Constant: text}
 }
 
 func (d *decoder) steps(node ast.Node) []Step {

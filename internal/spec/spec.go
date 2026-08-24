@@ -148,6 +148,61 @@ type Job struct {
 	Steps       []Step
 	Schedules   []Schedule
 	Sensors     []Sensor
+
+	// ConcurrencyKey is the optional mutual exclusion key (#17). nil means
+	// every run of this job is unlimited. The closed grammar lives on
+	// ConcurrencyKey; the value canonises as <jobname>:<resolved> when a
+	// run materialises.
+	ConcurrencyKey *ConcurrencyKey
+
+	// OnConflict says what a fire does when another active run already
+	// holds the key: defer (the default) queues the run held into the
+	// future, skip stands the trigger down with a rejected outcome.
+	OnConflict string
+}
+
+// ConcurrencyKey is the closed grammar of a job's concurrency key. Exactly one
+// form is set. There is no templating and no expression language: a constant,
+// a named parameter, or the trigger's run key are the whole vocabulary.
+type ConcurrencyKey struct {
+	// Constant is form 1: the key text itself.
+	Constant string
+	// Param is form 2: params[this] at fire time. Missing or empty means
+	// the run has no key and is unlimited.
+	Param string
+	// FromRunKey is form 3: the trigger's dedup run key is the value.
+	FromRunKey bool
+}
+
+// The on_conflict policy values (#17). DefaultOnConflict exists so both ends
+// of the decode read the default from one name.
+const (
+	OnConflictDefer = "defer"
+	OnConflictSkip  = "skip"
+	// DefaultOnConflict is OnConflictDefer: waiting keeps the event, a
+	// silent drop loses it.
+	DefaultOnConflict = OnConflictDefer
+)
+
+// MaxConcurrencyKeyLength caps the constant form and every resolved value.
+// A longer key is a data blob, not a name.
+const MaxConcurrencyKeyLength = 200
+
+// Value resolves the raw key text for one fire. params are the trigger's
+// parameters and runKey is the dedup key the trigger carried. ok is false
+// when this fire has no key at all, which means unlimited; that is a normal
+// outcome for the param form, never an error, because params may come from a
+// sensor payload that simply lacked the field.
+func (k *ConcurrencyKey) Value(params map[string]string, runKey string) (value string, ok bool) {
+	switch {
+	case k.FromRunKey:
+		return runKey, runKey != ""
+	case k.Param != "":
+		v := params[k.Param]
+		return v, v != ""
+	default:
+		return k.Constant, true
+	}
 }
 
 // Step is one command in a job.

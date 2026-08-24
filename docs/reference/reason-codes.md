@@ -47,6 +47,7 @@ Codes stored in the triggers table, one row per trigger a tick produced.
 |---|---|---|---|
 | `TRIGGER_ACCEPTED` | became a run | yes | - |
 | `TRIGGER_DEDUPED_RUN_KEY` | the run key was seen before | yes | `epoch`, `original_run_id` |
+| `TRIGGER_REJECTED_CONCURRENCY_KEY` | another run holds the concurrency key | yes | `blocking_run_id`, `concurrency_key` |
 | `TRIGGER_REJECTED_JOB_PAUSED` | the job is paused | yes | - |
 | `TRIGGER_REJECTED_JOB_UNKNOWN` | the job does not exist | yes | - |
 | `TRIGGER_REJECTED_PAYLOAD` | the payload did not match the job's schema | yes | - |
@@ -59,6 +60,7 @@ Codes stored on the runs table, one row per run.
 |---|---|---|---|
 | `RUN_CANCELLED_MANUAL` | cancelled by request | yes | - |
 | `RUN_CANCELLED_SHUTDOWN` | cancelled because the daemon stopped | yes | - |
+| `RUN_DEFERRED_CONCURRENCY_KEY` | waiting for the concurrency key to free | no | `blocking_run_id`, `concurrency_key` |
 | `RUN_FAILED_STEP` | a step failed | yes | `attempt`, `step` |
 | `RUN_INTERRUPTED_SHUTDOWN` | interrupted by a clean daemon stop, nothing was lost | no | - |
 | `RUN_ORPHANED_RECONCILED` | found running with no process, reconciled | yes | - |
@@ -353,6 +355,21 @@ What to do next:
 
 Promised reason_data keys: epoch, original_run_id.
 
+### TRIGGER_REJECTED_CONCURRENCY_KEY
+
+another run holds the concurrency key. [trigger level, ends the object]
+
+The job carries a concurrency_key, another active run already held it, and
+the job's on_conflict policy is skip. The fire therefore created no run at
+all: the trigger row is the whole record that the event happened and was
+refused, with the holding run named beside it.
+
+What to do next:
+- reason_data on this trigger names the run that holds the key
+- if waiting would be better than dropping, set on_conflict: defer on the job
+
+Promised reason_data keys: blocking_run_id, concurrency_key.
+
 ### TRIGGER_REJECTED_JOB_PAUSED
 
 the job is paused. [trigger level, ends the object]
@@ -411,6 +428,21 @@ cleanly, so nothing keeps running unowned.
 
 What to do next:
 - runs closed this way are safe to start again once the daemon is back
+
+### RUN_DEFERRED_CONCURRENCY_KEY
+
+waiting for the concurrency key to free. [run level]
+
+Another active run held this job's concurrency_key when this run
+materialised, so it was stored queued but keyless: it holds nothing, blocks
+nothing, and waits for the claim pass to give it the key back once no other
+run holds it. The wanted key and the blocking run are both in reason_data.
+
+What to do next:
+- waiting is normal; the claim pass retries every tick once available_at arrives
+- reason_data names the run that blocked this one, if you need to know who
+
+Promised reason_data keys: blocking_run_id, concurrency_key.
 
 ### RUN_FAILED_STEP
 

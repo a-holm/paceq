@@ -127,12 +127,18 @@ RETURNING id, job_name, job_version_id, run_key, attempt, lease_epoch, params_js
 // served by idx_runs_claim exactly as the old embedded subselect was; the
 // query plan test pins this statement too. The Only clause slots in ahead of
 // the order, which is where a predicate belongs.
+//
+// Rows whose defer_reason is "concurrency_key" (#17, model's
+// DeferReasonConcurrencyKey) never appear here. A keyless deferral holds no
+// key and must not be started by the ordinary queue path; its way out is the
+// keyed start in concurrency_key.go, and nowhere else.
 const claimCandidatesSQL = `SELECT r.id, r.job_name, j.max_concurrent
 FROM runs r
 JOIN jobs j ON j.name = r.job_name
 WHERE r.state = 'queued'
 	AND r.available_at <= ?
 	AND r.cancel_requested_at IS NULL
+	AND (r.defer_reason IS NULL OR r.defer_reason <> 'concurrency_key')
 %s
 ORDER BY r.scheduled_for, r.created_at, r.id`
 
@@ -207,37 +213,46 @@ func claimTx(tx *sql.Tx, spec ClaimSpec, now, expires time.Time, limit int, out 
 	if err != nil {
 		return err
 	}
-	if len(ids) == 0 {
-		return nil
-	}
 
-	query := strings.Replace(claimRunsSQL,
-		"IN (?4)", "IN ("+idFilter(ids)+")", 1)
-	args := []any{spec.Owner, now.UnixMilli(), expires.UnixMilli()}
-	for _, id := range ids {
-		args = append(args, id)
-	}
-	rows, err := tx.Query(query, args...)
-	if err != nil {
-		return fmt.Errorf("claim runs for %s: %w", spec.Owner, err)
-	}
-	defer func() { _ = rows.Close() }()
+	if len(ids) > 0 {
+		query := strings.Replace(claimRunsSQL,
+			"IN (?4)", "IN ("+idFilter(ids)+")", 1)
+		args := []any{spec.Owner, now.UnixMilli(), expires.UnixMilli()}
+		for _, id := range ids {
+			args = append(args, id)
+		}
+		rows, err := tx.Query(query, args...)
+		if err != nil {
+			return fmt.Errorf("claim runs for %s: %w", spec.Owner, err)
+		}
 
-	for rows.Next() {
-		var cl ClaimedRun
-		var runKey sql.NullString
-		if err := rows.Scan(&cl.ID, &cl.JobName, &cl.JobVersionID, &runKey,
-			&cl.Attempt, &cl.LeaseEpoch, &cl.ParamsJSON); err != nil {
+		for rows.Next() {
+			var cl ClaimedRun
+			var runKey sql.NullString
+			if err := rows.Scan(&cl.ID, &cl.JobName, &cl.JobVersionID, &runKey,
+				&cl.Attempt, &cl.LeaseEpoch, &cl.ParamsJSON); err != nil {
+				_ = rows.Close()
+				return fmt.Errorf("scan a claimed run: %w", err)
+			}
+			cl.RunKey = runKey.String
+			*out = append(*out, cl)
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
 			return fmt.Errorf("scan a claimed run: %w", err)
 		}
-		cl.RunKey = runKey.String
-		*out = append(*out, cl)
+		if err := rows.Close(); err != nil {
+			return fmt.Errorf("close the claimed rows: %w", err)
+		}
 	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("scan a claimed run: %w", err)
-	}
-	if err := rows.Close(); err != nil {
-		return fmt.Errorf("close the claimed rows: %w", err)
+
+	// Key deferrals come last, within whatever budget the ordinary queue
+	// left over (#17): they already waited a backoff, and the order stays
+	// deterministic for goldens and crash replays.
+	if remaining := limit - len(*out); remaining > 0 {
+		if err := claimKeyDeferredTx(tx, spec, now, expires, remaining, out); err != nil {
+			return err
+		}
 	}
 
 	// The claim statement has executed but nothing is committed, which is
