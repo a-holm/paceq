@@ -21,8 +21,9 @@ import (
 // are owned by the evaluator and by the operator, never by a file: SyncSensors
 // leaves them alone.
 
-// SensorRow is one sensor row as the readers here return it.
-type SensorRow struct {
+// SensorSummary is the read-side view of one sensor row as the readers here
+// return it.
+type SensorSummary struct {
 	Name               string
 	JobName            string
 	Kind               string
