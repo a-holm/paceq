@@ -180,10 +180,14 @@ func runParityScenario(t *testing.T, withDaemon bool) (retryDoc, replayDoc, reop
 		defer func() { stop(context.Background()) }()
 	}
 
-	retryDoc = parityDoc(t, paceqRun(t, bin, dir,
-		"runs", "retry", srcID, "-o", "json"))
+	// Replay first: it reads the finished failed run as its source and mints
+	// a new run. Retry second: it reopens the same original run. Doing it this
+	// order keeps the original run a valid source for both, because after a
+	// retry the original is a reopened (queued) run and replay would refuse it.
 	replayDoc = parityDoc(t, paceqRun(t, bin, dir,
 		"runs", "replay", srcID, "--failed", "-o", "json"))
+	retryDoc = parityDoc(t, paceqRun(t, bin, dir,
+		"runs", "retry", srcID, "-o", "json"))
 
 	events, err := s.RunEvents(ctx, srcID)
 	if err != nil {

@@ -56,8 +56,8 @@ type ReopenOpts struct {
 // ReopenResult says what one reopen did: the fencing token the run now sits
 // behind, and which steps are pending again, in spec order.
 type ReopenResult struct {
-	NewEpoch int64
-	Reopened []string
+	NewEpoch int64    `json:"new_epoch"`
+	Reopened []string `json:"reopened"`
 }
 
 // ReopenTerminalRunByOperator reopens a terminal run on an operator's behalf.

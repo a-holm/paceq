@@ -57,9 +57,9 @@ type ReplayOpts struct {
 // Both lists are in spec order, and together they hold every step exactly
 // once.
 type ReplayResult struct {
-	NewRunID string
-	Reused   []string
-	Rerun    []string
+	NewRunID string   `json:"run_id"`
+	Reused   []string `json:"reused"`
+	Rerun    []string `json:"rerun"`
 }
 
 // MaterializeReplay makes a new run out of a finished one. The source has to

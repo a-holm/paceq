@@ -62,10 +62,10 @@ func startHealthEndpoint(cfg Config, st *statuses, log *slog.Logger, store *stor
 	// API routes for the CLI's write commands: registered only when
 	// the caller passes a store.
 	if store != nil {
-		mux.HandleFunc("POST /v1/schedules/{ref...}/pause", func(w http.ResponseWriter, r *http.Request) {
+		mux.HandleFunc("POST /v1/schedules/{ref}/pause", func(w http.ResponseWriter, r *http.Request) {
 			handlePauseSchedule(w, r, store)
 		})
-		mux.HandleFunc("POST /v1/schedules/{ref...}/resume", func(w http.ResponseWriter, r *http.Request) {
+		mux.HandleFunc("POST /v1/schedules/{ref}/resume", func(w http.ResponseWriter, r *http.Request) {
 			handleResumeSchedule(w, r, store)
 		})
 		mux.HandleFunc("POST /v1/runs/{id}/cancel", func(w http.ResponseWriter, r *http.Request) {
