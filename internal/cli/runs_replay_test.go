@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/a-holm/paceq/internal/reason"
 	"github.com/a-holm/paceq/internal/store"
@@ -16,38 +15,6 @@ import (
 // to the same job version the source ran, with steps that can be spared a
 // second execution. The store half of every invariant has its own suite in
 // internal/store; these tests pin what the command line promises.
-
-// finishChainToSuccess drives the planted chain's reopened steps to the end,
-// so the run ends succeeded and replay has something terminal to copy.
-func finishChainToSuccess(t *testing.T, s *store.Store, dir, runID string) {
-	t.Helper()
-	ctx := context.Background()
-	res := runCLI(t, dir, nil, "runs", "retry", runID, "-o", "json")
-	if res.code != ExitOK {
-		t.Fatalf("setup retry exited %d:\n%s%s", res.code, res.stdout, res.stderr)
-	}
-	_, epoch, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: "cli:test", TTL: time.Hour})
-	if err != nil {
-		t.Fatalf("claim: %v", err)
-	}
-	ref := store.LeaseRef{Owner: "cli:test", Epoch: epoch}
-	for _, step := range []string{"c", "d", "e"} {
-		if err := s.StartStep(ctx, runID, step, ref); err != nil {
-			t.Fatalf("start %s: %v", step, err)
-		}
-		if err := s.RecordStepOutcome(ctx, runID, step, store.StepOutcome{
-			Event: "step_succeeded", ReasonCode: reason.STEPSucceeded,
-			ExitCode: new(int), FinishedAt: time.Now(),
-		}, ref); err != nil {
-			t.Fatalf("record %s: %v", step, err)
-		}
-	}
-	if _, err := s.FinishRun(ctx, runID, ref, store.FinishReason{
-		Code: reason.RUNSucceeded, Data: "{}",
-	}); err != nil {
-		t.Fatalf("finish: %v", err)
-	}
-}
 
 type replayDoc struct {
 	RunID    string   `json:"run_id"`
