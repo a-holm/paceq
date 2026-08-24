@@ -39,11 +39,17 @@ var stateUpdatePattern = regexp.MustCompile(`UPDATE\s+(runs|steps)\b`)
 // injection for the negative proofs, writing broken rows on purpose so
 // fsck can name them. Its writes carry nolint:fencing markers the
 // fencing test requires, and nothing outside a test may call it.
+// reopen.go is the M4-04 exception, and it is the opposite of inject.go:
+// it exists so an operator can reopen a terminal run through T14 at all.
+// Its writes route their decisions through internal/model like the rest of
+// the layer; the file is listed here because the reopen is, by definition,
+// a state update no other file may perform.
 var transitionFiles = map[string]bool{
 	"internal/store/transitions.go": true,
 	"internal/store/runlease.go":    true,
 	"internal/store/inject.go":      true,
 	"internal/store/claim.go":       true,
+	"internal/store/reopen.go":      true,
 }
 
 func TestStateUpdatesStayInTheTransitionLayer(t *testing.T) {
