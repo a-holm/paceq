@@ -245,7 +245,7 @@ func writeJobDir(dir string, docs []crontab.Doc, header []string, force bool, sh
 	}
 	if len(conflicts) > 0 {
 		return nil, validationError(
-			fmt.Sprintf("%s already exists (%d clash(es) in all)", conflicts[0], len(conflicts)),
+			fmt.Sprintf("%s already exists; %d imported name(s) clash in that directory", conflicts[0], len(conflicts)),
 			errors.New("refusing to overwrite existing job files"),
 			"pass --force to replace them, or pick another directory:",
 			"    paceq import crontab -o other-jobs/")
@@ -372,6 +372,9 @@ func runCrontabList(user string) ([]byte, error) {
 		args = []string{"-u", user, "-l"}
 		label = "a crontab for " + user
 	}
+	// #nosec G204 - crontab resolves through LookPath so a test can plant its
+	// own stub on PATH, which is how non-destructiveness gets proven; every
+	// argument is a fixed list flag or an operator-typed user name.
 	cmd := exec.Command(bin, args...)
 	outBytes, runErr := cmd.Output()
 	if runErr == nil {
