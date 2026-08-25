@@ -37,7 +37,7 @@ export GOFLAGS += -buildvcs=false
 # Platforms cross built and asserted cgo free on every pull request.
 CROSS_TARGETS := linux/amd64 linux/arm64 darwin/arm64
 
-.PHONY: all build test property gate bench fuzz fmt fmt-check vet staticcheck lint gosec govulncheck \
+.PHONY: all build test property gate chaos bench fuzz fmt fmt-check vet staticcheck lint gosec govulncheck \
 	tidy-check cross test-scratch sensors-examples ci fixture-change hooks clean
 
 all: build
@@ -62,6 +62,18 @@ test:
 gate:
 	$(GO) test ./internal/store -run 'TestConcurrentWriters|TestWALRecoveryUnderKill|TestLoadHarness' -count=1 -v
 	$(GO) test ./internal/spec -run 'TestParsingAHundredFilesStaysUnderTheBudget' -count=1 -v
+
+# The seeded SIGKILL chaos sweep (issue #20, AC-9): five hundred runs against a
+# real `paceq serve` subprocess that is killed and restarted on a schedule that
+# is a pure function of its seed, then the full invariant battery over the
+# wreckage. Behind the chaos build tag and therefore absent from `make test`
+# and every pull request; the nightly workflow (nightly.yml) runs this target,
+# and the ordinary suite carries the small-N smoke of the same machinery. The
+# race detector needs cgo, as in the test target; it watches the harness, while
+# the daemon under kill is an ordinary child binary. PACEQ_CHAOS_SEED replays a
+# named schedule, PACEQ_CHAOS_ARTIFACTS moves the failure archive.
+chaos:
+	CGO_ENABLED=1 $(GO) test -race -tags chaos -count=1 -timeout 40m -v ./test/chaos
 
 # The sensor-cursor property test (issue #16) is a model-based crash sweep over a
 # real SQLite file. It runs here, under the race detector, with a bounded seed and

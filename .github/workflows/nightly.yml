@@ -1,0 +1,73 @@
+name: nightly
+
+# The nightly chaos job (issue #20, AC-9 to AC-11): the seeded SIGKILL sweep
+# over a real daemon, five hundred runs per night. Pull requests carry the
+# small-N smoke of the same machinery through `make test`; the full body is
+# too expensive to run on every push, which is why it lives behind the chaos
+# build tag and this schedule.
+
+on:
+  schedule:
+    # Every night at 02:37 UTC: off the hour so shared runners are not hit at
+    # the top-of-hour rush. GitHub schedules run on the default branch only.
+    - cron: "37 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CGO_ENABLED: "0"
+  GOFLAGS: -mod=readonly -buildvcs=false
+  # No implicit toolchain downloads: the Go version below builds everything.
+  GOTOOLCHAIN: local
+
+jobs:
+  chaos:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.26.x
+          cache-dependency-path: go.mod
+
+      - name: Run the seeded chaos sweep
+        env:
+          # The race detector needs cgo, exactly like `make test`.
+          CGO_ENABLED: "1"
+          # Failure archives land here, one directory per failed sweep, and
+          # the upload step below takes the whole tree.
+          PACEQ_CHAOS_ARTIFACTS: ${{ github.workspace }}/chaos-artifacts
+        run: |
+          set -o pipefail
+          make chaos 2>&1 | tee chaos-output.log
+
+      # AC-9 asks the nightly to report what happened: final state counts,
+      # duplication and WAL size. The suite logs one line per sweep; copy the
+      # lines into the step summary so the run page carries them without
+      # opening the raw log.
+      - name: Summarise the sweeps
+        if: always()
+        run: |
+          echo "### Chaos nightly" >> "$GITHUB_STEP_SUMMARY"
+          grep 'chaos report:' chaos-output.log >> "$GITHUB_STEP_SUMMARY" \
+            || echo "no chaos report line was logged" >> "$GITHUB_STEP_SUMMARY"
+
+      # AC-11: on failure the evidence is archived as a CI artifact - the
+      # state database with its wal and shm siblings, the step logs, every
+      # daemon generation's stderr, the effect file and a manifest that says
+      # how to replay the seed.
+      - name: Archive the failure evidence
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: chaos-failure-${{ github.run_id }}
+          path: chaos-artifacts/
+          retention-days: 14
+          if-no-files-found: warn

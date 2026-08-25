@@ -31,3 +31,6 @@ __pycache__/
 
 # Agent worktrees
 .claude/worktrees/
+
+# Chaos failure archives (uploaded as CI artifacts, never committed)
+test/chaos/artifacts/
