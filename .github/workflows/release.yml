@@ -24,10 +24,11 @@ env:
 
 jobs:
   # Plan 08 §5: reproducible is verified, not claimed. The tagged commit is
-  # built twice into two separate cold build caches, so no shared compilation
-  # artifact can hide a difference, and the two binaries must agree byte for
-  # byte. The flags and ldflags mirror .goreleaser.yaml exactly; if they drift,
-  # this gate verifies a different binary than the one that ships.
+  # built twice, each time into its own cold build cache and its own source
+  # tree, so neither a shared compilation artifact nor a shared build path can
+  # hide a difference, and the two binaries must agree byte for byte. The
+  # flags and ldflags mirror .goreleaser.yaml exactly; if they drift, this
+  # gate verifies a different binary than the one that ships.
   reproducible:
     name: double-build gate (plan 08 §5)
     runs-on: ubuntu-24.04
@@ -40,20 +41,36 @@ jobs:
           go-version: 1.27.x
           cache-dependency-path: go.mod
 
+      # The date form matters: GoReleaser ships buildinfo.Date from
+      # {{ .CommitDate }}, which it renders as UTC RFC3339 (tmpl.go:
+      # CommitDate.UTC().Format(time.RFC3339)). A raw %cI carries the local
+      # offset, so injecting it here would make this gate verify binaries
+      # that differ from the ones that ship.
       - name: build linux/amd64 twice from cold caches and compare
         run: |
           set -euo pipefail
           commit="$(git rev-parse "${GITHUB_REF_NAME}^{commit}")"
-          date="$(git show -s --format=%cI "$commit")"
+          date="$(date -u -d "$(git show -s --format=%cI "$commit")" +%Y-%m-%dT%H:%M:%SZ)"
           version="${GITHUB_REF_NAME#v}"
+          ldflags="-s -w -X github.com/a-holm/paceq/internal/buildinfo.Version=$version -X github.com/a-holm/paceq/internal/buildinfo.Commit=$commit -X github.com/a-holm/paceq/internal/buildinfo.Date=$date"
+          # $1 is where the binary and this build's cold cache land, $2 the
+          # tree to build from; the subshell keeps the two builds independent.
           build() {
-            GOCACHE="$1-gocache" CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-              -trimpath -buildvcs=true \
-              -ldflags "-s -w -X github.com/a-holm/paceq/internal/buildinfo.Version=$version -X github.com/a-holm/paceq/internal/buildinfo.Commit=$commit -X github.com/a-holm/paceq/internal/buildinfo.Date=$date" \
-              -o "$1" ./cmd/paceq
+            (
+              cd "$2"
+              GOCACHE="$1-gocache" CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+                go build -trimpath -buildvcs=true -ldflags "$ldflags" \
+                -o "$1" ./cmd/paceq
+            )
           }
-          build /tmp/paceq-a
-          build /tmp/paceq-b
+          # The second build runs from a fresh clone at another absolute path,
+          # with its own cold cache: -trimpath is what makes two builds of one
+          # commit agree across directories, so a build that loses it cannot
+          # slip through by only sharing a directory with its twin.
+          git clone --quiet . /tmp/paceq-rebuild
+          git -C /tmp/paceq-rebuild checkout --quiet "$commit"
+          build /tmp/paceq-a .
+          build /tmp/paceq-b /tmp/paceq-rebuild
           sha256sum /tmp/paceq-a /tmp/paceq-b
           if ! cmp -s /tmp/paceq-a /tmp/paceq-b; then
             echo "::error::the double build disagrees on sha256: not reproducible, refusing to release (plan 08 §5)"
@@ -86,7 +103,8 @@ jobs:
         run: |
           set -euo pipefail
           commit="$(git rev-parse "${GITHUB_REF_NAME}^{commit}")"
-          date="$(git show -s --format=%cI "$commit")"
+          # Same UTC RFC3339 form GoReleaser ships, as in the gate above.
+          date="$(date -u -d "$(git show -s --format=%cI "$commit")" +%Y-%m-%dT%H:%M:%SZ)"
           version="${GITHUB_REF_NAME#v}"
           budget=$((30 * 1024 * 1024))
           for target in linux/arm64 darwin/amd64 darwin/arm64; do
@@ -148,7 +166,11 @@ jobs:
           cd dist
           sha256sum -c checksums.txt
 
-      - name: init, apply, run hello, explain
+      # The first-run story from plan 09 §6.3 with nothing invented: every
+      # command here is one the binary registers. The run id comes back as
+      # JSON from `run` itself, and `status` and `logs` read it back out of
+      # the state the run left behind.
+      - name: init, validate, apply, run hello, read it back
         run: |
           set -euo pipefail
           cd dist
@@ -161,6 +183,10 @@ jobs:
           mkdir project
           cd project
           paceq init
+          paceq validate
           paceq apply
-          paceq run hello --wait
-          paceq explain job hello
+          runid="$(paceq -o json run hello --wait | jq -er '.run.id')"
+          echo "hello ran as $runid"
+          paceq status hello > /dev/null
+          paceq logs "$runid" > /dev/null
+          echo "smoke: init, validate, apply, run, status and logs all exited 0"
