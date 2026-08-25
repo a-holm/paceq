@@ -328,6 +328,44 @@ func seedQueuedRun(t *testing.T, s *store.Store) {
 	}
 }
 
+// seedSucceededJob creates the job named by spec (if absent) and drives one
+// run to succeeded, so the job owns a last-success stamp. Sharing the helper
+// with the SLA test keeps the two jobs there identical in every way except
+// the one key the test cares about.
+func seedSucceededJob(t *testing.T, s *store.Store, jobName, spec string) {
+	t.Helper()
+	ctx := context.Background()
+
+	version, _, err := s.UpsertJobVersion(ctx, store.JobVersionInput{
+		JobName: jobName, MaxConcurrent: 1, SpecHash: "sha256:" + jobName, SpecJSON: spec,
+	})
+	if err != nil {
+		t.Fatalf("apply %s: %v", jobName, err)
+	}
+	run, err := s.CreateRunWithSteps(ctx, store.NewRun{
+		JobName: jobName, JobVersionID: version.ID, Origin: "manual",
+		Steps: []store.NewStep{{Name: "only"}},
+	})
+	if err != nil {
+		t.Fatalf("create %s: %v", jobName, err)
+	}
+	ref := store.LeaseRef{Owner: "test", Epoch: 1}
+	if _, _, err := s.ClaimRun(ctx, run.ID, store.LeaseInput{Owner: "test"}); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := s.StartStep(ctx, run.ID, "only", ref); err != nil {
+		t.Fatalf("start step: %v", err)
+	}
+	if err := s.RecordStepOutcome(ctx, run.ID, "only", store.StepOutcome{
+		Event: "step_succeeded", ReasonCode: reason.STEPSucceeded,
+	}, ref); err != nil {
+		t.Fatalf("record step: %v", err)
+	}
+	if _, err := s.FinishRun(ctx, run.ID, ref, store.FinishReason{Code: reason.RUNSucceeded}); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+}
+
 // TestScrapeMatchesKnownDatabaseState is consistency test 4: write a known
 // state, scrape, assert the exact numbers. It catches gauges being read from
 // the wrong source, which no amount of format testing can.
@@ -405,5 +443,40 @@ func TestScrapeMatchesKnownDatabaseState(t *testing.T) {
 	want := `pulseq_tick_total{instigator="sensor",name="watched",status="skipped",reason_code="TICK_SKIPPED_SENSOR"} 1`
 	if !strings.Contains(out, want+"\n") {
 		t.Errorf("committed tick not counted, want %q\n--- got ---\n%s", want, out)
+	}
+}
+
+// TestNoExpectationJobGetsNoFreshnessSeries pins the centrepiece of 06
+// section 6.3 and its own acceptance bullet: a job that declares
+// expected_within_ms renders a freshness SLA series, and a job whose spec is
+// identical except for that one key renders no freshness series at all -
+// absence is the truth; a fabricated zero would alarm on the healthy. The
+// two jobs are seeded through the real store so obs and store together own
+// the invariant (the store's MetricsJobSLAs is the source of the difference).
+func TestNoExpectationJobGetsNoFreshnessSeries(t *testing.T) {
+	counters := NewCounters()
+	s, clk := realStore(t, counters)
+
+	const (
+		withSLA = `{"schema":"paceq.job.v1","name":"sla-job","expected_within_ms":7200000,` +
+			`"max_concurrent":1,"steps":[{"name":"only","run":["true"],"shell":false}]}`
+		withoutSLA = `{"schema":"paceq.job.v1","name":"no-sla-job",` +
+			`"max_concurrent":1,"steps":[{"name":"only","run":["true"],"shell":false}]}`
+	)
+	// Give both a last success too, so the distinction is the SLA key alone
+	// and a mutant that invents a zero for SLA-less jobs has something to trip on.
+	seedSucceededJob(t, s, "sla-job", withSLA)
+	seedSucceededJob(t, s, "no-sla-job", withoutSLA)
+
+	out := string(NewCollector(s, counters, clk,
+		Identity{Version: "v", Commit: "c", GoVersion: "go"}, "").Scrape(context.Background()))
+
+	if !strings.Contains(out, `pulseq_job_freshness_sla_seconds{job="sla-job"} 7200`+"\n") {
+		t.Errorf("the job that declares expected_within_ms lost its freshness series\n--- got ---\n%s", out)
+	}
+	for _, ln := range strings.Split(out, "\n") {
+		if strings.Contains(ln, "pulseq_job_freshness_sla_seconds") && strings.Contains(ln, `job="no-sla-job"`) {
+			t.Errorf("the job without expected_within_ms rendered a freshness series (never 0, never at all): %q", ln)
+		}
 	}
 }

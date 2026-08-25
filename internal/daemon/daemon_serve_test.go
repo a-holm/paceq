@@ -9,11 +9,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/a-holm/paceq/internal/clock"
 	"github.com/a-holm/paceq/internal/model"
+	"github.com/a-holm/paceq/internal/obs"
 	"github.com/a-holm/paceq/internal/reason"
 	"github.com/a-holm/paceq/internal/store"
 )
@@ -666,5 +668,66 @@ func httpClientOver(sock string) *http.Client {
 				return d.DialContext(context.Background(), "unix", sock)
 			},
 		},
+	}
+}
+
+// TestMetricsServedOverUnixSocket is acceptance criterion 1 and the socket
+// half of /metrics: the daemon that names a socket answers the Prometheus
+// text exposition on it. This is a serve-level E2E - the whole of Serve runs,
+// and the request travels the real unix socket, not a handler invoked
+// directly - so it owns the transport wiring: no socket registration, no
+// /metrics route, a wrong content type, or an empty document all fail here.
+func TestMetricsServedOverUnixSocket(t *testing.T) {
+	rec, logger := newRecLog()
+	root := t.TempDir()
+	cfg := Config{
+		StateDir:   filepath.Join(root, "state"),
+		Version:    "test",
+		JobsDir:    "jobs",
+		Logger:     logger,
+		Owner:      "serve:test",
+		SocketPath: filepath.Join(root, "state", "h.sock"),
+	}
+	if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
+		t.Fatalf("create the state directory: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() { errCh <- Serve(ctx, cfg, clock.System()) }()
+
+	waitForLogLine(t, rec, "daemon ready", 10*time.Second)
+
+	client := httpClientOver(cfg.SocketPath)
+	resp, err := client.Get("http://localhost/metrics")
+	if err != nil {
+		t.Fatalf("GET /metrics over the unix socket: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("/metrics answered %d, want 200", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != obs.ContentType {
+		t.Errorf("Content-Type = %q, want %q", ct, obs.ContentType)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read the /metrics body: %v", err)
+	}
+	for _, want := range []string{"pulseq_daemon_start_timestamp_seconds", "pulseq_build_info"} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("the /metrics document over the socket is missing %q", want)
+		}
+	}
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("a clean stop reported %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Serve did not return within 10s of cancellation")
 	}
 }
