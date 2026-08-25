@@ -16,7 +16,7 @@ import (
 // list a misspelling is measured against, so a field added to a struct and not
 // to its list here is a field the parser refuses.
 var (
-	jobFields      = []string{"name", "description", "env", "env_file", "inherit_env", "workdir", "timeout", "max_concurrent", "max_parallel", "concurrency_key", "on_conflict", "steps", "schedules", "sensors"}
+	jobFields      = []string{"name", "description", "env", "env_file", "inherit_env", "workdir", "timeout", "expected_within", "max_concurrent", "max_parallel", "concurrency_key", "on_conflict", "steps", "schedules", "sensors"}
 	stepFields     = []string{"name", "run", "shell", "workdir", "timeout", "retry", "needs"}
 	retryFields    = []string{"max", "backoff", "initial", "max_delay", "jitter"}
 	scheduleFields = []string{"name", "cron", "timezone", "overlap"}
@@ -83,6 +83,8 @@ func (d *decoder) job(node ast.Node) *Job {
 			job.Workdir = d.text(value, "workdir")
 		case "timeout":
 			job.Timeout = d.timeout(value, DefaultTimeout)
+		case "expected_within":
+			job.ExpectedWithin = d.expectedWithin(value)
 		case "max_concurrent":
 			job.MaxConcurrent = d.maxConcurrent(value)
 		case "max_parallel":

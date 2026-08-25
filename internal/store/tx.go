@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/a-holm/paceq/internal/clock"
 )
 
 // readDeadline caps every read. A long lived read transaction starves WAL
@@ -63,8 +65,15 @@ func (s *Store) withTx(ctx context.Context, fn func(*sql.Tx) error) error {
 	for attempt := 1; ; attempt++ {
 		err := s.withTxOnce(ctx, fn)
 		if err == nil || attempt == maxWriteAttempts || !isBusySnapshot(err) {
+			// A contention fact is a metrics fact (#40): whatever
+			// ends the loop, if it was a SQLITE_BUSY outcome, the
+			// counter hears about it once.
+			if err != nil && isBusy(err) {
+				s.busyTotal.Add(1)
+			}
 			return err
 		}
+		s.busyTotal.Add(1)
 		timer := s.clk.NewTimer(time.Duration(attempt) * retryBackoff)
 		select {
 		case <-ctx.Done():
@@ -93,21 +102,43 @@ func isBusySnapshot(err error) bool {
 }
 
 func (s *Store) withTxOnce(ctx context.Context, fn func(*sql.Tx) error) error {
+	// The write-wait measurement (#40) wraps the whole attempt: the lock is
+	// held from BEGIN to COMMIT or ROLLBACK, and that span is what a
+	// monitoring rule needs to see when it asks how long writes wait.
+	started := s.clk.Mark()
 	tx, err := s.w.BeginTx(ctx, nil)
 	if err != nil {
+		s.takeWriteWait(started)
 		return joinContextErr(ctx, fmt.Errorf("begin write transaction: %w", err))
 	}
 	if err := fn(tx); err != nil {
+		s.takeWriteWait(started)
 		_ = tx.Rollback()
 		return joinContextErr(ctx, err)
 	}
 	if err := tx.Commit(); err != nil {
+		s.takeWriteWait(started)
 		return joinContextErr(ctx, fmt.Errorf("commit write transaction: %w", err))
 	}
+	s.takeWriteWait(started)
 	if s.onCommit != nil {
 		s.onCommit()
 	}
 	return nil
+}
+
+// takeWriteWait records one write attempt's duration into the max the scraper
+// will take. Every exit path reports, because a transaction that failed still
+// held the scarcest resource in the system for its whole life.
+func (s *Store) takeWriteWait(started clock.Mono) {
+	if d := s.clk.Since(started); d > 0 {
+		for {
+			cur := s.writeWaitMaxNanos.Load()
+			if int64(d) <= cur || s.writeWaitMaxNanos.CompareAndSwap(cur, int64(d)) {
+				break
+			}
+		}
+	}
 }
 
 // joinContextErr puts the context error in front of a failure that happened

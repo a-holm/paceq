@@ -72,6 +72,14 @@ type Options struct {
 	// Clock is the clock the retry backoff waits on. A nil Clock means
 	// clock.System(). Tests that want the backoff to be instant pass their own.
 	Clock clock.Clock
+
+	// Metrics receives the event-time observations the in-memory counters
+	// behind /metrics are built from (#40): tick outcomes as they commit and
+	// lease reclaims as they happen. Nil means nobody is listening, which is
+	// the normal state of every non-daemon process. The interface lives here
+	// rather than in a metrics package so the store stays free of any
+	// dependency direction it does not already have.
+	Metrics MetricsHook
 }
 
 // Store owns every connection to the database file. Both handles are private:
@@ -100,6 +108,18 @@ type Store struct {
 	// nil in production; only package tests set it, to count real commits
 	// where the batch heartbeat proof needs them.
 	onCommit func()
+
+	// metrics receives event-time observations for the in-memory /metrics
+	// counters (#40). Nil in every process nobody scrapes.
+	metrics MetricsHook
+
+	// writeWaitMaxNanos holds the wall time of the slowest write transaction
+	// since a reader last took it, and busyTotal counts the SQLITE_BUSY
+	// family outcomes the write pool has seen. Both are the store's own view
+	// of writer health (db_write_wait_seconds_max, db_busy_total) and both
+	// are atomics because writers and the scraper share them.
+	writeWaitMaxNanos atomic.Int64
+	busyTotal         atomic.Uint64
 
 	// lock is the state directory claim, held when the store was opened through
 	// OpenState. Close releases it.
@@ -154,7 +174,7 @@ func Open(ctx context.Context, path string, opt Options) (*Store, error) {
 		clk = clock.System()
 	}
 
-	s := &Store{w: w, r: r, path: path, clk: clk, bootID: readBootID}
+	s := &Store{w: w, r: r, path: path, clk: clk, bootID: readBootID, metrics: opt.Metrics}
 	// ensureAutoVacuum can rewrite the file, so it runs first and the
 	// verification stays the last thing Open does. Verifying before the rewrite
 	// would describe a file the caller never gets.

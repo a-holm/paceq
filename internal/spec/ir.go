@@ -66,6 +66,12 @@ func FromIR(data []byte) (*Job, error) {
 				return err
 			}
 			j.Timeout = time.Duration(ms) * time.Millisecond
+		case "expected_within_ms":
+			ms, err := milliseconds(val, "expected_within_ms")
+			if err != nil {
+				return err
+			}
+			j.ExpectedWithin = time.Duration(ms) * time.Millisecond
 		case "max_concurrent":
 			n, err := wholeNumber(val, "max_concurrent")
 			if err != nil {

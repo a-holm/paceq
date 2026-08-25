@@ -22,6 +22,15 @@ GOSEC       := github.com/securego/gosec/v2/cmd/gosec@v2.28.0
 GOVULNCHECK := golang.org/x/vuln/cmd/govulncheck@v1.7.0
 GORELEASER  := github.com/goreleaser/goreleaser/v2@v2.17.0
 
+# The Prometheus tool validates what #40 ships (#40): the exposition bytes of
+# the golden fixture, the alert rules file, and its behaviour test. promtool
+# is deliberately a downloaded binary and not a go.mod dependency - the dep
+# budget has no room for client_golang or anything like it. Like shellcheck,
+# it skips loudly where it is not installed; CI installs the same pinned
+# version before the gates run.
+PROMTOOL    ?= promtool
+PROM_VERSION := v3.14.0
+
 # The shipped binary is cgo free. Every target inherits this.
 export CGO_ENABLED = 0
 
@@ -39,7 +48,8 @@ export GOFLAGS += -buildvcs=false
 CROSS_TARGETS := linux/amd64 linux/arm64 darwin/arm64
 
 .PHONY: all build test property gate chaos bench fuzz fmt fmt-check vet staticcheck lint gosec govulncheck \
-	tidy-check cross release-snapshot release test-scratch sensors-examples ci fixture-change hooks clean
+	tidy-check cross release-snapshot release test-scratch sensors-examples install-script \
+	prom-check-metrics prom-check-rules prom-rules ci fixture-change hooks clean
 
 all: build
 
@@ -205,6 +215,33 @@ install-script:
 		shellcheck install.sh; \
 	fi
 
+# The /metrics gates (#40). The golden fixture doubles as the format proof:
+# it is a full exposition document, so `promtool check metrics` over it is
+# the CI acceptance that the hand written expfmt produces bytes a real
+# scraper accepts. The rules gates check deploy/pulseq-alerts.yml and run its
+# behaviour test. Each gate skips loudly without promtool, exactly like
+# shellcheck; the workflow installs the pinned version so CI never skips.
+prom-check-metrics:
+	@if ! command -v $(PROMTOOL) >/dev/null 2>&1; then \
+		echo "SKIP prom-check-metrics: promtool not installed (pin: $(PROM_VERSION))"; \
+		exit 0; \
+	fi
+	$(PROMTOOL) check metrics < internal/obs/testdata/golden/metrics.txt
+
+prom-check-rules:
+	@if ! command -v $(PROMTOOL) >/dev/null 2>&1; then \
+		echo "SKIP prom-check-rules: promtool not installed (pin: $(PROM_VERSION))"; \
+		exit 0; \
+	fi
+	$(PROMTOOL) check rules deploy/pulseq-alerts.yml
+
+prom-rules:
+	@if ! command -v $(PROMTOOL) >/dev/null 2>&1; then \
+		echo "SKIP prom-rules: promtool not installed (pin: $(PROM_VERSION))"; \
+		exit 0; \
+	fi
+	cd deploy && $(PROMTOOL) test rules pulseq-alerts.test.yml
+
 # Gold standard fixtures are expectations, not code: a commit that edits one
 # must carry a FIXTURE-CHANGE: line with the reason (plan 04 section 8 point
 # 2). The same check runs as a GitHub Actions job on every pull request. It is
@@ -213,7 +250,7 @@ install-script:
 fixture-change:
 	scripts/check-fixture-change.sh origin/main HEAD
 
-ci: fmt-check vet staticcheck gosec govulncheck tidy-check test property gate fuzz build test-scratch sensors-examples install-script cross
+ci: fmt-check vet staticcheck gosec govulncheck tidy-check test property gate fuzz build test-scratch sensors-examples install-script prom-check-metrics prom-check-rules prom-rules cross
 
 hooks:
 	git config core.hooksPath .githooks

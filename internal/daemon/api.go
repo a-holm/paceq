@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/a-holm/paceq/internal/obs"
 	"github.com/a-holm/paceq/internal/store"
 )
 
@@ -19,7 +20,7 @@ import (
 // on a locked database turns one bad moment into a restart loop. M2-08 puts
 // the real protocol on this listener; the socket and the status surface it
 // will read are already here.
-func startHealthEndpoint(cfg Config, st *statuses, log *slog.Logger, store *store.Store) (stop func(context.Context)) {
+func startHealthEndpoint(cfg Config, st *statuses, log *slog.Logger, store *store.Store, collector *obs.Collector) (stop func(context.Context)) {
 	if cfg.SocketPath == "" {
 		return nil
 	}
@@ -59,6 +60,17 @@ func startHealthEndpoint(cfg Config, st *statuses, log *slog.Logger, store *stor
 			"version": cfg.Version,
 		})
 	})
+	// /metrics (#40): the Prometheus text exposition, rendered fresh per
+	// scrape. It degrades instead of hanging - the collector carries its
+	// own deadline - so a wedged database shows up as a short document
+	// with pulseq_metrics_db_error 1 rather than as a stuck scraper.
+	if collector != nil {
+		mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+			body := collector.Scrape(r.Context())
+			w.Header().Set("Content-Type", obs.ContentType)
+			_, _ = w.Write(body)
+		})
+	}
 	// API routes for the CLI's write commands: registered only when
 	// the caller passes a store.
 	if store != nil {

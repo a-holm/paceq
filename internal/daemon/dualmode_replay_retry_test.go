@@ -173,7 +173,7 @@ func runParityScenario(t *testing.T, withDaemon bool) (retryDoc, replayDoc, reop
 			Logger:     slog.New(slog.NewJSONHandler(io.Discard, nil)),
 		}
 		sts := newStatuses(func() time.Time { return time.Unix(0, 0).UTC() })
-		stop := startHealthEndpoint(cfg, sts, cfg.Logger, s)
+		stop := startHealthEndpoint(cfg, sts, cfg.Logger, s, nil)
 		if stop == nil {
 			t.Fatal("a configured socket did not start the endpoints")
 		}

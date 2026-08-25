@@ -191,6 +191,12 @@ func canonicalJob(j *Job) canonicalObject {
 	object = appendText(object, "description", j.Description)
 	object = appendText(object, "env_file", j.EnvFile)
 	object = appendText(object, "workdir", j.Workdir)
+	// expected_within is left out when unset, so a job written before the
+	// field existed keeps its hash and an explicit absence stays one document
+	// with saying nothing.
+	if j.ExpectedWithin != 0 {
+		object = append(object, canonicalMember{"expected_within_ms", canonicalNumber(j.ExpectedWithin.Milliseconds())})
+	}
 	if len(j.Env) > 0 {
 		object = append(object, canonicalMember{"env", canonicalStringMap(j.Env)})
 	}

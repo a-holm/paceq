@@ -237,6 +237,10 @@ func (s *Store) CommitSensorTick(ctx context.Context, in SensorTickCommitInput) 
 	}
 
 	out := SensorTickCommitResult{}
+	// The verdict that lands in ticks.outcome: the fence can rewrite a
+	// finished evaluation into an error inside the transaction, and the
+	// counter records what committed (#40).
+	finalOutcome, finalReason := in.Outcome, string(in.ReasonCode)
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
 		// Step 0: the cursor CAS guard. The evaluation whose result we are
 		// committing read this version at start; if the sensor moved since,
@@ -261,6 +265,7 @@ WHERE name = ? AND cursor_version = ?`,
 			// is written; the tick records the refusal so explain can say
 			// why a started evaluation produced nothing.
 			out.Fenced = true
+			finalOutcome, finalReason = OutcomeError, string(reason.TICKMissedLeaseLost)
 			return closeSensorTickTx(tx, in.TickID, at, OutcomeError,
 				reason.TICKMissedLeaseLost, in.DurationMs, "", 0, 0, in.ReasonText)
 		}
@@ -337,6 +342,9 @@ WHERE j.name = ?`, in.JobName).Scan(&versionID, &specJSON); err != nil {
 	if err != nil {
 		return SensorTickCommitResult{}, err
 	}
+	// A decided evaluation was an event whether it triggered, skipped or
+	// errored, fences included (#40).
+	s.observeTick("sensor", in.SensorName, finalOutcome, finalReason)
 	return out, nil
 }
 
