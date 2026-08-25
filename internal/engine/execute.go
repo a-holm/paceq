@@ -475,6 +475,10 @@ func (e *Engine) runStep(ctx context.Context, d *drive, name string, h *heldRun)
 	if err := e.Store.RecordStepOutcome(ctx, run.ID, name, outcome, d.ref); err != nil {
 		return fail(fmt.Errorf("record the verdict: %w", err))
 	}
+	// The crash window between a committed verdict and the next claim.
+	// Nothing was lost and nothing needs closing: the restart simply
+	// continues with whatever step comes next (#20).
+	faults.Point("M4:outcome:after_commit")
 	return runDeadlineHit && result.Outcome == runner.TimedOut, nil
 }
 

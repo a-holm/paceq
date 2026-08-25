@@ -135,47 +135,56 @@ func durableTempDir(t *testing.T, pattern string) string {
 }
 
 var (
-	appendOnce sync.Once
+	appendMu   sync.Mutex
 	appendPath string
 )
 
-// appendFixture builds testdata/fakecmd once per run of the package.
+// appendFixture builds testdata/fakecmd once per run of the package. A failed
+// build is not remembered: the next row retries it, so one transient failure
+// cannot poison every later row with an empty binary path.
 func appendFixture(t *testing.T) string {
 	t.Helper()
 
-	appendOnce.Do(func() {
-		path := filepath.Join(durableTempDir(t, "paceq-crash-append"), "append-fixture")
-		build := exec.Command("go", "build", "-o", path, "./testdata/fakecmd")
-		build.Dir = moduleRoot(t)
-		if out, err := build.CombinedOutput(); err != nil {
-			t.Fatalf("build the append fixture: %v\n%s", err, out)
-		}
-		appendPath = path
-	})
+	appendMu.Lock()
+	defer appendMu.Unlock()
+	if appendPath != "" {
+		return appendPath
+	}
+	path := filepath.Join(durableTempDir(t, "paceq-crash-append"), "append-fixture")
+	build := exec.Command("go", "build", "-o", path, "./testdata/fakecmd")
+	build.Dir = moduleRoot(t)
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build the append fixture: %v\n%s", err, out)
+	}
+	appendPath = path
 	return appendPath
 }
 
 var (
-	childOnce sync.Once
+	childMu   sync.Mutex
 	childPath string
 )
 
 // taggedChild builds this package's test binary with -tags pulseq_faults, the
-// only build anywhere in the pipeline that may kill itself.
+// only build anywhere in the pipeline that may kill itself. A failed build is
+// not remembered, for the same reason the append fixture's is not.
 func taggedChild(t *testing.T) string {
 	t.Helper()
 
-	childOnce.Do(func() {
-		path := filepath.Join(durableTempDir(t, "paceq-crash-child"), "crash-child.test")
-		build := exec.Command("go", "test", "-c",
-			"-tags", "pulseq_faults",
-			"-o", path, ".")
-		build.Dir = filepath.Join(moduleRoot(t), "test", "crash")
-		if out, err := build.CombinedOutput(); err != nil {
-			t.Fatalf("build the crashing child: %v\n%s", err, out)
-		}
-		childPath = path
-	})
+	childMu.Lock()
+	defer childMu.Unlock()
+	if childPath != "" {
+		return childPath
+	}
+	path := filepath.Join(durableTempDir(t, "paceq-crash-child"), "crash-child.test")
+	build := exec.Command("go", "test", "-c",
+		"-tags", "pulseq_faults",
+		"-o", path, ".")
+	build.Dir = filepath.Join(moduleRoot(t), "test", "crash")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build the crashing child: %v\n%s", err, out)
+	}
+	childPath = path
 	return childPath
 }
 

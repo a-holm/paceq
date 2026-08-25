@@ -117,12 +117,14 @@ const (
 	tickAfterRun     = "M2:tick:after_run_before_progress"
 	tickAfterCommit  = "M2:tick:after_commit"
 
-	// The DAG-era windows (#20). Same machinery, wider graph: the point
-	// names are frozen by the issue, so a row, its output and the seam in
-	// the engine all spell the window identically.
-	w4ClaimExec      = "W4:etter_steg_claim_for_exec"
-	w8BarnExit       = "W8:etter_barn_exit_for_commit"
-	w9ResultNextStep = "W9:etter_resultat_for_neste_steg"
+	// The DAG-era windows (#20), named by the house convention
+	// <milestone>:<site>:<when> in plain English. The sketch's W4/W8/W9
+	// labels are sketches, not contracts: a row, its output and the seam
+	// in the engine all spell the window by its site and moment instead.
+	// The step-claim window this harness reaches is the engine's own
+	// start_step transition; the store-level M4:claim:after_update point
+	// belongs to a claim path ExecuteRun does not walk, so no row arms it.
+	dagOutcomeAfterCommit = "M4:outcome:after_commit"
 )
 
 func succeeded() []string { return []string{"succeeded"} }
@@ -294,35 +296,40 @@ var scenarios = []Scenario{
 	// The fan-out rows (#20): one diamond, extract → transform →
 	// {whs, cache} → notify, killed at each DAG-era window. The engine
 	// admits steps in spec order, so extract is always the step under the
-	// knife; it carries the retry budget and every other step runs once.
+	// knife; it carries the retry budget where its attempt is meant to be
+	// lost, and every other step runs once.
 	//
-	// W4 kills between the committed claim and the spawn: the command never
-	// ran, so recovery loses nothing and the second attempt is the first
-	// effect. Five lines, one per step.
+	// The step-claim window of the engine's own path: the claimed step's
+	// state update and its event row sit inside one transaction, and a
+	// kill between them rolls both back. The step goes back to pending
+	// untouched, so no command ever ran and no verdict was ever lost.
+	// Recovery requeues the run; nothing is closed as executor-lost
+	// because nothing was ever started. Five lines, one per step.
 	{
-		Name: "fanout_claim_w4", KillAt: w4ClaimExec, Kind: "execute",
-		Steps:      diamond("extract"),
+		Name: "fanout_claim", KillAt: startStepUpdate, Kind: "execute",
+		Steps:      diamond(""),
 		MinEffects: 5, MaxEffects: 5,
 		StepMinEffects: 1, StepMaxEffects: 1,
-		ExpectRequeue: true, ExpectExecutorLost: true,
+		ExpectRequeue: true,
 	},
-	// W8 kills after the child exited and its effect landed, before the
-	// verdict transaction: the window whose whole cost is exactly one
-	// repeated effect. Extract's key carries two lines (attempts 1 and 2),
-	// every other key exactly one: six in all.
+	// The child-exit window kills after extract's first command exited and
+	// its effect landed, before the verdict transaction: the window whose
+	// whole cost is exactly one repeated effect. Extract's key carries two
+	// lines (attempts 1 and 2), every other key exactly one: six in all.
 	{
-		Name: "fanout_barn_exit_w8", KillAt: w8BarnExit, Kind: "execute",
+		Name: "fanout_child_exit", KillAt: afterLogFinish, Kind: "execute",
 		Steps:      diamond("extract"),
 		MinEffects: 6, MaxEffects: 6,
 		StepMinEffects: 1, StepMaxEffects: 2,
 		ExpectRequeue: true, ExpectExecutorLost: true,
 	},
-	// W9 kills after extract's verdict committed but before transform was
-	// claimed. Nothing was ever lost: no attempt is closed, no effect is
-	// repeated, and the restart simply continues down the diamond. The
-	// requeue is still owed, because the crash caught the run running.
+	// The outcome window kills after extract's verdict committed but
+	// before transform was claimed. Nothing was ever lost: no attempt is
+	// closed, no effect is repeated, and the restart simply continues down
+	// the diamond. The requeue is still owed, because the crash caught the
+	// run running.
 	{
-		Name: "fanout_result_w9", KillAt: w9ResultNextStep, Kind: "execute",
+		Name: "fanout_result", KillAt: dagOutcomeAfterCommit, Kind: "execute",
 		Steps:      diamond(""),
 		MinEffects: 5, MaxEffects: 5,
 		StepMinEffects: 1, StepMaxEffects: 1,
