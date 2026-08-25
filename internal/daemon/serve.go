@@ -234,6 +234,11 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 		if stopHealth != nil {
 			stopHealth(context.Background())
 		}
+		// The loops are already launched; they live on the group's
+		// context, so cancelling it is what brings them down before the
+		// error propagates. Without this, a refused metrics bind would
+		// leave a daemon-shaped process behind the failure.
+		grp.cancel()
 		stopIntake()
 		stopExec()
 		_ = st.Close()
