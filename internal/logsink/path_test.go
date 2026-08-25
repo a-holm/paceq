@@ -96,7 +96,7 @@ func TestAttemptFilesSpansDateShardsInNumericOrder(t *testing.T) {
 		t.Fatalf("AttemptFiles: %v", err)
 	}
 	if len(files) != 3 {
-		t.Fatalf("AttemptFiles found %d files, want 3: %q", len(files), files)
+		t.Fatalf("AttemptFiles found %d files, want 3: %v", len(files), files)
 	}
 	// Numeric order, not lexical: attempt 10 sorts after attempt 2.
 	wantAttempts := []int{1, 2, 10}
