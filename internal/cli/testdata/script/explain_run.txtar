@@ -1,0 +1,206 @@
+# explain run turns one run into its whole story: the trigger and tick that
+# caused it, every step with attempts and exit codes, the error tail from the
+# database, and the ways forward. Prefix resolution works like git: any prefix
+# that names exactly one run, and an ambiguous one refuses naming candidates.
+
+exec paceq init
+plantschedule import-file hourly "@hourly"
+plantscheduletick import-file hourly TRIGGERED key
+
+writeid short.id
+
+# wantexit expands the @FILE argument the way a user hands over an id.
+wantexit 0 raw_run.txt raw_run_err.txt explain run @short.id -o text
+grep 'daemon down' raw_run_err.txt
+cp raw_run.txt actual_run.txt
+maskfile actual_run.txt
+cmp actual_run.txt expected_run.txt
+
+wantexit 0 raw_run.json raw_run_err2.txt explain run @short.id -o json
+cp raw_run.json actual_run.json
+maskfile actual_run.json
+cmpjson actual_run.json expected_run.json
+
+# A whole id resolves to exactly itself.
+wantexit 0 whole_run.json whole_err.txt explain run @short.id --since 1h -o json
+maskfile whole_run.json
+cmpjson whole_run.json expected_whole_run.json
+
+# An unknown prefix is a not-found, not a crash; an invalid one says why.
+wantexit 3 unknown_out.txt unknown_err.txt explain run run/ZZZZZZ
+grep 'no run matches' unknown_err.txt
+wantexit 2 syntax_out.txt syntax_err.txt explain run run/hello-world
+grep 'is not a run id or prefix' syntax_err.txt
+
+# A second trigger makes any short prefix ambiguous across the job's runs:
+# the refusal names every candidate instead of guessing.
+plantscheduletick import-file hourly TRIGGERED key2 -at=30m
+writeid -prefix=4 both.id
+wantexit 3 amb_out.txt amb_err.txt explain run @both.id
+grep 'matches 2 runs' amb_err.txt
+
+-- expected_run.txt --
+run <RUN1> - job import-file - queued WARN
+  scheduled for 2026-09-23T09:01:00Z
+  run_key      key-0
+  started by   trigger 01M39A98M0 (scheduler), run_key key-0
+  fired by     scheduler tick 01M39A98M0 at 2026-09-23T09:01:00Z
+
+  step build: pending WARN
+    attempt 0 of 1
+
+  -> logs:   paceq logs <RUN1>
+-- expected_run.json --
+{
+  "daemon_up": false,
+  "entries": [
+    {
+      "actor": "scheduler",
+      "at_ms": 1790240400000,
+      "children": [
+        {
+          "actor": "scheduler",
+          "at_ms": 1790240400000,
+          "children": [
+            {
+              "actor": "scheduler",
+              "at_ms": 1790154060000,
+              "kind": "tick",
+              "outcome": "triggered",
+              "reason_data": {
+                "scheduled_for": "2026-09-23T09:01:00Z",
+                "trigger_count": 1
+              },
+              "ref": "<RUN3>",
+              "repeat_count": 1
+            }
+          ],
+          "hints": [
+            "nothing to fix; follow the run id on the trigger row",
+            "dedup keys stay until retention clears them, so a deliberate rerun needs a new key or a bumped epoch"
+          ],
+          "kind": "trigger",
+          "outcome": "accepted",
+          "reason_code": "TRIGGER_ACCEPTED",
+          "reason_data": {
+            "run_key": "key-0"
+          },
+          "reason_text": "became a run",
+          "ref": "<RUN2>"
+        },
+        {
+          "actor": "executor",
+          "at_ms": 0,
+          "kind": "step",
+          "outcome": "pending",
+          "reason_data": {
+            "attempt": 0,
+            "max_attempts": 1
+          },
+          "ref": "build"
+        }
+      ],
+      "kind": "run",
+      "outcome": "queued",
+      "reason_data": {
+        "run_key": "key-0",
+        "scheduled_for": "2026-09-23T09:01:00Z"
+      },
+      "ref": "<RUN1>"
+    }
+  ],
+  "generated_at_ms": 1790240400000,
+  "schema_version": 1,
+  "since_ms": 1790067600000,
+  "subject": {
+    "job": "import-file",
+    "kind": "run",
+    "ref": "<RUN1>",
+    "run_id": "<RUN1>"
+  },
+  "summary": {
+    "active_runs": 1,
+    "freshness_state": "unknown",
+    "last_outcome": "queued",
+    "max_concurrent": 4,
+    "next_tick_at_ms": 1790244000000,
+    "paused": false
+  }
+}
+-- expected_whole_run.json --
+{
+  "daemon_up": false,
+  "entries": [
+    {
+      "actor": "scheduler",
+      "at_ms": 1790240400000,
+      "children": [
+        {
+          "actor": "scheduler",
+          "at_ms": 1790240400000,
+          "children": [
+            {
+              "actor": "scheduler",
+              "at_ms": 1790154060000,
+              "kind": "tick",
+              "outcome": "triggered",
+              "reason_data": {
+                "scheduled_for": "2026-09-23T09:01:00Z",
+                "trigger_count": 1
+              },
+              "ref": "<RUN3>",
+              "repeat_count": 1
+            }
+          ],
+          "hints": [
+            "nothing to fix; follow the run id on the trigger row",
+            "dedup keys stay until retention clears them, so a deliberate rerun needs a new key or a bumped epoch"
+          ],
+          "kind": "trigger",
+          "outcome": "accepted",
+          "reason_code": "TRIGGER_ACCEPTED",
+          "reason_data": {
+            "run_key": "key-0"
+          },
+          "reason_text": "became a run",
+          "ref": "<RUN2>"
+        },
+        {
+          "actor": "executor",
+          "at_ms": 0,
+          "kind": "step",
+          "outcome": "pending",
+          "reason_data": {
+            "attempt": 0,
+            "max_attempts": 1
+          },
+          "ref": "build"
+        }
+      ],
+      "kind": "run",
+      "outcome": "queued",
+      "reason_data": {
+        "run_key": "key-0",
+        "scheduled_for": "2026-09-23T09:01:00Z"
+      },
+      "ref": "<RUN1>"
+    }
+  ],
+  "generated_at_ms": 1790240400000,
+  "schema_version": 1,
+  "since_ms": 1790236800000,
+  "subject": {
+    "job": "import-file",
+    "kind": "run",
+    "ref": "<RUN1>",
+    "run_id": "<RUN1>"
+  },
+  "summary": {
+    "active_runs": 1,
+    "freshness_state": "unknown",
+    "last_outcome": "queued",
+    "max_concurrent": 4,
+    "next_tick_at_ms": 1790244000000,
+    "paused": false
+  }
+}
