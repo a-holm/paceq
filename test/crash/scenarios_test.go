@@ -82,6 +82,18 @@ type Scenario struct {
 	// one; zero StepMaxEffects means no per-step ceiling beyond the total.
 	StepMinEffects int
 	StepMaxEffects int
+
+	// FinalStates narrows the set the restart may converge to. Every row
+	// converges to succeeded unless it says otherwise here: a row whose
+	// crashed step had no budget left genuinely ends failed, and the
+	// assertion is against the set, never one exact state.
+	FinalStates []string
+
+	// SkippedSteps names steps this row expects to end skipped without
+	// ever running: their idempotency keys must be absent from the effect
+	// file, which is the positive proof the skip closed them before their
+	// command could run.
+	SkippedSteps []string
 }
 
 // dagStep is one step of a DAG row's frozen spec: its name, the steps it
@@ -135,6 +147,8 @@ const (
 	// belongs to a claim path ExecuteRun does not walk, so no row arms it.
 	dagOutcomeAfterCommit = "M4:outcome:after_commit"
 	dagRetryAfterPlan     = "M4:retry:after_plan"
+	dagSkipBeforeWrites   = "M4:skip:before_writes"
+	dagSkipAfterWrites    = "M4:skip:after_writes"
 )
 
 func succeeded() []string { return []string{"succeeded"} }
@@ -370,6 +384,35 @@ var scenarios = []Scenario{
 		StepMinEffects: 1, StepMaxEffects: 2,
 		ExpectRequeue: true, ExpectExecutorLost: true,
 	},
+
+	// The skip-propagation rows (#20): a five level chain whose second
+	// step fails terminally. The failure verdict and the closing of every
+	// downstream step share one transaction, and both rows kill inside it,
+	// one before the closure is computed and one after every closure
+	// write. The rollback takes the verdict and the skips together either
+	// way - no observer may ever see a failure without its closed
+	// downstream - so the two cells expect the same recovery story:
+	// STEP_FAILED_EXECUTOR_LOST on s2, the direct dependant skipped for
+	// its upstream's failure, the rest skipped through it, and the run
+	// failed with two effect lines in all.
+	{
+		Name: "skip_propagation_before_writes", KillAt: dagSkipBeforeWrites, Kind: "execute",
+		Steps:      chain("s2"),
+		MinEffects: 2, MaxEffects: 2,
+		StepMinEffects: 1, StepMaxEffects: 1,
+		ExpectRequeue: true, ExpectExecutorLost: true,
+		FinalStates:  []string{"failed"},
+		SkippedSteps: []string{"s3", "s4", "s5"},
+	},
+	{
+		Name: "skip_propagation_after_writes", KillAt: dagSkipAfterWrites, Kind: "execute",
+		Steps:      chain("s2"),
+		MinEffects: 2, MaxEffects: 2,
+		StepMinEffects: 1, StepMaxEffects: 1,
+		ExpectRequeue: true, ExpectExecutorLost: true,
+		FinalStates:  []string{"failed"},
+		SkippedSteps: []string{"s3", "s4", "s5"},
+	},
 }
 
 // diamond is the fan-out shape of issue #20's matrix: two parallel branches
@@ -392,6 +435,24 @@ func diamond(retryStep string) []dagStep {
 	return steps
 }
 
+// chain is the five level line of the skip-propagation rows: s1 through s5,
+// each needing only its predecessor. failStep names the one step that fails
+// terminally on its first attempt; empty means none does.
+func chain(failStep string) []dagStep {
+	names := []string{"s1", "s2", "s3", "s4", "s5"}
+	steps := make([]dagStep, len(names))
+	for i, name := range names {
+		steps[i] = dagStep{Name: name}
+		if i > 0 {
+			steps[i].Needs = []string{names[i-1]}
+		}
+		if name == failStep {
+			steps[i].Mode = "fail-first"
+		}
+	}
+	return steps
+}
+
 // effectKey is the runner's documented context contract (internal/runner/doc.go):
 // sha256 of run id and step name, first 32 hex characters. Recomputing it here
 // ties every effect line to its step by name instead of by guesswork.
@@ -400,15 +461,35 @@ func effectKey(runID, step string) string {
 	return hex.EncodeToString(sum[:])[:32]
 }
 
-// expectedEffectKeys maps each DAG row step's key to its name. A single-step
-// row returns nil: its legacy one-key rule does not need the run id.
+// expectedEffectKeys maps each DAG row step's key to its name, minus the
+// steps the row declares skipped: their keys must never appear. A
+// single-step row returns nil: its legacy one-key rule does not need the run
+// id.
 func expectedEffectKeys(sc Scenario, runID string) map[string]string {
 	if len(sc.Steps) == 0 || runID == "" {
 		return nil
 	}
 	out := make(map[string]string, len(sc.Steps))
 	for _, st := range sc.Steps {
+		if contains(sc.SkippedSteps, st.Name) {
+			continue
+		}
 		out[effectKey(runID, st.Name)] = st.Name
+	}
+	return out
+}
+
+// skippedEffectKeys maps each declared-skipped step's key to its name, the
+// complement of expectedEffectKeys.
+func skippedEffectKeys(sc Scenario, runID string) map[string]string {
+	if len(sc.Steps) == 0 || runID == "" || len(sc.SkippedSteps) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(sc.SkippedSteps))
+	for _, st := range sc.Steps {
+		if contains(sc.SkippedSteps, st.Name) {
+			out[effectKey(runID, st.Name)] = st.Name
+		}
 	}
 	return out
 }
@@ -443,12 +524,15 @@ func scenarioByName(name string) (Scenario, bool) {
 	return Scenario{}, false
 }
 
-// allowedFinalStates is the expected set per row. Every row here converges to
-// succeeded: the rows with RetryMax 1 because the recovered step takes its
-// second attempt, the rest because nothing was ever half done. A row that
-// legitimately may end failed would list both states; the comparison is
-// against the set, not one value (issue #75 design notes).
-func (sc Scenario) allowedFinalStates() []string { return succeeded() }
+// allowedFinalStates is the expected set per row: the row's own FinalStates
+// when it names any, otherwise succeeded. The comparison is against the set,
+// not one value (issue #75 design notes).
+func (sc Scenario) allowedFinalStates() []string {
+	if len(sc.FinalStates) > 0 {
+		return sc.FinalStates
+	}
+	return succeeded()
+}
 
 func (sc Scenario) describe() string {
 	return fmt.Sprintf("%s [kind=%s point=%q retry=%d]", sc.Name, sc.Kind, sc.KillAt, sc.RetryMax)

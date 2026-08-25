@@ -66,7 +66,8 @@ func runRow(t *testing.T, sc Scenario) {
 			sc.describe(), finalState, sc.allowedFinalStates())
 	}
 
-	requireEffects(t, sc, expectedEffectKeys(sc, finalRunID), readEffects(t, ws.EffectFile))
+	requireEffects(t, sc, expectedEffectKeys(sc, finalRunID),
+		skippedEffectKeys(sc, finalRunID), readEffects(t, ws.EffectFile))
 	requireEventStory(t, ctx, s, sc, finalRunID)
 
 	requireIntegrity(t, ctx, s, "after convergence")
@@ -230,10 +231,10 @@ func requireNoAbandonedChains(t *testing.T, ctx context.Context, s *store.Store,
 
 // requireEffects holds the count to its bound and checks the attribution: on
 // a single-step row all lines share one idempotency key and no two lines
-// claim the same attempt; on a DAG row every step's own documented key must
-// appear, nothing else may, and each key's lines sit inside the row's
-// per-step bound.
-func requireEffects(t *testing.T, sc Scenario, wantKeys map[string]string, effects []effect) {
+// claim the same attempt; on a DAG row every running step's own documented
+// key must appear, nothing else may, each key's lines sit inside the row's
+// per-step bound, and every declared-skipped step's key must be absent.
+func requireEffects(t *testing.T, sc Scenario, wantKeys, skippedKeys map[string]string, effects []effect) {
 	t.Helper()
 
 	if len(effects) < sc.MinEffects || len(effects) > sc.MaxEffects {
@@ -281,6 +282,13 @@ func requireEffects(t *testing.T, sc Scenario, wantKeys map[string]string, effec
 		}
 		t.Errorf("%s: effect keys cover %d of %d steps (unexpected keys: %v)",
 			sc.describe(), len(counts), len(wantKeys), unexpected)
+	}
+
+	for key, step := range skippedKeys {
+		if n := counts[key]; n > 0 {
+			t.Errorf("%s: step %s landed %d effects, want none: it was skipped before it could run",
+				sc.describe(), step, n)
+		}
 	}
 }
 
@@ -369,7 +377,8 @@ func TestCrashInsideRecovery(t *testing.T) {
 	if finalState != "succeeded" {
 		t.Fatalf("the restart after the killed recovery ended %q, want succeeded", finalState)
 	}
-	requireEffects(t, sc, expectedEffectKeys(sc, runID), readEffects(t, ws.EffectFile))
+	requireEffects(t, sc, expectedEffectKeys(sc, runID),
+		skippedEffectKeys(sc, runID), readEffects(t, ws.EffectFile))
 	requireEventStory(t, ctx, s, sc, runID)
 	requireFsckClean(t, ctx, s, "after the restart")
 }
