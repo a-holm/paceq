@@ -471,11 +471,68 @@ func TestChildProcess(t *testing.T) {
 		return
 	}
 
+	if sc.CancelWhenStep != "" {
+		// The row aims its own cancellation at a live step: the
+		// watcher fires while ExecuteRun is mid-graph, and its
+		// request is what the observe window below commits around.
+		watcherCtx, stopWatcher := context.WithCancel(ctx)
+		defer stopWatcher()
+		go func() {
+			defer stopWatcher()
+			if err := requestCancelOnceRunning(watcherCtx, s, res.Run.ID,
+				sc.CancelWhenStep, ws.EffectFile, sc.MinEffects); err != nil {
+				fmt.Printf("PACEQ-CANCEL-WATCH-ERROR %v\n", err)
+			}
+		}()
+	}
+
 	state, err := eng.ExecuteRun(ctx, res.Run.ID)
 	if err != nil {
 		t.Fatalf("execute run %s: %v", res.Run.ID, err)
 	}
 	fmt.Printf("PACEQ-DONE %s\n", state)
+}
+
+// requestCancelOnceRunning is the child's own cancellation watcher: it
+// blocks until the named step of the run is running and the row's whole
+// effect floor is already on file, and then records the cancellation
+// request, so the request commits under a live step that has done the work
+// the row counts on. It fails loudly when it cannot aim: a row that cannot
+// aim its cancellation is a row that proves nothing.
+func requestCancelOnceRunning(ctx context.Context, s *store.Store, runID, step, effectFile string, minEffects int) error {
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		detail, err := s.GetRun(ctx, runID)
+		if err != nil {
+			return fmt.Errorf("watch run %s for step %s: %w", runID, step, err)
+		}
+		running := false
+		for _, st := range detail.Steps {
+			if st.Name == step && st.State == "running" {
+				running = true
+				break
+			}
+		}
+		lines := 0
+		if raw, err := os.ReadFile(effectFile); err == nil {
+			lines = len(strings.Split(strings.TrimRight(string(raw), "\n"), "\n"))
+			if strings.TrimSpace(string(raw)) == "" {
+				lines = 0
+			}
+		}
+		if running && lines >= minEffects {
+			if _, err := s.RequestCancel(ctx, runID, "crash-harness", "mid fan-out"); err != nil {
+				return fmt.Errorf("request the cancellation of run %s: %w", runID, err)
+			}
+			fmt.Printf("PACEQ-CANCEL-REQUESTED %s\n", step)
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("step %s of run %s never ran with %d effects on file (running=%v lines=%d)",
+				step, runID, minEffects, running, lines)
+		}
+		time.Sleep(pollInterval)
+	}
 }
 
 // applyJob records the frozen job version a scenario runs. A single-step row

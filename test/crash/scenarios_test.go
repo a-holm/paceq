@@ -94,6 +94,13 @@ type Scenario struct {
 	// file, which is the positive proof the skip closed them before their
 	// command could run.
 	SkippedSteps []string
+
+	// CancelWhenStep aims the child's own cancellation watcher: a
+	// goroutine waits until THIS step is running and the row's whole
+	// effect floor is already on file, and then requests the
+	// cancellation, so the request commits under a live step that has
+	// done all the work the row says must exist.
+	CancelWhenStep string
 }
 
 // dagStep is one step of a DAG row's frozen spec: its name, the steps it
@@ -149,6 +156,7 @@ const (
 	dagRetryAfterPlan     = "M4:retry:after_plan"
 	dagSkipBeforeWrites   = "M4:skip:before_writes"
 	dagSkipAfterWrites    = "M4:skip:after_writes"
+	cancelObserveUpdate   = "M1:transition:after_update:observe_cancel"
 )
 
 func succeeded() []string { return []string{"succeeded"} }
@@ -412,6 +420,32 @@ var scenarios = []Scenario{
 		ExpectRequeue: true, ExpectExecutorLost: true,
 		FinalStates:  []string{"failed"},
 		SkippedSteps: []string{"s3", "s4", "s5"},
+	},
+
+	// The mid-flight cancellation row (#20): the run's own child requests
+	// its cancellation the moment transform is running - transform hangs
+	// on purpose so "running" is a state one can aim at - and dies inside
+	// the observe transaction that closes the run as cancelled. The
+	// rollback keeps the run running over an already cancelled step with
+	// the request still durably in place; recovery requeues exactly that
+	// shape and the restart finishes what was asked of it: the remaining
+	// steps closed unrun, the run cancelled. Two effects: extract and
+	// transform's first attempts.
+	{
+		Name: "cancel_midfanout_observe", KillAt: cancelObserveUpdate, Kind: "execute",
+		Steps: []dagStep{
+			{Name: "extract"},
+			{Name: "transform", Needs: []string{"extract"}, Mode: "first-drip"},
+			{Name: "whs", Needs: []string{"transform"}},
+			{Name: "cache", Needs: []string{"transform"}},
+			{Name: "notify", Needs: []string{"whs", "cache"}},
+		},
+		MinEffects: 2, MaxEffects: 2,
+		StepMinEffects: 1, StepMaxEffects: 1,
+		CancelWhenStep: "transform",
+		ExpectRequeue:  true,
+		FinalStates:    []string{"cancelled"},
+		SkippedSteps:   []string{"whs", "cache", "notify"},
 	},
 }
 
