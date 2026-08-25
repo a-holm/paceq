@@ -1,0 +1,2 @@
+# session archive: compress yesterday's hermes sessions
+0 5 * * * tar -C /home/johan -czf /mnt/archive/sessions-$(date +\%Y\%m\%d).tar.gz .hermes/profiles

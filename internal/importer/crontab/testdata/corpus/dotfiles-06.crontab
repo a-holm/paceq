@@ -1,0 +1,5 @@
+MAILTO=root
+# rotate my own logs monthly
+0 0 1 * * /home/me/bin/rotate-my-logs.sh >> /home/me/var/rotate.log 2>&1
+# report disk usage every morning
+0 6 * * * df -h | logger -t diskusage

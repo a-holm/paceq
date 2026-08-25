@@ -1,0 +1,2 @@
+@reboot /usr/local/bin/tailscale-up --advertise-exit-node
+@reboot /usr/local/bin/start-comfyui --lowvram

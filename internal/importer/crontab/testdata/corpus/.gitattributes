@@ -1,0 +1,4 @@
+# Fixtures are byte-level inputs: hostile-01 exists because Windows-authored
+# crontabs carry CRLF line endings, and text normalization would delete the
+# very case it pins.
+*.crontab -text

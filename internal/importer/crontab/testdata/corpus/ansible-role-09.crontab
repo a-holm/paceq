@@ -1,0 +1,2 @@
+# ntp-ish drift guard, role timekeeper
+*/15 * * * * root chronyc -a 'burst 4/4' > /dev/null

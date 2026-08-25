@@ -1,0 +1,5 @@
+MAILTO=
+PATH=
+# percent storm
+* * * * * printf '%s%%' hello % first stdin line %% second %% third
+0 1 * * * /bin/trailing-percent%

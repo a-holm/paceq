@@ -1,0 +1,5 @@
+# vim: set ft=crontab :
+# misc maintenance
+@daily /home/me/bin/cleanup-downloads.sh
+@weekly /home/me/bin/vacuum-firefox.sh > /dev/null 2>&1
+@monthly /home/me/bin/archive-photos.sh

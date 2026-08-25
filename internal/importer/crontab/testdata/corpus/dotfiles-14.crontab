@@ -1,0 +1,4 @@
+# weather snapshot into a csv
+*/60 * * * * /home/me/bin/weather.sh >> /home/me/var/weather.csv 2>&1
+# midnight summary with the date in the filename
+0 0 * * * /home/me/bin/summarize.sh $(date +\%Y-\%m-\%d)

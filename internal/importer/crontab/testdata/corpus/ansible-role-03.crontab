@@ -1,0 +1,2 @@
+# certificate renewal, managed role certbot
+0 0,12 * * * root certbot -q renew --deploy-hook /etc/letsencrypt/renewal-hooks/deploy/reload-nginx

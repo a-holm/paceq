@@ -1,0 +1,3 @@
+# monitoring agent, role monitoring
+*/5 * * * * monitor /opt/monitor/agent collect --quiet
+0 5 * * * monitor /opt/monitor/agent compact

@@ -1,0 +1,3 @@
+# git mirrors
+15 3 * * * git -C /srv/mirrors/linux.git fetch --prune origin 2>&1 | logger -t gitmirror
+15 4 * * * git -C /srv/mirrors/neovim.git fetch --prune origin 2>&1 | logger -t gitmirror

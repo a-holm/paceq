@@ -1,0 +1,10 @@
+SHELL=/bin/bash
+PATH=/home/me/.local/bin:/usr/bin:/bin
+MAILTO=""
+
+# certbot renews twice a day like the docs say
+0 */12 * * * certbot -q renew
+# trim ssd weekly
+@weekly /sbin/fstrim -av
+# clean old docker things every day
+0 4 * * * /usr/bin/docker system prune -af --volumes > /dev/null 2>&1

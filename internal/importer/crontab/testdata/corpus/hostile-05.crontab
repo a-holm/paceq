@@ -1,0 +1,4 @@
+# quotes and escapes
+0 6 * * * /bin/echo "double quoted arg" 'single quoted'
+30 6 * * * /bin/backslash at end \
+0 7 * * * /usr/bin/find / -name '*.tmp' -delete

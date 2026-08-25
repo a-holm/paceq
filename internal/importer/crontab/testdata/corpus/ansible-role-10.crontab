@@ -1,0 +1,2 @@
+# queue worker supervisor, role app-worker
+* * * * * www-data php /srv/app/current/artisan queue:work --stop-when-empty >> /var/log/queue.log 2>&1

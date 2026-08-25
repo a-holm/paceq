@@ -1,0 +1,4 @@
+SHELL=/bin/zsh
+# zsh users have habits
+*/5 * * * * /home/me/bin/check-imap.sh
+0 */4 * * * /home/me/bin/prune-screenshots.sh > /dev/null

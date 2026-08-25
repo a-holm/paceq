@@ -1,0 +1,3 @@
+# backup pull from storage box, role backup-client
+45 2 * * * root /usr/local/bin/restic-backup > /dev/null 2>&1
+0 5 * * * root /usr/local/bin/restic-forget --keep-daily 14 --keep-weekly 8

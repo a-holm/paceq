@@ -1,0 +1,2 @@
+# ping the healthcheck so silence means trouble
+45 5 * * * curl -fsS https://hc-ping.com/9f12e6d8-44aa-4c71-b8c1-2c90a91f11be > /dev/null 2>&1

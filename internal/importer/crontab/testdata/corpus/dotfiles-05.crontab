@@ -1,0 +1,4 @@
+# wallpaper and theme switching by time of day
+0 7 * * * /home/me/bin/light-theme.sh
+0 19 * * * /home/me/bin/dark-theme.sh
+@reboot /home/me/bin/startup-daemons.sh

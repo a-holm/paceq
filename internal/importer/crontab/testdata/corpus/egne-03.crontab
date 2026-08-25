@@ -1,0 +1,2 @@
+# postgres vacuum night shift
+0 3 * * 1 /usr/bin/psql -h db.internal -c 'VACUUM ANALYZE' >> /var/log/vacuum.log 2>&1

@@ -1,0 +1,3 @@
+# battery care on the thinkpad
+0 8 * * * /usr/local/bin/battery-limit 80
+0 22 * * * /usr/local/bin/battery-limit 60

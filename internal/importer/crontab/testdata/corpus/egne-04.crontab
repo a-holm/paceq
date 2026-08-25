@@ -1,0 +1,2 @@
+# feed the ml feature store
+15 0 * * * /opt/ml/etl/run.sh --dato=$(date +\%F)
