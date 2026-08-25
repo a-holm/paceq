@@ -140,6 +140,15 @@ type Job struct {
 	Workdir       string
 	Timeout       time.Duration
 	MaxConcurrent int
+
+	// ExpectedWithin is how long this job may go without a successful run
+	// before monitoring should speak up (#40). It exists so one generic alert
+	// rule - time() - last_success > freshness_sla - covers every job forever,
+	// instead of one hand maintained rule per job. Zero means the job declares
+	// no expectation and gets no SLA series at all: an absent expectation must
+	// never render as zero, because zero would alarm on every healthy job
+	// that simply said nothing.
+	ExpectedWithin time.Duration
 	// MaxParallel is how many steps of one run may be in flight at once
 	// (M4-02). 1..MaxParallelHi, default DefaultMaxParallel. It is materialised
 	// into the default on parse so a job that leaves it out hashes identically

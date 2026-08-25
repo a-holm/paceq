@@ -402,6 +402,39 @@ func (d *decoder) timeout(node ast.Node, fallback time.Duration) time.Duration {
 	return value
 }
 
+// expectedWithin reads the freshness SLA of #40. A job that declares one at
+// all must declare a positive one: zero would mean "must succeed within no
+// time", which as a gauge is an alarm on every healthy run, so it is refused
+// rather than silently swallowed into "no expectation".
+func (d *decoder) expectedWithin(node ast.Node) time.Duration {
+	resolved, ok := d.resolve(node, "a duration")
+	if !ok {
+		return 0
+	}
+	written, ok := scalarText(resolved)
+	if !ok {
+		d.error(CodeBadDuration, position(resolved),
+			fmt.Sprintf("a duration here is %s", typeName(resolved)),
+			durationHint(""))
+		return 0
+	}
+
+	value, err := ParseDuration(written)
+	if err != nil {
+		d.error(CodeBadDuration, position(resolved), err.Error(), durationHint(written))
+		return 0
+	}
+	if value <= 0 {
+		d.error(CodeBadDuration, position(resolved),
+			fmt.Sprintf("expected_within is %s, and an expectation of no time alarms on every healthy run",
+				FormatDuration(value)),
+			"Give the longest span a healthy gap between successes may reach - 26h for a\n"+
+				"job that runs nightly and may overrun its slot - or leave the field out.")
+		return 0
+	}
+	return value
+}
+
 func durationHint(written string) string {
 	hint := "A duration is a number and a unit: ms, s, m or h. They can be written together.\n\n" +
 		"    timeout: 45m\n" +
