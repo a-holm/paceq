@@ -354,32 +354,3 @@ func humanDuration(ms int64) string {
 		return fmt.Sprintf("%dd%dh", h/24, h%24)
 	}
 }
-
-// wrapText breaks a sentence at word boundaries near width, so reasons read
-// at any terminal size.
-func wrapText(text string, width int) string {
-	if width < 20 {
-		width = 20
-	}
-	words := strings.Fields(text)
-	if len(words) <= 1 {
-		return text
-	}
-	var b strings.Builder
-	line := words[0]
-	for _, w := range words[1:] {
-		if len(line)+1+len(w) > width {
-			b.WriteString(line)
-			b.WriteString("\n")
-			line = w
-			continue
-		}
-		line += " " + w
-	}
-	b.WriteString(line)
-	out := b.String()
-	if strings.Contains(out, "\n") {
-		return strings.ReplaceAll(out, "\n", " ")
-	}
-	return out
-}

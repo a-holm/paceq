@@ -245,22 +245,15 @@ FROM ticks t WHERE t.id = ?`
 // ExplainTickByID reads one recorded evaluation by its whole id: the provenance
 // line of a run report (which tick fired the trigger that queued this run).
 func (s *Store) ExplainTickByID(ctx context.Context, tickID string) (ExplainTick, bool, error) {
-	rows, err := s.r.QueryContext(ctx, explainTickByIDSQL, tickID)
+	row := s.r.QueryRowContext(ctx, explainTickByIDSQL, tickID)
+	tick, err := scanExplainTick(row.Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ExplainTick{}, false, nil
+	}
 	if err != nil {
 		return ExplainTick{}, false, fmt.Errorf("read tick %s: %w", tickID, err)
 	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		tick, err := scanExplainTick(rows.Scan)
-		if err != nil {
-			return ExplainTick{}, false, fmt.Errorf("scan tick %s: %w", tickID, err)
-		}
-		return tick, true, nil
-	}
-	if err := rows.Err(); err != nil {
-		return ExplainTick{}, false, fmt.Errorf("read tick %s: %w", tickID, err)
-	}
-	return ExplainTick{}, false, nil
+	return tick, true, nil
 }
 
 // ExplainRunsByPrefix resolves a run id prefix the way git resolves an object:
