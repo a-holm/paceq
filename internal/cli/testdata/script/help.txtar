@@ -42,6 +42,7 @@ Available Commands:
   explain         Explain what a job, schedule, sensor or run did, and why nothing happened
   fsck            Check the state database against its invariants
   help            Help about any command
+  import          Bring existing schedules into paceq job files
   init            Create a project: a config, an example job and a state database
   install-service Write the systemd unit file and its relaxed variant
   logs            Show the log files of one run
