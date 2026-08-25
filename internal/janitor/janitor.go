@@ -226,36 +226,36 @@ func (j *Janitor) pruneDatabase(ctx context.Context) (Result, Totals, error) {
 	)
 	now := j.clk.Now()
 
-	totals.Runs, res.Batches, err = j.drain(ctx, &res, func(ctx context.Context) (int64, error) {
+	totals.Runs, res.Batches, err = j.drain(ctx, func(ctx context.Context) (int64, error) {
 		return j.st.PruneRunsBatch(ctx, now.AddDate(0, 0, -j.pol.RunsDays), j.pol.RunsKeepMin)
-	}, "runs")
+	})
 	if err != nil {
 		return res, totals, fmt.Errorf("runs: %w", err)
 	}
 	res.Phases = append(res.Phases, "runs")
 
 	var b int
-	totals.SkippedTicks, b, err = j.drain(ctx, &res, func(ctx context.Context) (int64, error) {
+	totals.SkippedTicks, b, err = j.drain(ctx, func(ctx context.Context) (int64, error) {
 		return j.st.PruneSkippedTicksBatch(ctx, now.AddDate(0, 0, -j.pol.TicksSkippedDays))
-	}, "skipped ticks")
+	})
 	res.Batches += b
 	if err != nil {
 		return res, totals, fmt.Errorf("skipped ticks: %w", err)
 	}
 	res.Phases = append(res.Phases, "skipped_ticks")
 
-	totals.Ticks, b, err = j.drain(ctx, &res, func(ctx context.Context) (int64, error) {
+	totals.Ticks, b, err = j.drain(ctx, func(ctx context.Context) (int64, error) {
 		return j.st.PruneTicksBatch(ctx, now.AddDate(0, 0, -j.pol.TicksDays), j.pol.TicksKeepMin)
-	}, "ticks")
+	})
 	res.Batches += b
 	if err != nil {
 		return res, totals, fmt.Errorf("ticks: %w", err)
 	}
 	res.Phases = append(res.Phases, "ticks")
 
-	totals.Sessions, b, err = j.drain(ctx, &res, func(ctx context.Context) (int64, error) {
+	totals.Sessions, b, err = j.drain(ctx, func(ctx context.Context) (int64, error) {
 		return j.st.PruneSessionsBatch(ctx, now.AddDate(0, 0, -j.pol.SessionsDays), j.pol.SessionsKeepMin)
-	}, "daemon_sessions")
+	})
 	res.Batches += b
 	if err != nil {
 		return res, totals, fmt.Errorf("daemon_sessions: %w", err)
@@ -265,9 +265,9 @@ func (j *Janitor) pruneDatabase(ctx context.Context) (Result, Totals, error) {
 	// Last, deliberately: deleting a dedup key means an old trigger can fire
 	// again, so this horizon is the longest and the step comes after
 	// everything that could still need the keys this pass removes.
-	totals.RunKeys, b, err = j.drain(ctx, &res, func(ctx context.Context) (int64, error) {
+	totals.RunKeys, b, err = j.drain(ctx, func(ctx context.Context) (int64, error) {
 		return j.st.PruneRunKeysBatch(ctx, now.AddDate(0, 0, -j.pol.RunKeysDays))
-	}, "run_keys")
+	})
 	res.Batches += b
 	if err != nil {
 		return res, totals, fmt.Errorf("run_keys: %w", err)
@@ -288,13 +288,14 @@ func (j *Janitor) pruneDatabase(ctx context.Context) (Result, Totals, error) {
 // drain loops one batched delete until it comes back empty. Each batch is one
 // BEGIN IMMEDIATE transaction; its wall duration lands in the histogram;
 // between batches the janitor sleeps BatchPause so another writer can get in.
-func (j *Janitor) drain(ctx context.Context, res *Result, batch func(context.Context) (int64, error), what string) (total int64, batches int, err error) {
+// The result is only mutated through the return values - callers own the
+// accounting, or every batch lands in the tally twice.
+func (j *Janitor) drain(ctx context.Context, batch func(context.Context) (int64, error)) (total int64, batches int, err error) {
 	for {
 		start := j.clk.Mark()
 		n, err := batch(ctx)
 		held := j.clk.Since(start)
 		j.hist.record(held)
-		res.Batches++
 		batches++
 		if err != nil {
 			return total, batches, err

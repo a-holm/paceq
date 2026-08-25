@@ -10,7 +10,8 @@ import (
 //
 //	job_versions        never auto-deleted (too small to matter, history must keep meaning)
 //	outages             kept forever (small and precious)
-//	batch limit         500 rows per transaction (PruneBatchLimit)
+//	batch limit         200 rows per transaction (PruneBatchLimit; measured
+//	                    against the 50 ms lock budget - see retention.go)
 //	batch pause         50 ms between batches
 //
 // The batch shape is deliberately not configurable: it is the mechanism that
@@ -87,7 +88,10 @@ func (p Policies) WithDefaults() Policies {
 	if p.RunsDays <= 0 {
 		p.RunsDays = d.RunsDays
 	}
-	if p.RunsKeepMin < 0 {
+	// The keep-minimum floors treat zero as unset like every other field:
+	// a Policies left to its zero value must never mean "protect nothing",
+	// which is what letting the zero through would do.
+	if p.RunsKeepMin <= 0 {
 		p.RunsKeepMin = d.RunsKeepMin
 	}
 	if p.TicksSkippedDays <= 0 {
@@ -96,7 +100,7 @@ func (p Policies) WithDefaults() Policies {
 	if p.TicksDays <= 0 {
 		p.TicksDays = d.TicksDays
 	}
-	if p.TicksKeepMin < 0 {
+	if p.TicksKeepMin <= 0 {
 		p.TicksKeepMin = d.TicksKeepMin
 	}
 	if p.RunKeysDays <= 0 {
@@ -105,7 +109,7 @@ func (p Policies) WithDefaults() Policies {
 	if p.SessionsDays <= 0 {
 		p.SessionsDays = d.SessionsDays
 	}
-	if p.SessionsKeepMin < 0 {
+	if p.SessionsKeepMin <= 0 {
 		p.SessionsKeepMin = d.SessionsKeepMin
 	}
 	if p.BackupRetain <= 0 {
