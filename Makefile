@@ -8,10 +8,10 @@ VERSION   ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo de
 COMMIT    ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 BUILDTIME ?= $(shell git log -1 --format=%cI 2>/dev/null || echo unknown)
 
-BUILDVARS := github.com/a-holm/paceq/internal/cli
-LDFLAGS   := -X $(BUILDVARS).version=$(VERSION) \
-	-X $(BUILDVARS).commit=$(COMMIT) \
-	-X $(BUILDVARS).buildTime=$(BUILDTIME)
+BUILDVARS := github.com/a-holm/paceq/internal/buildinfo
+LDFLAGS   := -X $(BUILDVARS).Version=$(VERSION) \
+	-X $(BUILDVARS).Commit=$(COMMIT) \
+	-X $(BUILDVARS).Date=$(BUILDTIME)
 
 # Tool versions. Every gate runs through `go run`, so the pipeline and a local
 # `make ci` execute the same tool binaries. Bump versions here; no workflow
@@ -137,6 +137,7 @@ cross:
 	@for target in $(CROSS_TARGETS); do \
 		scripts/cross-build.sh "$${target%/*}" "$${target#*/}" || exit 1; \
 	done
+
 
 # Scratch container proof for the tzdata embed (issue #47): inside FROM
 # scratch there is no /usr/share/zoneinfo, no shell and no network, so the

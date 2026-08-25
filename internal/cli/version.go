@@ -3,34 +3,24 @@ package cli
 import (
 	"context"
 	"fmt"
-	"runtime"
 	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/a-holm/paceq/internal/buildinfo"
 	"github.com/a-holm/paceq/internal/store"
 )
 
-// Build information, set with -ldflags -X at release time. The defaults are
-// what a go install or a plain go build reports, and they are deliberately
-// honest: a binary that claims a version it was not built from is worse than
-// one that says it does not know.
-var (
-	version   = "dev"
-	commit    = "unknown"
-	buildTime = "unknown"
-)
-
-// versionReport is what version prints, in both modes. The JSON field names are
-// the interface: an upgrade check and a bug report template read them.
+// versionReport is what version prints, in both modes. The build facts come
+// from internal/buildinfo, the single source the Makefile stamps and the
+// release pipeline injects (issue #43); schema_version joins them here because
+// it answers on a machine that has no state directory yet. The JSON field
+// names are the interface: an upgrade check and a bug report template read
+// them.
 type versionReport struct {
-	Version       string `json:"version"`
-	Commit        string `json:"commit"`
-	Built         string `json:"built"`
-	Go            string `json:"go"`
-	Platform      string `json:"platform"`
-	SchemaVersion int    `json:"schema_version"`
+	buildinfo.Info
+	SchemaVersion int `json:"schema_version"`
 }
 
 func newVersionCmd(env Env, g *globals) *cobra.Command {
@@ -61,11 +51,7 @@ func writeVersion(out *ui) error {
 		return internalError("could not read the schema this build carries", err)
 	}
 	report := versionReport{
-		Version:       version,
-		Commit:        commit,
-		Built:         buildTime,
-		Go:            runtime.Version(),
-		Platform:      runtime.GOOS + "/" + runtime.GOARCH,
+		Info:          buildinfo.Get(),
 		SchemaVersion: known,
 	}
 	if out.mode == modeJSON {
@@ -77,15 +63,16 @@ func writeVersion(out *ui) error {
 }
 
 // text is the human form, built as one string so the command and the --version
-// flag print exactly the same report.
+// flag print exactly the same report. The labels stay stable even where the
+// JSON names follow the frozen buildinfo contract.
 func (r versionReport) text() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "paceq %s", r.Version)
 	for _, row := range [][2]string{
 		{"commit", r.Commit},
-		{"built", r.Built},
-		{"go", r.Go},
-		{"platform", r.Platform},
+		{"built", r.Date},
+		{"go", r.GoVersion},
+		{"platform", r.OS + "/" + r.Arch},
 		{"schema version", strconv.Itoa(r.SchemaVersion)},
 	} {
 		fmt.Fprintf(&b, "\n  %s %s", pad(row[0], len("schema version")), row[1])

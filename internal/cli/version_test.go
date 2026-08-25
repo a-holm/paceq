@@ -1,17 +1,21 @@
 package cli
 
 import (
-	"runtime"
+	"encoding/json"
 	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/a-holm/paceq/internal/buildinfo"
 	"github.com/a-holm/paceq/internal/store"
 )
 
 // TestVersionJSONCarriesEveryField is what a bug report is written from, and
-// what an upgrade check reads. Every field is asserted by name, because a
-// missing one is only noticed the day somebody needs it.
+// what an upgrade check reads. Every field is asserted by name against the one
+// source it comes from, because a missing one is only noticed the day somebody
+// needs it. This is also the parity half of issue #43: the report and the
+// release pipeline read the same internal/buildinfo values, so they cannot
+// diverge.
 func TestVersionJSONCarriesEveryField(t *testing.T) {
 	got := runCLI(t, t.TempDir(), nil, "version")
 
@@ -20,17 +24,15 @@ func TestVersionJSONCarriesEveryField(t *testing.T) {
 	}
 	doc := got.json(t)
 
-	known, err := store.KnownSchemaVersion()
-	if err != nil {
-		t.Fatalf("read the known schema version: %v", err)
-	}
+	stamped := buildinfo.Get()
 	want := map[string]any{
-		"version":        version,
-		"commit":         commit,
-		"built":          buildTime,
-		"go":             runtime.Version(),
-		"platform":       runtime.GOOS + "/" + runtime.GOARCH,
-		"schema_version": float64(known),
+		"version":        stamped.Version,
+		"commit":         stamped.Commit,
+		"date":           stamped.Date,
+		"go_version":     stamped.GoVersion,
+		"os":             stamped.OS,
+		"arch":           stamped.Arch,
+		"schema_version": float64(knownSchema(t)),
 	}
 	for field, value := range want {
 		if doc[field] != value {
@@ -42,6 +44,26 @@ func TestVersionJSONCarriesEveryField(t *testing.T) {
 	}
 }
 
+// TestVersionJSONParsesAsTheFrozenDocument runs the exact contract of the
+// release smoke job: `paceq version --json` must parse as JSON carrying the
+// six frozen buildinfo fields (plan for #43, test 6).
+func TestVersionJSONParsesAsTheFrozenDocument(t *testing.T) {
+	got := runCLI(t, t.TempDir(), nil, "version", "--json")
+
+	if got.code != ExitOK {
+		t.Fatalf("paceq version --json = %d, want %d\n%s", got.code, ExitOK, got.stderr)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(got.stdout), &doc); err != nil {
+		t.Fatalf("paceq version --json is not valid JSON: %v\n%s", err, got.stdout)
+	}
+	for _, field := range []string{"version", "commit", "date", "go_version", "os", "arch"} {
+		if _, ok := doc[field]; !ok {
+			t.Errorf("the document does not carry %q: %s", field, got.stdout)
+		}
+	}
+}
+
 // TestVersionTextNamesTheSameFacts. The two modes are one command, and a text
 // report that leaves out the commit sends people to the JSON.
 func TestVersionTextNamesTheSameFacts(t *testing.T) {
@@ -50,13 +72,11 @@ func TestVersionTextNamesTheSameFacts(t *testing.T) {
 	if got.code != ExitOK {
 		t.Fatalf("paceq version -o text = %d, want %d\n%s", got.code, ExitOK, got.stderr)
 	}
-	known, err := store.KnownSchemaVersion()
-	if err != nil {
-		t.Fatalf("read the known schema version: %v", err)
-	}
+	stamped := buildinfo.Get()
+	known := knownSchema(t)
 	for _, want := range []string{
-		version, commit, buildTime, runtime.Version(),
-		runtime.GOOS + "/" + runtime.GOARCH, "schema",
+		stamped.Version, stamped.Commit, stamped.Date, stamped.GoVersion,
+		stamped.OS + "/" + stamped.Arch, "schema",
 	} {
 		if !strings.Contains(got.stdout, want) {
 			t.Errorf("the text report does not name %q:\n%s", want, got.stdout)
@@ -95,4 +115,14 @@ func TestVersionFlagMatchesTheCommand(t *testing.T) {
 			t.Errorf("--version and version disagree in %s:\n%s\n%s", mode, flag.stdout, command.stdout)
 		}
 	}
+}
+
+func knownSchema(t *testing.T) int {
+	t.Helper()
+
+	known, err := store.KnownSchemaVersion()
+	if err != nil {
+		t.Fatalf("read the known schema version: %v", err)
+	}
+	return known
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/a-holm/paceq/internal/buildinfo"
 	"github.com/a-holm/paceq/internal/daemon"
 )
 
@@ -73,7 +74,7 @@ func runServe(ctx context.Context, env Env, g *globals, f serveFlags) error {
 	defer signal.Stop(sigs)
 
 	cfg := daemon.Config{
-		Version:          version,
+		Version:          buildinfo.Get().Version,
 		StateDir:         stateDir,
 		JobsDir:          f.jobsDir,
 		SocketPath:       f.socket,
