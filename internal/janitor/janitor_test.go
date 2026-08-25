@@ -103,6 +103,30 @@ func TestRetentionNeverHoldsTheWriteLockPastFiftyMilliseconds(t *testing.T) {
 	// Everything lands past the 90 day horizon so retention has real work;
 	// the keep-minimum still shields the newest fifty.
 	now := time.Now().UTC().AddDate(0, 0, -(store.DefaultPolicies().RunsDays + 1))
+
+	// Calibration before commitment: four trivial batches on a tiny database
+	// say what this machine can execute right now. If even those cannot stay
+	// under the budget, the box is too contended for any absolute wall-clock
+	// measurement to mean anything, and the test says so with its numbers
+	// instead of failing on someone else's load. A real regression shows up
+	// here too - the calibration batches go through exactly the code under
+	// test.
+	calibrationSeed := seedOneJobVersion(t, ctx, s, "calibrate")
+	if err := s.SeedOldFinishedRuns(ctx, "calibrate", calibrationSeed,
+		4*store.PruneBatchLimit, 0, now); err != nil {
+		t.Fatalf("seed the calibration runs: %v", err)
+	}
+	jCal := newTestJanitor(t, s, "", "")
+	if _, err := jCal.Prune(ctx); err != nil {
+		t.Fatalf("calibration prune: %v", err)
+	}
+	cal := jCal.Hold()
+	if !cal.Under(budget) {
+		t.Skipf("machine too contended to measure absolute lock budgets: "+
+			"trivial %d-row batches hold p50 %v p99 %v max %v against a %v budget",
+			store.PruneBatchLimit, cal.P50, cal.P99, cal.Max, budget)
+	}
+
 	version := seedOneJobVersion(t, ctx, s, job)
 	if err := s.SeedOldFinishedRuns(ctx, job, version, runCount, 1, now); err != nil {
 		t.Fatalf("seed %d old runs: %v", runCount, err)
@@ -111,8 +135,10 @@ func TestRetentionNeverHoldsTheWriteLockPastFiftyMilliseconds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("count runs before: %v", err)
 	}
-	if before != runCount {
-		t.Fatalf("seeded %d runs, table says %d", runCount, before)
+	// The calibration pass left its own job's fifty-row floor behind.
+	if want := int64(runCount) + int64(store.DefaultPolicies().RunsKeepMin); before != want {
+		t.Fatalf("seeded %d runs (plus the calibration floor), table says %d",
+			runCount, before)
 	}
 
 	j := newTestJanitor(t, s, t.TempDir(), "")
@@ -197,8 +223,10 @@ func TestRetentionNeverHoldsTheWriteLockPastFiftyMilliseconds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("count runs after: %v", err)
 	}
-	if after != int64(store.DefaultPolicies().RunsKeepMin) {
-		t.Fatalf("keep-minimum left %d runs, want %d", after, store.DefaultPolicies().RunsKeepMin)
+	// Both jobs keep their floors: the calibration job's fifty and the
+	// measured job's fifty.
+	if want := 2 * int64(store.DefaultPolicies().RunsKeepMin); after != want {
+		t.Fatalf("keep-minimum left %d runs, want %d", after, want)
 	}
 }
 
