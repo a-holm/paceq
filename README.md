@@ -30,6 +30,18 @@ Note: the master plan and the issues are written in Norwegian; everything else i
 
 Milestone [M0, foundation and persistence](https://github.com/a-holm/paceq/milestone/1) is under way. The binary builds and prints help; no orchestration yet.
 
+## See the M4 exit demo run
+
+The DAG milestone closes on a script, not a claim. [scripts/demo-m4.sh](scripts/demo-m4.sh) walks [examples/dag/diamond.yaml](examples/dag/diamond.yaml) through the whole story in one project: a green run, one branch failing on purpose, the steps downstream of it ending skipped with their exact reason codes, and one operator retry that reopens only the failed and skipped steps while the succeeded ones are reused, to a green run again.
+
+```
+go build -o ./bin/paceq ./cmd/paceq
+PATH=$PWD/bin:$PATH scripts/demo-m4.sh --down   # no daemon; flock path
+PATH=$PWD/bin:$PATH scripts/demo-m4.sh --up     # daemon serving .paceq/paceq.sock
+```
+
+CI runs the same story as testscript rows in [internal/cli/testdata/dagdemo](internal/cli/testdata/dagdemo), plus an overlap row that drives the production claim gate and worker pool and asserts the two branches' started/finished windows intersect.
+
 ## Build
 
 Building requires Go 1.25 or newer. The full local gate needs Go 1.26 or newer, or `GOTOOLCHAIN=auto`, because staticcheck declares Go 1.26. No C toolchain: the binary is built with `CGO_ENABLED=0` and is statically linked. The race detector in `make test` is the single exception. It builds the test binaries with cgo and never touches the shipped artifact.
