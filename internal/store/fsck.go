@@ -269,7 +269,11 @@ WHERE state = 'queued' AND available_at > created_at
 	// window walks each partition in id order; any from_state that does
 	// not pick up the previous to_state is a break. The first row of a
 	// partition starts wherever the row was when the run was
-	// materialised, so it is judged by nothing but its neighbours.
+	// materialised, so it is judged by nothing but its neighbours. A
+	// discarded result is history, not state (it carries no states at
+	// all), so it sits outside the chain exactly as it does in I11; a
+	// NULL to_state would otherwise both break every scan and blame the
+	// lease-lost writer for a gap it did not create.
 	rows, err = s.r.QueryContext(ctx, `SELECT run_id, who FROM (
 	SELECT run_id,
 		COALESCE(step_name, '') || ':' || kind || ':' ||
@@ -277,6 +281,7 @@ WHERE state = 'queued' AND available_at > created_at
 		from_state,
 		LAG(to_state) OVER w AS prev_to
 	FROM run_events
+	WHERE kind <> 'run.result_discarded'
 	WINDOW w AS (PARTITION BY run_id, COALESCE(step_name, '') ORDER BY id))
 WHERE prev_to IS NOT NULL AND COALESCE(from_state, '<start>') <> prev_to`)
 	if err != nil {
