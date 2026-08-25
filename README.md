@@ -42,6 +42,36 @@ PATH=$PWD/bin:$PATH scripts/demo-m4.sh --up     # daemon serving .paceq/paceq.so
 
 CI runs the same story as testscript rows in [internal/cli/testdata/dagdemo](internal/cli/testdata/dagdemo), plus an overlap row that drives the production claim gate and worker pool and asserts the two branches' started/finished windows intersect.
 
+## Download and verify
+
+Releases ship one static binary per platform: linux/amd64, linux/arm64,
+darwin/amd64 and darwin/arm64, each far under the 30 MB budget. Every release
+carries a `checksums.txt`, and verifying it is part of installing, not an
+optional extra:
+
+```
+curl -sSfLO https://github.com/a-holm/paceq/releases/download/v0.1.0/checksums.txt
+curl -sSfLO https://github.com/a-holm/paceq/releases/download/v0.1.0/paceq_0.1.0_linux_amd64.tar.gz
+sha256sum -c checksums.txt --ignore-missing
+tar xzf paceq_0.1.0_linux_amd64.tar.gz
+./paceq version --json
+```
+
+[install.sh](install.sh) does the same steps for you: it detects platform and
+architecture, downloads the matching archive, verifies its sha256 against
+`checksums.txt` (failing hard on any mismatch), and installs into
+`$PREFIX/bin`:
+
+```
+curl -sSfL -o install.sh https://raw.githubusercontent.com/a-holm/paceq/main/install.sh
+sh install.sh                                   # latest release into ~/.local
+PACEQ_VERSION=v0.1.0 PREFIX=/usr/local sh install.sh
+```
+
+A release is cut by pushing a `v*` tag. The tag workflow builds the tagged
+commit twice and refuses to ship unless both builds agree byte for byte
+(plan 08 section 5), then leaves a draft release for review.
+
 ## Build
 
 Building requires Go 1.25 or newer. The full local gate needs Go 1.26 or newer, or `GOTOOLCHAIN=auto`, because staticcheck declares Go 1.26. No C toolchain: the binary is built with `CGO_ENABLED=0` and is statically linked. The race detector in `make test` is the single exception. It builds the test binaries with cgo and never touches the shipped artifact.
