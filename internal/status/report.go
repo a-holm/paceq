@@ -49,8 +49,21 @@ type Report struct {
 	SchemaVersion int     `json:"schema_version"`
 	GeneratedAt   string  `json:"generated_at"`
 	Daemon        Daemon  `json:"daemon"`
+	Maintenance   Maint   `json:"maintenance"`
 	Summary       Summary `json:"summary"`
 	Jobs          []Job   `json:"jobs"`
+}
+
+// Maintenance is what the nightly cycle last did and how it went (issue
+// #36). Every field comes from the gc_* meta rows the janitor writes, so a
+// failed maintenance phase shows up here instead of staying silent. All
+// three are absent on a database no daemon has maintained yet.
+type Maint struct {
+	LastAt         string `json:"last_at,omitempty"`
+	Status         string `json:"status,omitempty"`
+	Error          string `json:"error,omitempty"`
+	LastBackup     string `json:"last_backup,omitempty"`
+	BackupVerified bool   `json:"backup_verified,omitempty"`
 }
 
 // Daemon says what the command observed about the daemon. Up is a live socket

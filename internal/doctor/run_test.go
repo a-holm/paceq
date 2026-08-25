@@ -21,6 +21,7 @@ type fakeDB struct {
 	schema  int
 	journal string
 	mode    store.AutoVacuumMode
+	backup  store.BackupInfo
 	err     error
 	closed  bool
 }
@@ -33,6 +34,10 @@ func (f *fakeDB) JournalMode(context.Context) (string, error) { return f.journal
 
 func (f *fakeDB) AutoVacuum(context.Context) (store.AutoVacuumMode, error) {
 	return f.mode, f.err
+}
+
+func (f *fakeDB) BackupStatus(context.Context) (store.BackupInfo, error) {
+	return f.backup, f.err
 }
 
 func (f *fakeDB) Close() error {

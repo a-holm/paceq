@@ -170,10 +170,20 @@ func (r *Result) failed(phase string, err error) {
 }
 
 // Plan is what prune --dry-run shows: per-rule row estimates plus the log
-// shards age would remove.
+// shards age would remove, with their byte sizes.
 type Plan struct {
 	store.RetentionPlan
-	LogShards []string `json:"log_shards"`
+	LogShards     []string         `json:"log_shards"`
+	LogShardBytes map[string]int64 `json:"log_shard_bytes,omitempty"`
+}
+
+// LogShardTotal sums the bytes the listed shards occupy.
+func (p Plan) LogShardTotal() int64 {
+	var total int64
+	for _, n := range p.LogShardBytes {
+		total += n
+	}
+	return total
 }
 
 // PrunePlans computes the retention estimate without touching anything. The
@@ -185,16 +195,16 @@ func (j *Janitor) PrunePlans(ctx context.Context) (Plan, error) {
 	if err != nil {
 		return Plan{}, fmt.Errorf("estimate retention: %w", err)
 	}
-	p := Plan{RetentionPlan: plan}
+	p := Plan{RetentionPlan: plan, LogShardBytes: map[string]int64{}}
 	if j.root != "" {
-		shards, _, estErr := staleLogShards(j.root, now, j.pol.LogShardDays)
-		if estErr != nil {
-			return Plan{}, estErr
-		}
-		if err != nil {
-			return Plan{}, err
+		shards, sizes, shardErr := staleLogShards(j.root, now, j.pol.LogShardDays)
+		if shardErr != nil {
+			return Plan{}, shardErr
 		}
 		p.LogShards = shards
+		for _, name := range shards {
+			p.LogShardBytes[name] = sizes[name]
+		}
 	}
 	return p, nil
 }

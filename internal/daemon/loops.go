@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/a-holm/paceq/internal/clock"
+	"github.com/a-holm/paceq/internal/janitor"
+	"github.com/a-holm/paceq/internal/leases"
 	"github.com/a-holm/paceq/internal/notify"
 	"github.com/a-holm/paceq/internal/store"
 )
@@ -136,11 +138,52 @@ func reaperLoop(ctx context.Context, d loops, every time.Duration, sweeper reapS
 	})
 }
 
-// janitorLoop is the M5-05 placeholder for retention and checkpointing. The
-// shutdown checkpoint does not need it, and retention policies come later.
-func janitorLoop(ctx context.Context, d loops, every time.Duration) error {
-	return loop(ctx, d, "janitor", every, notify.TopicScheduleChanged, func(context.Context) error {
+// janitorLoop runs the nightly maintenance cycle (#36): batched retention,
+// whole log shards, incremental vacuum, a verified backup and a WAL truncate.
+// It wakes on the tick but only acts when a nightly slot is owed, and every
+// real cycle happens under the fenced maintenance lease - two daemons can
+// never retain at the same time, and a daemon that lost leadership stops
+// maintaining underneath the one that took over.
+func janitorLoop(ctx context.Context, d loops, every time.Duration, j *janitor.Janitor, hour int) error {
+	return loop(ctx, d, "janitor", every, notify.TopicScheduleChanged, func(ctx context.Context) error {
+		if !j.ShouldRun(ctx, hour) {
+			return nil
+		}
+		start := d.clk.Mark()
+		res, err := j.Cycle(ctx)
+		if err != nil {
+			return err
+		}
+		d.log.Info("nightly maintenance finished",
+			"deleted", res.Deleted.Total(),
+			"batches", res.Batches,
+			"log_shards", len(res.LogShards),
+			"vacuum_pages", res.VacuumPagesReleased,
+			"backup", res.Backup.Status,
+			"checkpoint", res.Checkpoint,
+			"failures", len(res.Failures),
+			"took", d.clk.Since(start).String(),
+		)
+		for _, f := range res.Failures {
+			d.log.Error("maintenance phase failed", "detail", f)
+		}
 		return nil
+	})
+}
+
+// maintenanceLoop owns the whole maintenance leadership (#36): it takes the
+// fenced maintenance lease - two daemons can never retain at the same time -
+// and only then runs the nightly cycle whenever its slot is owed. Serve wires
+// it with the real store; the exclusivity test drives the exact same
+// composition against a foreign lease holder.
+func maintenanceLoop(ctx context.Context, d loops, every time.Duration, st leases.Store, j *janitor.Janitor, hour int, holder string) error {
+	return leases.RunAsLeader(ctx, st, leases.Options{
+		Name:   "maintenance",
+		Holder: holder,
+		Clock:  d.clk,
+		Log:    d.log,
+	}, func(body context.Context, _ int64) error {
+		return janitorLoop(body, d, every, j, hour)
 	})
 }
 

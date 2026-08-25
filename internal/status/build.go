@@ -56,6 +56,7 @@ func Build(ctx context.Context, st *store.Store, opts Options) (*Report, error) 
 		Jobs:          make([]Job, 0, len(rows)),
 	}
 	rep.Daemon = buildDaemon(ctx, st, opts)
+	rep.Maintenance = buildMaintenance(ctx, st)
 
 	for _, row := range rows {
 		job := newJob(row, nextTicks[row.JobName], sensorIntervals[row.JobName], stuck[row.JobName], now)
@@ -70,6 +71,30 @@ func Build(ctx context.Context, st *store.Store, opts Options) (*Report, error) 
 	}
 	rep.Summary.SensorsInError = total(sensorErrors)
 	return rep, nil
+}
+
+// buildMaintenance reads the maintenance facts the janitor records in meta.
+// A read failure degrades to an empty block rather than failing the whole
+// report: the rest of the overview stays true without these lines.
+func buildMaintenance(ctx context.Context, st *store.Store) Maint {
+	get := func(key string) string {
+		v, _, err := st.MetaValue(ctx, key)
+		if err != nil {
+			return ""
+		}
+		return v
+	}
+	m := Maint{
+		LastAt: get(store.MetaKeyGCCycleLastAt),
+		Status: get(store.MetaKeyGCCycleLastStatus),
+		Error:  get(store.MetaKeyGCCycleLastError),
+	}
+	info, err := st.BackupStatus(ctx)
+	if err == nil && info.HasBackup {
+		m.LastBackup = info.LastAt.UTC().Format(time.RFC3339)
+		m.BackupVerified = info.Verified()
+	}
+	return m
 }
 
 // buildDaemon fills the daemon block: up is what the caller observed by

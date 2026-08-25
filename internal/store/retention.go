@@ -79,6 +79,10 @@ func (s *Store) runPruneBatch(ctx context.Context, sqlText string, args ...any) 
 // kept no matter how old they are. ON DELETE CASCADE removes the run's steps,
 // step_deps, run_events and artifacts in the same transaction.
 func (s *Store) PruneRunsBatch(ctx context.Context, cutoff time.Time, keepMin int) (int64, error) {
+	// nolint:fencing: the age rule only ever matches terminal runs
+	// ('succeeded', 'failed', 'cancelled'), whose leases are already over -
+	// there is no token left to fence with, and a running run can never
+	// satisfy the predicate.
 	const q = `
 DELETE FROM runs
  WHERE id IN (

@@ -14,13 +14,14 @@ import (
 )
 
 // DB is what a report asks a database. It is the store's surface narrowed to
-// the four questions doctor answers from, so a test can reproduce a database in
+// the questions doctor answers from, so a test can reproduce a database in
 // a state no test could create on disk, such as one written by a later paceq.
 type DB interface {
 	Path() string
 	SchemaVersion(ctx context.Context) (int, error)
 	JournalMode(ctx context.Context) (string, error)
 	AutoVacuum(ctx context.Context) (store.AutoVacuumMode, error)
+	BackupStatus(ctx context.Context) (store.BackupInfo, error)
 	Close() error
 }
 
@@ -295,6 +296,7 @@ func inspect(ctx context.Context, dir string, open Opener) []Finding {
 		checkJournalMode(ctx, db),
 		checkSchemaVersion(ctx, db),
 		CheckAutoVacuum(ctx, db),
+		CheckBackup(ctx, db, time.Now),
 	}
 }
 
