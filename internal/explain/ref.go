@@ -284,8 +284,10 @@ func resolveBareName(ctx context.Context, st *store.Store, raw string) (Resolved
 	}
 	var scheduleHits []string
 	for _, row := range schedules {
-		if row.Name == raw || row.JobName+"/"+row.Name == raw {
-			scheduleHits = append(scheduleHits, row.JobName+"/"+row.Name)
+		qualified := row.JobName + "/" + row.Name
+		if row.Name == raw || qualified == raw ||
+			row.JobName+"."+row.Name == raw {
+			scheduleHits = append(scheduleHits, qualified)
 		}
 	}
 	if len(scheduleHits) == 1 {
