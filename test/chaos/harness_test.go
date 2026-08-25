@@ -371,11 +371,36 @@ func jobNameForShape(prefix, shape string) string {
 
 // daemonProc is one running paceq serve subprocess. Its stderr streams into
 // a file named after the generation, so every kill's evidence survives in
-// the workspace and lands in the failure archive untouched.
+// the workspace and lands in the failure archive untouched. The exit code
+// is kept in a field rather than read out of a channel: several places ask
+// whether the process ended and what its code was, and a channel answer can
+// only be received once.
 type daemonProc struct {
 	cmd    *exec.Cmd
 	stderr string // path of this generation's stderr file
-	exited chan int
+
+	mu     sync.Mutex
+	code   int           // valid once done
+	done   bool          // the process has been waited for
+	doneCh chan struct{} // closed when done turns true
+}
+
+func (p *daemonProc) recordExit(code int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.done {
+		return
+	}
+	p.code = code
+	p.done = true
+	close(p.doneCh)
+}
+
+// snapshot returns the exit code and whether the process has ended.
+func (p *daemonProc) snapshot() (int, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.code, p.done
 }
 
 func startDaemon(t *testing.T, ws *chaosWorkspace, gen int) *daemonProc {
@@ -390,7 +415,7 @@ func startDaemon(t *testing.T, ws *chaosWorkspace, gen int) *daemonProc {
 	p := &daemonProc{
 		cmd:    exec.Command(paceqBinary(t), "serve"),
 		stderr: errFile,
-		exited: make(chan int, 1),
+		doneCh: make(chan struct{}),
 	}
 	p.cmd.Dir = ws.Dir
 	p.cmd.Stderr = out
@@ -409,12 +434,10 @@ func startDaemon(t *testing.T, ws *chaosWorkspace, gen int) *daemonProc {
 			}
 		}
 		_ = out.Close()
-		p.exited <- code
+		p.recordExit(code)
 	}()
 	t.Cleanup(func() {
-		select {
-		case <-p.exited:
-		default:
+		if _, done := p.snapshot(); !done {
 			_ = p.cmd.Process.Kill()
 		}
 	})
@@ -432,12 +455,9 @@ func (p *daemonProc) waitReady(t *testing.T) {
 		if err == nil && bytes.Contains(raw, []byte(`"msg":"daemon ready"`)) {
 			return
 		}
-		select {
-		case code := <-p.exited:
-			p.exited <- code // leave the death visible for later readers
+		if code, done := p.snapshot(); done {
 			snippet := lastLines(string(raw), 15)
 			t.Fatalf("the daemon exited %d before becoming ready:\n%s", code, snippet)
-		default:
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("the daemon never became ready:\n%s", lastLines(string(raw), 25))
@@ -457,7 +477,8 @@ func (p *daemonProc) waitExit(t *testing.T, within time.Duration) int {
 	t.Helper()
 
 	select {
-	case code := <-p.exited:
+	case <-p.doneCh:
+		code, _ := p.snapshot()
 		return code
 	case <-time.After(within):
 		t.Fatalf("the daemon did not exit within %s", within)
@@ -466,12 +487,8 @@ func (p *daemonProc) waitExit(t *testing.T, within time.Duration) int {
 }
 
 func (p *daemonProc) alive() bool {
-	select {
-	case <-p.exited:
-		return false
-	default:
-		return true
-	}
+	_, done := p.snapshot()
+	return !done
 }
 
 func lastLines(s string, n int) string {
@@ -618,8 +635,7 @@ func (c *chaosRun) Drive(t *testing.T) {
 			break
 		}
 		if !p.alive() {
-			code := <-p.exited
-			p.exited <- code
+			code, _ := p.snapshot()
 			raw, _ := os.ReadFile(p.stderr)
 			problems = append(problems, fmt.Sprintf(
 				"the daemon died on its own with exit %d:\n%s", code, lastLines(string(raw), 20)))
