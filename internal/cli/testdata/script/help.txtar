@@ -39,6 +39,7 @@ Available Commands:
   apply           Load job files into the database as immutable versions
   doctor          Check the installation and say what to do about what is wrong
   error           Explain an error or reason code
+  explain         Explain what a job, schedule, sensor or run did, and why nothing happened
   fsck            Check the state database against its invariants
   help            Help about any command
   init            Create a project: a config, an example job and a state database

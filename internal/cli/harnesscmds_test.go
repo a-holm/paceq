@@ -119,9 +119,11 @@ func paceqEnv(overrides []string) ([]string, error) {
 	}
 	var env []string
 	for _, entry := range os.Environ() {
-		if !drop[entry[:strings.IndexByte(entry, '=')]] {
-			env = append(env, entry)
+		name := entry[:strings.IndexByte(entry, '=')]
+		if drop[name] {
+			continue
 		}
+		env = append(env, entry)
 	}
 	env = append(env,
 		"PULSEQ_FAKE_CLOCK="+fakeClockDefault,
@@ -144,6 +146,13 @@ func spawnPaceq(ts *testscript.TestScript, overrides, args []string) *exec.Cmd {
 	if err != nil {
 		ts.Fatalf("the paceq command is not on PATH: %v", err)
 	}
+	// The script's own clock wins over the default: a script that moved it
+	// with `env PULSEQ_FAKE_CLOCK=...` moves every paceq it spawns too.
+	clock := ts.Getenv("PULSEQ_FAKE_CLOCK")
+	if clock == "" {
+		clock = fakeClockDefault
+	}
+	overrides = append([]string{"PULSEQ_FAKE_CLOCK=" + clock}, overrides...)
 	env, err := paceqEnv(overrides)
 	if err != nil {
 		ts.Fatalf("%v", err)
