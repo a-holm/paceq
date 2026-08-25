@@ -26,6 +26,7 @@ const (
 	envDir        = "PACEQ_CRASH_DIR"
 	envAppend     = "PACEQ_CRASH_APPEND"
 	envRecoverRun = "PACEQ_CRASH_RECOVER_RUN"
+	envReopenRun  = "PACEQ_CRASH_REOPEN_RUN"
 
 	// armEnv is the variable internal/faults reads in a pulseq_faults
 	// build. Naming it here is what makes an unarmed child harmless.

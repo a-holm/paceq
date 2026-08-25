@@ -13,6 +13,7 @@ import (
 	"github.com/a-holm/paceq/internal/clock"
 	"github.com/a-holm/paceq/internal/engine"
 	"github.com/a-holm/paceq/internal/logsink"
+	"github.com/a-holm/paceq/internal/model"
 	"github.com/a-holm/paceq/internal/reason"
 	"github.com/a-holm/paceq/internal/store"
 )
@@ -37,16 +38,30 @@ func runRow(t *testing.T, sc Scenario) {
 	ws := newWorkspace(t)
 	ctx := context.Background()
 
-	out, killed := runChild(t, ws, sc, sc.KillAt, nil)
-	if sc.KillAt == "" || sc.KillAt == unknownPoint {
+	// A reopen row crashes inside the operator's reopen, not inside the
+	// run: its first child is unarmed and runs clean to a terminal
+	// failure, and the armed second child does the dying.
+	arm := sc.KillAt
+	if sc.Kind == "reopen" {
+		arm = ""
+	}
+	out, killed := runChild(t, ws, sc, arm, nil)
+	if arm == "" || arm == unknownPoint || sc.Kind == "reopen" {
 		requireChildSurvived(t, sc, out, killed)
 	} else {
 		requireChildKilled(t, sc, out, killed)
 	}
 
 	runID := childRunID(sc, out)
-	if sc.Kind == "execute" && runID == "" {
+	if (sc.Kind == "execute" || sc.Kind == "reopen") && runID == "" {
 		t.Fatalf("%s: the child printed no run id\n%s", sc.describe(), out)
+	}
+
+	if sc.Kind == "reopen" {
+		// Phase 2: die inside the reopen transaction itself.
+		phase2, killed2 := runChild(t, ws, sc, sc.KillAt,
+			map[string]string{envReopenRun: runID})
+		requireChildKilled(t, sc, phase2, killed2)
 	}
 
 	s := openStore(t, ws)
@@ -69,6 +84,26 @@ func runRow(t *testing.T, sc Scenario) {
 	requireEffects(t, sc, expectedEffectKeys(sc, finalRunID),
 		skippedEffectKeys(sc, finalRunID), readEffects(t, ws.EffectFile))
 	requireEventStory(t, ctx, s, sc, finalRunID)
+
+	// A retry reopens failed and skipped steps only. The first step of a
+	// reopen row succeeded before the crash, so it must still carry its
+	// single first attempt: the positive proof that the retry spared the
+	// work that was already done.
+	if sc.Kind == "reopen" {
+		detail, err := s.GetRun(ctx, finalRunID)
+		if err != nil {
+			t.Fatalf("read run %s after convergence: %v", finalRunID, err)
+		}
+		for _, st := range detail.Steps {
+			if st.Name != sc.Steps[0].Name {
+				continue
+			}
+			if st.Attempt != 1 || st.State != "succeeded" {
+				t.Errorf("%s: step %s was to have been spared by the retry, but sits at attempt %d in %q",
+					sc.describe(), st.Name, st.Attempt, st.State)
+			}
+		}
+	}
 
 	requireIntegrity(t, ctx, s, "after convergence")
 	requireFsckClean(t, ctx, s, "after convergence")
@@ -123,6 +158,23 @@ func converge(t *testing.T, ctx context.Context, s *store.Store, ws *workspace,
 		t.Logf("recovery left the run in %q", state)
 		if isTerminal(state) {
 			return state, finalRunID
+		}
+
+	case "reopen":
+		// The armed reopen either rolled back (the run is still failed
+		// and still owes its reopen) or committed (it is queued with
+		// nothing owed). Recovery has nothing running to close in
+		// either shape; a failed run gets its clean reopen here.
+		state, err := eng.Recover(ctx, runID)
+		if err != nil {
+			t.Fatalf("recover run %s: %v", runID, err)
+		}
+		t.Logf("recovery left the run in %q", state)
+		if state != string(model.RunQueued) {
+			if _, err := s.ReopenTerminalRunByOperator(ctx, runID, "crash-restart",
+				store.ReopenOpts{RetryBudget: 1}); err != nil {
+				t.Fatalf("reopen run %s after the crashed retry: %v", runID, err)
+			}
 		}
 
 	default:
@@ -438,6 +490,19 @@ func TestChildProcess(t *testing.T) {
 			t.Fatalf("recover run %s: %v", rec, err)
 		}
 		fmt.Printf("PACEQ-RECOVERED %s\n", state)
+		return
+	}
+
+	if rec := os.Getenv(envReopenRun); rec != "" {
+		// Reopen mode: the parent wants this process to die inside the
+		// operator's reopen transaction of a run an earlier child
+		// drove to a terminal failure.
+		res, err := s.ReopenTerminalRunByOperator(ctx, rec, "crash-child",
+			store.ReopenOpts{RetryBudget: 1})
+		if err != nil {
+			t.Fatalf("reopen run %s: %v", rec, err)
+		}
+		fmt.Printf("PACEQ-REOPENED %s epoch %d steps %d\n", rec, res.NewEpoch, len(res.Reopened))
 		return
 	}
 

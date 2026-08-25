@@ -157,6 +157,8 @@ const (
 	dagSkipBeforeWrites   = "M4:skip:before_writes"
 	dagSkipAfterWrites    = "M4:skip:after_writes"
 	cancelObserveUpdate   = "M1:transition:after_update:observe_cancel"
+	reopenAfterRunUpdate  = "M4:reopen:after_run_update"
+	reopenAfterCommit     = "M4:reopen:after_commit"
 )
 
 func succeeded() []string { return []string{"succeeded"} }
@@ -212,7 +214,7 @@ func tickScenarioInput(t *testing.T, ctx context.Context, s *store.Store) store.
 }
 
 // scenarios is the matrix. Every fault point the harness can reach has a row.
-var scenarios = []Scenario{
+var scenarios = append([]Scenario{
 	// The materialisation chain: three points inside one transaction. A
 	// kill in any of them must leave no tick, no trigger, no run and no
 	// steps behind, and the retried decision must run the job exactly
@@ -447,6 +449,46 @@ var scenarios = []Scenario{
 		FinalStates:    []string{"cancelled"},
 		SkippedSteps:   []string{"whs", "cache", "notify"},
 	},
+
+	// The operator-reopen rows (#20): a failed diamond - transform fails
+	// terminally, everything downstream is closed unrun - and an armed
+	// reopen that dies either between the run flip and the step resets or
+	// right after the whole transaction committed. The first rollback
+	// leaves the run failed exactly as it was, so the restart's own clean
+	// reopen is what queues it; the second leaves it queued with nothing
+	// owed. Both converge the same way: the retry reopens failed and
+	// skipped steps only, extract is spared with its one attempt and its
+	// one effect, transform succeeds on attempt 2, and six lines land in
+	// all.
+}, reopenedDiamond()...)
+
+// reopenedDiamond builds the two operator-reopen cells over one failed
+// diamond: transform fails on attempt 1 without a budget, the kill window
+// differs per row.
+func reopenedDiamond() []Scenario {
+	steps := func() []dagStep {
+		return []dagStep{
+			{Name: "extract"},
+			{Name: "transform", Needs: []string{"extract"}, Mode: "fail-first"},
+			{Name: "whs", Needs: []string{"transform"}},
+			{Name: "cache", Needs: []string{"transform"}},
+			{Name: "notify", Needs: []string{"whs", "cache"}},
+		}
+	}
+	return []Scenario{
+		{
+			Name: "operator_reopen_before_commit", KillAt: reopenAfterRunUpdate, Kind: "reopen",
+			Steps:      steps(),
+			MinEffects: 6, MaxEffects: 6,
+			StepMinEffects: 1, StepMaxEffects: 2,
+		},
+		{
+			Name: "operator_reopen_after_commit", KillAt: reopenAfterCommit, Kind: "reopen",
+			Steps:      steps(),
+			MinEffects: 6, MaxEffects: 6,
+			StepMinEffects: 1, StepMaxEffects: 2,
+		},
+	}
 }
 
 // diamond is the fan-out shape of issue #20's matrix: two parallel branches
