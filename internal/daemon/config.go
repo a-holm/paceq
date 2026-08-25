@@ -58,6 +58,14 @@ type Config struct {
 	// arrives with the systemd work, and nothing else should invent paths.
 	SocketPath string
 
+	// MetricsListen is the opt-in TCP bind for /metrics (#40). Empty means
+	// the endpoint answers on the unix socket only, which is the default
+	// the security plan fixes (08 section 6: no TCP listener in the MVP
+	// without an explicit operator decision). When set, it is validated to
+	// loopback before anything starts; anything else is refused with an
+	// explanation, never bound.
+	MetricsListen string
+
 	// Workers is how many runs may execute at once. Zero means
 	// runtime.NumCPU(). One dispatcher hands work out no matter what; this
 	// caps the executors behind it.

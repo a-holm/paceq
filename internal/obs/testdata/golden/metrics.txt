@@ -1,0 +1,81 @@
+# HELP pulseq_build_info Build information of the running daemon.
+# TYPE pulseq_build_info gauge
+pulseq_build_info{version="0.1.0-test",commit="a1b2c3d",go_version="go1.27.0"} 1
+# HELP pulseq_daemon_start_timestamp_seconds When the running daemon started, in seconds since the epoch.
+# TYPE pulseq_daemon_start_timestamp_seconds gauge
+pulseq_daemon_start_timestamp_seconds 1773576000
+# HELP pulseq_tick_total Decided evaluations per instigator, status and reason.
+# TYPE pulseq_tick_total counter
+pulseq_tick_total{instigator="schedule",name="nightly",status="triggered",reason_code=""} 1
+pulseq_tick_total{instigator="sensor",name="dropzone",status="skipped",reason_code="TICK_SKIPPED_SENSOR"} 1
+# HELP pulseq_lease_reclaims_total Runs whose lease was taken away from a dead holder.
+# TYPE pulseq_lease_reclaims_total counter
+pulseq_lease_reclaims_total 7
+# HELP pulseq_db_write_wait_seconds_max Slowest write transaction since the previous scrape, in seconds.
+# TYPE pulseq_db_write_wait_seconds_max gauge
+pulseq_db_write_wait_seconds_max 0.019
+# HELP pulseq_db_busy_total SQLITE_BUSY outcomes the write pool has seen.
+# TYPE pulseq_db_busy_total counter
+pulseq_db_busy_total 3
+# HELP pulseq_last_success_timestamp_seconds Unix time of the job's newest succeeded run; absent while there has never been one.
+# TYPE pulseq_last_success_timestamp_seconds gauge
+pulseq_last_success_timestamp_seconds{job="nightly-report"} 1773482400
+# HELP pulseq_job_freshness_sla_seconds How long the job may go without a success before monitoring speaks up; jobs that declare nothing get no series.
+# TYPE pulseq_job_freshness_sla_seconds gauge
+pulseq_job_freshness_sla_seconds{job="nightly-report"} 93600
+# HELP pulseq_tick_lag_seconds How late the newest decided evaluation fired relative to the moment it was scheduled for.
+# TYPE pulseq_tick_lag_seconds gauge
+pulseq_tick_lag_seconds{instigator="schedule",name="nightly"} 0.412
+pulseq_tick_lag_seconds{instigator="sensor",name="dropzone"} 1.5
+# HELP pulseq_last_tick_timestamp_seconds Unix time of the newest evaluation per instigator.
+# TYPE pulseq_last_tick_timestamp_seconds gauge
+pulseq_last_tick_timestamp_seconds{instigator="schedule",name="nightly"} 1773532800
+pulseq_last_tick_timestamp_seconds{instigator="sensor",name="dropzone"} 1773575970
+# HELP pulseq_next_tick_timestamp_seconds Unix time of the instigator's next scheduled evaluation.
+# TYPE pulseq_next_tick_timestamp_seconds gauge
+pulseq_next_tick_timestamp_seconds{instigator="schedule",name="nightly"} 1773619200
+pulseq_next_tick_timestamp_seconds{instigator="sensor",name="dropzone"} 1773576020
+pulseq_next_tick_timestamp_seconds{instigator="sensor",name="flaky"} 1773576060
+# HELP pulseq_tick_interval_seconds Seconds between one evaluation and the next; for schedules, the observed gap between the newest tick and the next fire.
+# TYPE pulseq_tick_interval_seconds gauge
+pulseq_tick_interval_seconds{instigator="schedule",name="nightly"} 86400
+pulseq_tick_interval_seconds{instigator="sensor",name="dropzone"} 30
+# HELP pulseq_instigator_paused 1 when the instigator is paused and will not evaluate.
+# TYPE pulseq_instigator_paused gauge
+pulseq_instigator_paused{instigator="schedule",name="nightly"} 0
+pulseq_instigator_paused{instigator="schedule",name="paused-one"} 1
+pulseq_instigator_paused{instigator="sensor",name="dropzone"} 0
+pulseq_instigator_paused{instigator="sensor",name="flaky"} 0
+# HELP pulseq_sensor_cursor_age_seconds Age of the sensor's newest cursor movement, in seconds; absent while the cursor never moved.
+# TYPE pulseq_sensor_cursor_age_seconds gauge
+pulseq_sensor_cursor_age_seconds{instigator="sensor",name="dropzone"} 41.2
+# HELP pulseq_sensor_consecutive_failures Failed evaluations in a row for one sensor; the breaker's warning light.
+# TYPE pulseq_sensor_consecutive_failures gauge
+pulseq_sensor_consecutive_failures{instigator="sensor",name="dropzone"} 0
+pulseq_sensor_consecutive_failures{instigator="sensor",name="flaky"} 2
+# HELP pulseq_runs_by_state Runs currently sitting in one live state, per job.
+# TYPE pulseq_runs_by_state gauge
+pulseq_runs_by_state{job="nightly-report",state="queued"} 1
+pulseq_runs_by_state{job="nightly-report",state="running"} 1
+pulseq_runs_by_state{job="other-job",state="queued"} 3
+# HELP pulseq_run_total Runs that reached each terminal outcome, per job.
+# TYPE pulseq_run_total counter
+pulseq_run_total{job="nightly-report",status="failed"} 2
+pulseq_run_total{job="nightly-report",status="succeeded"} 410
+# HELP pulseq_db_size_bytes Main database file size in bytes.
+# TYPE pulseq_db_size_bytes gauge
+pulseq_db_size_bytes 41947136
+# HELP pulseq_wal_size_bytes Size of the database's WAL companion file; growth means checkpointing is blocked.
+# TYPE pulseq_wal_size_bytes gauge
+pulseq_wal_size_bytes 1310720
+# HELP pulseq_outage_seconds_total Summed provable downtime across recorded outages.
+# TYPE pulseq_outage_seconds_total counter
+pulseq_outage_seconds_total 542.5
+# HELP pulseq_backup_last_success_timestamp_seconds Unix time of the newest successful backup.
+# TYPE pulseq_backup_last_success_timestamp_seconds gauge
+pulseq_backup_last_success_timestamp_seconds 1773490400
+# HELP pulseq_backup_last_verified 1 when the newest backup passed verification, 0 when it failed.
+# TYPE pulseq_backup_last_verified gauge
+pulseq_backup_last_verified 1
+# HELP pulseq_gc_last_success_timestamp_seconds Unix time of the newest completed retention sweep.
+# TYPE pulseq_gc_last_success_timestamp_seconds gauge

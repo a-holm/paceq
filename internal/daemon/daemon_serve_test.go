@@ -311,7 +311,7 @@ func TestHealthEndpointServesWithoutTheDatabase(t *testing.T) {
 	sts := newStatuses(func() time.Time { return time.Unix(0, 0).UTC() })
 	sts.mark("scheduler")
 
-	stop := startHealthEndpoint(cfg, sts, cfg.Logger, nil)
+	stop := startHealthEndpoint(cfg, sts, cfg.Logger, nil, nil)
 	if stop == nil {
 		t.Fatal("a configured socket did not start the endpoints")
 	}

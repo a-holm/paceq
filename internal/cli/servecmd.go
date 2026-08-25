@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -18,11 +19,12 @@ import (
 // section of the configuration sketch; the config file itself arrives with
 // the packaging milestone.
 type serveFlags struct {
-	jobsDir      string
-	socket       string
-	workers      int
-	drainTimeout time.Duration
-	noNotifyBus  bool
+	jobsDir       string
+	socket        string
+	metricsListen string
+	workers       int
+	drainTimeout  time.Duration
+	noNotifyBus   bool
 }
 
 func newServeCmd(env Env, g *globals) *cobra.Command {
@@ -53,6 +55,8 @@ another serve, or any command that writes, is refused with exit 6.`,
 	}
 	cmd.Flags().StringVar(&f.jobsDir, "jobs-dir", "jobs", "directory the scheduler reads job files from")
 	cmd.Flags().StringVar(&f.socket, "socket", "", "unix socket for the health endpoints (empty: disabled until M2-08)")
+	cmd.Flags().StringVar(&f.metricsListen, "metrics-listen", "",
+		"opt-in TCP bind for /metrics; loopback only, e.g. 127.0.0.1:9753 (default: unix socket only)")
 	cmd.Flags().IntVar(&f.workers, "workers", 0, "runs executed at once (0: one per CPU)")
 	cmd.Flags().DurationVar(&f.drainTimeout, "drain-timeout", 30*time.Second, "how long running steps may finish on a stop")
 	cmd.Flags().BoolVar(&f.noNotifyBus, "no-notify-bus", false,
@@ -64,6 +68,20 @@ func runServe(ctx context.Context, env Env, g *globals, f serveFlags) error {
 	stateDir, err := g.stateDir(env)
 	if err != nil {
 		return err
+	}
+
+	// The metrics TCP bind is opt-in and loopback only (#40). The refusal
+	// is a usage error - exit 2 with the explanation - because the command
+	// as written must never start: a daemon that came up without the
+	// metrics surface its operator configured for is worse than one that
+	// refused to start.
+	if f.metricsListen != "" {
+		if err := daemon.ValidateMetricsListen(f.metricsListen); err != nil {
+			return usageError(
+				fmt.Sprintf("--metrics-listen %s can only bind to loopback", f.metricsListen),
+				err.Error(),
+				"Use 127.0.0.1:<port> (or [::1]:<port>), or leave the flag out: /metrics then answers on the unix socket only.")
+		}
 	}
 
 	// Signals reach the daemon twice: once through the process context,
@@ -78,6 +96,7 @@ func runServe(ctx context.Context, env Env, g *globals, f serveFlags) error {
 		StateDir:         stateDir,
 		JobsDir:          f.jobsDir,
 		SocketPath:       f.socket,
+		MetricsListen:    f.metricsListen,
 		Workers:          f.workers,
 		DrainTimeout:     f.drainTimeout,
 		DisableNotifyBus: f.noNotifyBus,

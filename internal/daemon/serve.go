@@ -4,14 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"time"
 
+	"github.com/a-holm/paceq/internal/buildinfo"
 	"github.com/a-holm/paceq/internal/clock"
 	"github.com/a-holm/paceq/internal/engine"
 	"github.com/a-holm/paceq/internal/faults"
 	"github.com/a-holm/paceq/internal/leases"
 	"github.com/a-holm/paceq/internal/logsink"
 	"github.com/a-holm/paceq/internal/notify"
+	"github.com/a-holm/paceq/internal/obs"
 	"github.com/a-holm/paceq/internal/obs/sdnotify"
 	"github.com/a-holm/paceq/internal/reconcile"
 	"github.com/a-holm/paceq/internal/scheduler"
@@ -30,7 +33,12 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 	log := cfg.logger()
 	_ = sdnotify.Status("opening database")
 
-	st, err := store.OpenState(ctx, cfg.StateDir, store.Options{Clock: clk})
+	// The counters exist before the store opens so every tick that commits
+	// from the first second on is counted (#40). They are the in-memory
+	// half of /metrics; a restart resetting them is expected and handled
+	// by Prometheus's own rate arithmetic.
+	counters := obs.NewCounters()
+	st, err := store.OpenState(ctx, cfg.StateDir, store.Options{Clock: clk, Metrics: counters})
 	if err != nil {
 		return err
 	}
@@ -212,7 +220,25 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 	launch(grp.ctx, nil, func(c context.Context) error {
 		return janitorLoop(c, d, tickEvery)
 	})
-	stopHealth := startHealthEndpoint(cfg, statuses, log, st)
+	// The collector is built from the store's read pool and the same
+	// counters the store writes into: two sources, one document (#40).
+	collector := obs.NewCollector(st, counters, clk,
+		obs.Identity{
+			Version:   buildinfo.Get().Version,
+			Commit:    buildinfo.Get().Commit,
+			GoVersion: buildinfo.Get().GoVersion,
+		},
+		filepath.Join(cfg.StateDir, logsink.LogDirName))
+	stopHealth := startHealthEndpoint(cfg, statuses, log, st, collector)
+	if err := startMetricsTCP(cfg.MetricsListen, collector); err != nil {
+		if stopHealth != nil {
+			stopHealth(context.Background())
+		}
+		stopIntake()
+		stopExec()
+		_ = st.Close()
+		return fmt.Errorf("serve: %w", err)
+	}
 	launch(grp.ctx, nil, func(c context.Context) error {
 		return heartbeatLoop(c, d, cfg.heartbeatEvery(), st, sess.ID)
 	})
