@@ -1,0 +1,79 @@
+groups:
+  - name: pulseq
+    rules:
+      # The one generic rule the whole freshness design exists for (06 §6.3):
+      # every job's expectation is exposed from its configuration, so this
+      # rule covers every job forever and never needs maintenance when jobs
+      # are added. Jobs that declare no expected_within have no SLA series
+      # and therefore no alarm - their silence is doctor's business (M6-06).
+      - alert: PulseqJobStale
+        expr: time() - pulseq_last_success_timestamp_seconds > pulseq_job_freshness_sla_seconds
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.job }} har ikke lykkes innen sin SLA"
+          runbook: "pulseq explain job {{ $labels.job }}"
+
+      # Three quiet cadences in a row means the loop is not deciding, not
+      # that it decided badly.
+      - alert: PulseqTickStalled
+        expr: time() - pulseq_last_tick_timestamp_seconds > 3 * pulseq_tick_interval_seconds
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instigator }}/{{ $labels.name }} har ikke tikket"
+          runbook: "pulseq explain {{ $labels.instigator }} {{ $labels.name }}"
+
+      # A WAL that only grows is a long lived reader blocking checkpointing -
+      # the canary (07 §6.4).
+      - alert: PulseqWALGrowth
+        expr: pulseq_wal_size_bytes > 67108864 # 64 MiB
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "WAL vokser — sannsynlig langlevd leser hindrer checkpointing"
+          runbook: "pulseq doctor; se docs/drift/wal.md"
+
+      - alert: PulseqBackupStale
+        expr: time() - pulseq_backup_last_success_timestamp_seconds > 129600 # 36 t
+        labels:
+          severity: critical
+        annotations:
+          summary: "Ingen verifisert backup siste 36 t"
+          runbook: "pulseq backup --verify (backup-maskineriet er M6-01/M6-02)"
+
+      - alert: PulseqBackupUnverified
+        expr: pulseq_backup_last_verified == 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Siste backup bestod ikke quick_check"
+          runbook: "pulseq backup --verify; se docs/drift/backup.md"
+
+      - alert: PulseqSensorErrorRate
+        expr: pulseq_sensor_consecutive_failures > 5
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sensor {{ $labels.name }} feiler gjentatt — breaker nærmer seg"
+          runbook: "pulseq explain sensor {{ $labels.name }}"
+
+      - alert: PulseqQueueBacklog
+        expr: sum(pulseq_runs_by_state{state="queued"}) > 50
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Køen vokser"
+          runbook: "pulseq status; pulseq explain job <job>"
+
+      - alert: PulseqDaemonFlapping
+        expr: changes(pulseq_daemon_start_timestamp_seconds[30m]) > 3
+        labels:
+          severity: critical
+        annotations:
+          summary: "Daemonen har restartet gjentatt"
+          runbook: "journalctl -u paceq; pulseq doctor"

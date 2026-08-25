@@ -64,6 +64,28 @@ jobs:
       - name: example sensors parse, lint and behave
         run: make sensors-examples
 
+      # Issue #40: promtool validates the /metrics surface - the exposition
+      # format of the golden fixture, the alert rules file and its behaviour
+      # test. It is a pinned release binary on purpose, never a go.mod
+      # dependency (the dep budget has no room for client_golang). The same
+      # version is pinned in the Makefile; keep the two in step.
+      - name: install promtool
+        run: |
+          curl -sSL --fail -o /tmp/promtool.tgz \
+            https://github.com/prometheus/prometheus/releases/download/v3.14.0/prometheus-3.14.0.linux-amd64.tar.gz
+          tar -xzf /tmp/promtool.tgz -C /tmp prometheus-3.14.0.linux-amd64/promtool
+          sudo install /tmp/prometheus-3.14.0.linux-amd64/promtool /usr/local/bin/promtool
+          promtool --version
+
+      - name: metrics exposition is valid Prometheus text
+        run: make prom-check-metrics
+
+      - name: alert rules parse
+        run: make prom-check-rules
+
+      - name: alert rules behave (JobStale fires at its SLA, not before)
+        run: make prom-rules
+
       - name: go test -race
         run: make test
 

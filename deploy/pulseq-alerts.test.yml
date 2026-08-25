@@ -1,0 +1,84 @@
+# The alarm-rule behaviour proof (issue #40 test plan item 7), run by
+# `promtool test rules` in CI and by `make prom-rules`. The synthetic
+# timeline starts at t=0, so a job whose newest success is stamped at 0 with
+# a 600 s SLA crosses its expectation at t=600: PulseqJobStale turns true at
+# the next evaluation (11m), stays pending through its `for: 5m`, and fires
+# at 16m - never before.
+rule_files:
+  - pulseq-alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'pulseq_last_success_timestamp_seconds{job="nightly"}'
+        values: "0+0x40"
+      - series: 'pulseq_job_freshness_sla_seconds{job="nightly"}'
+        values: "600+0x40"
+      # A second job still inside its SLA must stay silent throughout.
+      - series: 'pulseq_last_success_timestamp_seconds{job="fresh"}'
+        values: "0+0x40"
+      - series: 'pulseq_job_freshness_sla_seconds{job="fresh"}'
+        values: "86400+0x40"
+
+    alert_rule_test:
+      # Before the SLA is crossed: quiet.
+      - eval_time: 8m
+        alertname: PulseqJobStale
+        exp_alerts: []
+      # Crossed at 600 s but inside the for-duration: pending, not firing.
+      - eval_time: 12m
+        alertname: PulseqJobStale
+        exp_alerts: []
+      # Five quiet minutes later it speaks.
+      - eval_time: 16m
+        alertname: PulseqJobStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: nightly
+            exp_annotations:
+              summary: "nightly har ikke lykkes innen sin SLA"
+              runbook: "pulseq explain job nightly"
+
+  # The WAL canary (07 §6.4): under the threshold it is quiet; over it, the
+  # alert waits out its own for-duration before firing.
+  - interval: 1m
+    input_series:
+      - series: 'pulseq_wal_size_bytes'
+        values: "60000000+500000x40" # crosses 64 MiB between 14m and 15m
+
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: PulseqWALGrowth
+        exp_alerts: []
+      - eval_time: 31m
+        alertname: PulseqWALGrowth
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "WAL vokser — sannsynlig langlevd leser hindrer checkpointing"
+              runbook: "pulseq doctor; se docs/drift/wal.md"
+
+  # The sensor failure light trips on consecutive failures alone, without a
+  # for-duration: six failures in a row are already the message.
+  - interval: 1m
+    input_series:
+      - series: 'pulseq_sensor_consecutive_failures{name="flaky"}'
+        values: "0+1x40"
+
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: PulseqSensorErrorRate
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: PulseqSensorErrorRate
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              name: flaky
+            exp_annotations:
+              summary: "Sensor flaky feiler gjentatt — breaker nærmer seg"
+              runbook: "pulseq explain sensor flaky"
