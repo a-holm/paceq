@@ -135,7 +135,6 @@ SELECT step_name, depends_on FROM step_deps WHERE run_id = ? ORDER BY step_name,
 // of reason.
 func (s *Store) fillTriggerAndTick(ctx context.Context, out *RunExport) error {
 	var tr ExportTrigger
-	var tickFound bool
 	err := s.withRead(ctx, func(ctx context.Context, r reader) error {
 		row := r.QueryRowContext(ctx, `
 SELECT id, tick_id, job_name, COALESCE(run_key, ''), params_json, created_at,
@@ -157,7 +156,6 @@ SELECT id, source_kind, source_name, scheduled_for, started_at, finished_at,
 		switch {
 		case scanErr == nil:
 			out.Tick = &tk
-			tickFound = true
 		case !isNoRows(scanErr):
 			return scanErr
 		}
@@ -172,7 +170,6 @@ SELECT id, source_kind, source_name, scheduled_for, started_at, finished_at,
 		return err
 	}
 	out.Trigger = &tr
-	_ = tickFound
 	return nil
 }
 

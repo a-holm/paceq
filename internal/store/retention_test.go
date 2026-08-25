@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 )
@@ -230,15 +229,14 @@ func TestRunningAndQueuedRunsAreNeverDeleted(t *testing.T) {
 	ancient := now.AddDate(-3, 0, 0)
 
 	seedFinishedRun(t, s, "live", versionID, "r-done", ancient)
-	for state, extra := range map[string]string{
-		"queued":  fmt.Sprintf(", %d, %d", ancient.UnixMilli(), ancient.UnixMilli()),
-		"running": "",
-	} {
-		q := fmt.Sprintf(`
-INSERT INTO runs (id, job_name, job_version_id, origin, state, available_at, created_at, updated_at%s)
-VALUES ('r-%s', 'live', ?, 'manual', '%s', ?, ?, ?)`, extra, strings.ReplaceAll(state, "'", ""), state)
+	for _, state := range []string{"queued", "running"} {
+		q := `
+INSERT INTO runs (id, job_name, job_version_id, origin, state,
+                  available_at, created_at, updated_at)
+VALUES (?, 'live', ?, 'manual', ?, ?, ?, ?)`
 		if _, err := s.w.ExecContext(context.Background(), q,
-			versionID, ancient.UnixMilli(), ancient.UnixMilli()); err != nil {
+			"r-"+state, versionID, state,
+			ancient.UnixMilli(), ancient.UnixMilli(), ancient.UnixMilli()); err != nil {
 			t.Fatalf("seed %s run: %v", state, err)
 		}
 	}
