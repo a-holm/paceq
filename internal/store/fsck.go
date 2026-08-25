@@ -188,49 +188,20 @@ WHERE s.state = 'running'
 
 	// I10: the stored state is the aggregate of the steps, decided by the
 	// same model function the engine finishes runs with. One truth, two
-	// users; if they disagree, a row was written behind both.
-	type runSteps struct {
-		state string
-		steps []model.StepState
-	}
-	byRun := map[string]*runSteps{}
-	rows, err = s.r.QueryContext(ctx, `SELECT r.id, r.state, COALESCE(s.state, '')
-FROM runs r LEFT JOIN steps s ON s.run_id = r.id ORDER BY r.id`)
+	// users; if they disagree, a row was written behind both. The sweep
+	// itself is the explicit checker the crash battery also asserts on,
+	// so this check and that battery cannot drift apart.
+	mismatches, err := s.RunAggregateMismatches(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("fsck I10: %w", err)
 	}
-	for rows.Next() {
-		var id, runState, stepState string
-		if err := rows.Scan(&id, &runState, &stepState); err != nil {
-			_ = rows.Close()
-			return nil, fmt.Errorf("fsck I10: %w", err)
-		}
-		r, ok := byRun[id]
-		if !ok {
-			r = &runSteps{state: runState}
-			byRun[id] = r
-		}
-		if stepState != "" {
-			r.steps = append(r.steps, model.StepState(stepState))
-		}
-	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return nil, fmt.Errorf("fsck I10: %w", err)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, fmt.Errorf("fsck I10: %w", err)
-	}
-	for id, r := range byRun {
-		want := model.RunAggregate(r.steps)
-		if string(want) != r.state && !unclaimedWork(want, r.state) {
-			out = append(out, Violation{
-				Check:   "I10",
-				Subject: "run " + id,
-				Detail: fmt.Sprintf("state is %s, the steps aggregate to %s",
-					r.state, want),
-			})
-		}
+	for _, m := range mismatches {
+		out = append(out, Violation{
+			Check:   "I10",
+			Subject: "run " + m.RunID,
+			Detail: fmt.Sprintf("state is %s, the steps aggregate to %s",
+				m.State, m.Aggregate),
+		})
 	}
 
 	// I13: time only moves forward, and a present stamp is a real one.

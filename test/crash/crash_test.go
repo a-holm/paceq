@@ -70,10 +70,9 @@ func runRow(t *testing.T, sc Scenario) {
 	requireIntegrity(t, ctx, s, "after the crash")
 	requireFsckFindings(t, ctx, s, "after the crash", sc.TransientFindings)
 	requireNoAbandonedChains(t, ctx, s, "after the crash")
-
-	if sc.WaitsForOrphan && sc.KillAt != "" {
-		waitOrphansGone(t, ws.EffectFile)
-	}
+	requireNoDoubleCompletedRunKeys(t, ctx, s, "after the crash")
+	requireRunAggregateConsistency(t, ctx, s, "after the crash", sc.TransientFindings)
+	requireNoOrphansForRun(t, sc, runID)
 
 	finalState, finalRunID := converge(t, ctx, s, ws, sc, runID)
 	if !contains(sc.allowedFinalStates(), finalState) {
@@ -107,6 +106,90 @@ func runRow(t *testing.T, sc Scenario) {
 
 	requireIntegrity(t, ctx, s, "after convergence")
 	requireFsckClean(t, ctx, s, "after convergence")
+	requireNoDoubleCompletedRunKeys(t, ctx, s, "after convergence")
+	requireRunAggregateConsistency(t, ctx, s, "after convergence", nil)
+	requireTerminalReasonCodes(t, ctx, s, sc, finalRunID)
+}
+
+// requireNoDoubleCompletedRunKeys is the explicit dedup invariant of the
+// crash battery (issue #20): however many times a crashed attempt was
+// repeated, no run_key may end up behind two completed runs. The store's
+// own sweep answers; this helper only names what it found.
+func requireNoDoubleCompletedRunKeys(t *testing.T, ctx context.Context,
+	s *store.Store, when string,
+) {
+	t.Helper()
+
+	keys, err := s.DoubleCompletedRunKeys(ctx)
+	if err != nil {
+		t.Fatalf("sweep for doubled run keys %s: %v", when, err)
+	}
+	for _, key := range keys {
+		t.Errorf("%s: two or more succeeded runs share the run_key %q", when, key)
+	}
+	if len(keys) > 0 {
+		t.Fatalf("%s: %d doubled run keys", when, len(keys))
+	}
+}
+
+// requireRunAggregateConsistency is I10 made explicit for the battery: every
+// run's stored state must be the aggregate of its steps. A window whose
+// transaction never committed predicts exactly one mismatch until recovery
+// finishes the run, so the row's transient contract applies here too.
+func requireRunAggregateConsistency(t *testing.T, ctx context.Context,
+	s *store.Store, when string, predicted []string,
+) {
+	t.Helper()
+
+	mismatches, err := s.RunAggregateMismatches(ctx)
+	if err != nil {
+		t.Fatalf("sweep for aggregate mismatches %s: %v", when, err)
+	}
+	for _, m := range mismatches {
+		if contains(predicted, "I10") {
+			t.Logf("%s: predicted aggregate disagreement on run %s (state %s, steps aggregate to %s)",
+				when, m.RunID, m.State, m.Aggregate)
+			continue
+		}
+		t.Errorf("%s: run %s says %q but its steps aggregate to %q",
+			when, m.RunID, m.State, m.Aggregate)
+	}
+}
+
+// requireTerminalReasonCodes walks one converged run and refuses any
+// terminal state - the run's or a step's - that carries no reason code or
+// the catalogue's unknown placeholder. A terminal state that cannot say why
+// it happened is a state nobody can trust.
+func requireTerminalReasonCodes(t *testing.T, ctx context.Context,
+	s *store.Store, sc Scenario, runID string,
+) {
+	t.Helper()
+
+	detail, err := s.GetRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("read run %s for the reason sweep: %v", runID, err)
+	}
+	if isTerminal(detail.Run.State) && unexplained(detail.Run.ReasonCode) {
+		t.Errorf("%s: terminal run in state %q carries reason code %q",
+			sc.describe(), detail.Run.State, detail.Run.ReasonCode)
+	}
+	for _, st := range detail.Steps {
+		if !isTerminalStep(st.State) {
+			continue
+		}
+		if unexplained(st.ReasonCode) {
+			t.Errorf("%s: step %s is terminal in state %q with reason code %q",
+				sc.describe(), st.Name, st.State, st.ReasonCode)
+		}
+	}
+}
+
+func unexplained(code string) bool {
+	return code == "" || code == "UNKNOWN"
+}
+
+func isTerminalStep(state string) bool {
+	return contains([]string{"succeeded", "failed", "skipped", "cancelled"}, state)
 }
 
 // converge is the restart: a fresh engine recovers what it can and drives the
@@ -398,7 +481,7 @@ func TestCrashInsideRecovery(t *testing.T) {
 	if runID == "" {
 		t.Fatalf("phase 1 printed no run id\n%s", out)
 	}
-	waitOrphansGone(t, ws.EffectFile)
+	requireNoOrphansForRun(t, sc, runID)
 
 	// Phase 2: recovery, armed. The child dies between the requeue's
 	// state write and its event row.
@@ -753,6 +836,47 @@ func TestFsckDetectsEveryPlantedViolation(t *testing.T) {
 		if !containsString(chains, subject) {
 			t.Fatalf("the chain sweep reported %v, want the planted finding %q",
 				chains, subject)
+		}
+	})
+
+	t.Run("double_completed_run_key_explicit", func(t *testing.T) {
+		s, cleanup := seedQueuedRun(t)
+		defer cleanup()
+		key, err := s.InjectDoubleCompletedRunKey(context.Background())
+		if err != nil {
+			t.Fatalf("plant: %v", err)
+		}
+		keys, err := s.DoubleCompletedRunKeys(context.Background())
+		if err != nil {
+			t.Fatalf("sweep: %v", err)
+		}
+		if !containsString(keys, key) {
+			t.Fatalf("the dedup sweep reported %v, want the planted key %q",
+				keys, key)
+		}
+	})
+
+	t.Run("aggregate_mismatch_explicit", func(t *testing.T) {
+		s, cleanup := seedSucceededRun(t)
+		defer cleanup()
+		subject, err := s.InjectFailedStepUnderSucceededRun(context.Background())
+		if err != nil {
+			t.Fatalf("plant: %v", err)
+		}
+		mismatches, err := s.RunAggregateMismatches(context.Background())
+		if err != nil {
+			t.Fatalf("sweep: %v", err)
+		}
+		named := false
+		for _, m := range mismatches {
+			if strings.Contains(subject, m.RunID) {
+				named = true
+				break
+			}
+		}
+		if !named {
+			t.Fatalf("the consistency sweep reported %v, want the planted run behind %q",
+				mismatches, subject)
 		}
 	})
 
