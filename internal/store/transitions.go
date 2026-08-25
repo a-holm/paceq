@@ -274,6 +274,12 @@ type StepOutcome struct {
 	// back to pending. Nil means runnable again at once. It never changes
 	// the transition itself; the machine decides from the row.
 	Retry *RetryPlan
+
+	// Artifacts are the references the step published through its output
+	// file (#13). They are written inside this verdict's transaction and
+	// only when the machine lands the step on succeeded: a failed step
+	// publishes nothing.
+	Artifacts []Artifact
 }
 
 // RecordStepOutcome applies one event to one step. The machine decides
@@ -388,6 +394,15 @@ func (s *Store) RecordStepOutcome(ctx context.Context, runID, name string, out S
 		if state == model.StepFailed {
 			if err := propagateSkipTx(tx, runID, name, step.Attempt, finishedAt); err != nil {
 				return fmt.Errorf("propagate the failure of %s of run %s: %w", name, runID, err)
+			}
+		}
+		// Publication (#13): a succeeded step's references commit with
+		// its verdict, in this same transaction. A failed, skipped or
+		// cancelled verdict carries no rows, so no crash can strand an
+		// artifact beside a step that never finished.
+		if state == model.StepSucceeded && len(out.Artifacts) > 0 {
+			if err := insertArtifactsTx(tx, runID, name, finishedAt, out.Artifacts); err != nil {
+				return fmt.Errorf("publish the artifacts of %s in run %s: %w", name, runID, err)
 			}
 		}
 		return nil

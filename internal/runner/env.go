@@ -55,6 +55,18 @@ func buildEnv(s Spec, workdir string) ([]string, error) {
 		scheduledFor = s.Ctx.ScheduledFor.UTC().Format(time.RFC3339)
 	}
 
+	// The inputs contract (#13): the merged upstream references travel
+	// inline while they are small, and as a file beside the run's other
+	// attempt files once they crossed 128 KiB, with PACEQ_INPUTS set to
+	// the literal null so a jq pipeline still reads.
+	inputs := s.InputsJSON
+	if inputs == "" {
+		inputs = "{}"
+	}
+	inputsFile := s.InputsFile
+	if inputsFile != "" {
+		inputs = "null"
+	}
 	contextVars := map[string]string{
 		"PACEQ_RUN_ID":          s.Ctx.RunID,
 		"PACEQ_JOB":             s.Ctx.Job,
@@ -65,7 +77,10 @@ func buildEnv(s Spec, workdir string) ([]string, error) {
 		"PACEQ_SCHEDULED_FOR":   scheduledFor,
 		"PACEQ_PARAMS":          params,
 		"PACEQ_OUTPUT":          s.OutputPath,
-		"PACEQ_INPUTS":          "{}", // filled by artifact reading in M4-05
+		"PACEQ_INPUTS":          inputs,
+	}
+	if inputsFile != "" {
+		contextVars["PACEQ_INPUTS_FILE"] = inputsFile
 	}
 	for k, v := range contextVars {
 		out[k] = v

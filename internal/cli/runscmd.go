@@ -33,7 +33,7 @@ backwards with --before, and reads through the read only pool, so history is
 there while another process writes new runs.`,
 	}
 	cmd.AddCommand(newRunsListCmd(env, g), newRunsShowCmd(env, g), newRunsCancelCmd(env, g),
-		newRunsRetryCmd(env, g), newRunsReplayCmd(env, g))
+		newRunsRetryCmd(env, g), newRunsReplayCmd(env, g), newRunsArtifactsCmd(env, g))
 	return cmd
 }
 
@@ -356,6 +356,12 @@ func runRunsShow(ctx context.Context, env Env, g *globals, out *ui, runArg strin
 			line += "  " + outcomeText(step.ReasonCode, "")
 		}
 		out.print("%s", line)
+		// What the step published rides under its line: a name and the
+		// uri it claimed. The references are history, so they read the
+		// same however the run ended.
+		for _, a := range step.Artifacts {
+			out.print("      %s  %s", a.Name, a.URI)
+		}
 	}
 	return nil
 }

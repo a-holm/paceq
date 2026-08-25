@@ -31,6 +31,12 @@ type Engine struct {
 	// database are relative to it.
 	LogRoot logsink.Root
 
+	// StateDir is the state directory this executor serves. Per-run
+	// working directories live under <StateDir>/runs/<run id> (#13); a
+	// step's $PACEQ_OUTPUT lands inside its own run's directory. Empty
+	// disables the output contract.
+	StateDir string
+
 	// Clock drives every timing decision: poll ticks, deadlines, the
 	// stamps handed to the runner. Never time directly.
 	Clock clock.Clock

@@ -79,6 +79,7 @@ func moduleRoot(t *testing.T) string {
 // process has to be watching while the test pulls the trigger.
 type engineFixture struct {
 	Dir      string
+	StateDir string
 	Store    *store.Store
 	Clock    clock.Clock
 	LogRoot  logsink.Root
@@ -116,12 +117,14 @@ func newFixtureWithClock(t *testing.T, clk clock.Clock) *engineFixture {
 		t.Fatalf("migrate: %v", err)
 	}
 	return &engineFixture{
-		Dir:     dir,
-		Store:   s,
-		Clock:   clk,
-		LogRoot: logsink.NewRoot(stateDir),
+		Dir:      dir,
+		StateDir: stateDir,
+		Store:    s,
+		Clock:    clk,
+		LogRoot:  logsink.NewRoot(stateDir),
 		Engine: &engine.Engine{
 			Store:        s,
+			StateDir:     stateDir,
 			LogRoot:      logsink.NewRoot(stateDir),
 			Clock:        clk,
 			Owner:        "exec-1",

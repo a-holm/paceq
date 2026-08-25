@@ -90,7 +90,14 @@ func TestTerminalFlagsFollowTheWriteRule(t *testing.T) {
 	notTerminal := map[Code]bool{
 		RUNQueuedConcurrency:      true,
 		RUNDeferredConcurrencyKey: true,
-		STEPRetryScheduled:        true,
+		// The #13 output warnings are facts beside a verdict, never a
+		// verdict: an unread or over-large $PACEQ_OUTPUT line must not
+		// end a step whose command exited 0.
+		STEPOutputInvalid:   true,
+		STEPOutputTruncated: true,
+		STEPOutputCollision: true,
+		STEPInputCollision:  true,
+		STEPRetryScheduled:  true,
 		// The drain interrupt: work goes back to pending with no attempt
 		// spent, so nothing about the run or the step has ended.
 		RUNInterruptedShutdown: true,

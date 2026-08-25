@@ -284,6 +284,22 @@ func (e *Engine) runStep(ctx context.Context, d *drive, name string, h *heldRun)
 		return fail(fmt.Errorf("open the log: %w", err))
 	}
 
+	// The output file of the attempt (#13): created empty, 0600, before
+	// exec, under the run's own directory. Creation failures refuse the
+	// step exactly like log failures do: the process never ran.
+	outputPath, err := prepareStepOutput(e.StateDir, run.ID, name, attempt)
+	if err != nil {
+		return fail(err)
+	}
+
+	// The merged upstream references of the attempt (#13): read from the
+	// frozen graph before exec, outside any transaction. A spill to a
+	// file happens here too, while nothing is running.
+	inputsJSON, inputsFile, err := e.prepareStepInputs(ctx, e.StateDir, run.ID, name, attempt)
+	if err != nil {
+		return fail(err)
+	}
+
 	// The crash window between the committed start and the spawn. A
 	// process killed here leaves a running step whose command never ran,
 	// which is the safest window to recover: retrying cannot duplicate an
@@ -360,6 +376,9 @@ func (e *Engine) runStep(ctx context.Context, d *drive, name string, h *heldRun)
 		InheritEnv: d.job.InheritEnv,
 		Timeout:    timeout,
 		Clock:      e.Clock,
+		OutputPath: outputPath,
+		InputsJSON: inputsJSON,
+		InputsFile: inputsFile,
 		Stdout:     crashOnFirstWrite(sink.Writer(logsink.StreamStdout), "M1:step:under_exec"),
 		Stderr:     sink.Writer(logsink.StreamStderr),
 		// The process baseline is the orphan sweep's evidence (issue #62):
@@ -472,10 +491,36 @@ func (e *Engine) runStep(ctx context.Context, d *drive, name string, h *heldRun)
 		}
 	}
 
+	// Publication (#13): read what the step wrote, strictly after exit
+	// and outside any transaction. Only a succeeded verdict publishes;
+	// a failed or cancelled step's file is nobody's input.
+	if result.Outcome == runner.Succeeded && outputPath != "" {
+		parsed, err := runner.ReadStepOutput(outputPath)
+		if err != nil {
+			return fail(fmt.Errorf("read the step output: %w", err))
+		}
+		arts, warnings, err := e.collectPublications(ctx, run.ID, name, stepIndexOf(current.Steps, name), parsed)
+		if err != nil {
+			return fail(err)
+		}
+		outcome.Artifacts = arts
+		outcome.DetailJSON = publicationDetail(outcome.DetailJSON, parsed.Params, warnings)
+	}
+
 	if err := e.Store.RecordStepOutcome(ctx, run.ID, name, outcome, d.ref); err != nil {
 		return fail(fmt.Errorf("record the verdict: %w", err))
 	}
 	return runDeadlineHit && result.Outcome == runner.TimedOut, nil
+}
+
+// stepIndexOf finds a step's position in the spec order.
+func stepIndexOf(steps []store.Step, name string) int {
+	for i := range steps {
+		if steps[i].Name == name {
+			return steps[i].Index
+		}
+	}
+	return 0
 }
 
 // finishReason decides why the run ended. A step failure fails the run and
