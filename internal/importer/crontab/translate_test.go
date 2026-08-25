@@ -391,3 +391,90 @@ func TestBareProgramNameNeedsShell(t *testing.T) {
 		t.Fatalf("bare name argv = %v shell = %v", argv, shell)
 	}
 }
+
+// Row 8b: an fd redirection aimed at /dev/null disappears whole. A pattern
+// that eats only the ">" half of "2> /dev/null" leaves a stray "2" behind,
+// and since a lone digit carries no meta character it sails into argv as an
+// argument cron never ran -- silently, with no shell: true and no TODO.
+func TestTableRowFdRedirectionLeavesNoStrayElement(t *testing.T) {
+	cases := []string{
+		"0 2 * * * /opt/app/cleanup.sh 2> /dev/null",
+		"0 2 * * * /opt/app/cleanup.sh 2>/dev/null",
+		"0 2 * * * /opt/app/cleanup.sh >>/dev/null",
+		"0 2 * * * /opt/app/cleanup.sh &>/dev/null",
+		"0 2 * * * /opt/app/cleanup.sh >/dev/null 2>/dev/null",
+	}
+	for _, line := range cases {
+		res := Import([]byte(line+"\n"), Options{})
+		d := res.Docs[0]
+		if res.Report.DevNull != 1 {
+			t.Errorf("%s: DevNull = %+v", line, res.Report)
+		}
+		argv, shell := firstStep(t, d)
+		if shell || len(argv) != 1 || argv[0] != "/opt/app/cleanup.sh" {
+			t.Errorf("%s: residue after strip: argv %v (shell %v)", line, argv, shell)
+		}
+		for _, a := range argv {
+			if strings.ContainsAny(a, "><") || a == "2" {
+				t.Errorf("%s: stray element %q in argv %v", line, a, argv)
+			}
+		}
+	}
+}
+
+// Row 9b: a bare ">> log" without the trailing 2>&1 goes away whole too, and
+// leaves neither the operator nor a fragment of it behind as an argument.
+func TestTableRowBareAppendLogLeavesNoStrayElement(t *testing.T) {
+	cases := []string{
+		"17 3 * * 1 /usr/bin/vacuum >> /var/log/vacuum.log",
+		"17 3 * * 1 /usr/bin/vacuum 2>>/var/log/vacuum.log",
+	}
+	for _, line := range cases {
+		res := Import([]byte(line+"\n"), Options{})
+		d := res.Docs[0]
+		if res.Report.AppendLog != 1 {
+			t.Errorf("%s: AppendLog = %+v", line, res.Report)
+		}
+		argv, shell := firstStep(t, d)
+		if shell || len(argv) != 1 || argv[0] != "/usr/bin/vacuum" {
+			t.Errorf("%s: residue after strip: argv %v (shell %v)", line, argv, shell)
+		}
+		for _, a := range argv {
+			if strings.ContainsAny(a, "><") {
+				t.Errorf("%s: stray element %q in argv %v", line, a, argv)
+			}
+		}
+	}
+}
+
+// Row 7b: flock -c runs its word through a shell, so that word is the inner
+// command; the flag itself must never be glued onto the front of it.
+func TestTableRowFlockCommandFlag(t *testing.T) {
+	res, d := importLines(t, Options{},
+		"* * * * * flock -n /var/lock/nginx.lock -c '/bin/systemctl reload nginx'")
+	if d.Job.MaxConcurrent != 1 || d.FlockLock != "/var/lock/nginx.lock" || res.Report.Flock != 1 {
+		t.Fatalf("wrap wrong: mc %d lock %q report %+v", d.Job.MaxConcurrent, d.FlockLock, res.Report)
+	}
+	argv, shell := firstStep(t, d)
+	if shell || len(argv) != 3 || argv[0] != "/bin/systemctl" || argv[1] != "reload" || argv[2] != "nginx" {
+		t.Fatalf("inner command mangled: %v (%v)", argv, shell)
+	}
+}
+
+// Row 7c: cd X && flock ... extracts both halves -- workdir plus
+// max_concurrent: 1 -- where checking flock before cd kept the wrapper
+// stranded behind a shell TODO.
+func TestTableRowCdThenFlock(t *testing.T) {
+	res, d := importLines(t, Options{},
+		"*/5 * * * * cd /srv/app && flock -n /var/lock/sync.lock ./sync-files")
+	if d.Job.Workdir != "/srv/app" || d.Job.MaxConcurrent != 1 || res.Report.Flock != 1 {
+		t.Fatalf("cd+fdlock wrong: workdir %q mc %d report %+v", d.Job.Workdir, d.Job.MaxConcurrent, res.Report)
+	}
+	if d.FlockLock != "/var/lock/sync.lock" {
+		t.Fatalf("lockfile %q", d.FlockLock)
+	}
+	argv, shell := firstStep(t, d)
+	if shell || len(argv) != 1 || argv[0] != "/srv/app/sync-files" {
+		t.Fatalf("inner command = %v (%v)", argv, shell)
+	}
+}

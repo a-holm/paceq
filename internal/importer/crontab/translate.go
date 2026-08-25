@@ -85,12 +85,23 @@ const defaultShell = "/bin/sh"
 // would paste differently than cron ran it.
 const heredocMark = "PACEQ_STDIN_EOF"
 
-// Redirection shapes, all matched at one end of the command.
+// Redirection shapes, all matched at one end of the command. Each pattern
+// consumes whole redirection operators -- word boundary, optional standalone
+// fd number, operator, target, optional trailing N>&M duplicate -- or refuses
+// to match. Half an operator must never be eaten: "2> /dev/null" matched down
+// to its ">" used to leave a stray "2" that sailed into argv as an argument
+// cron never ran, silently and with no TODO. Refusal is the safe outcome;
+// leftovers carry a meta character and get the visible shell decision. The
+// fd number binds to the operator only when it stands alone, the way a POSIX
+// shell reads it: in "-k2>/dev/null" the 2 belongs to the word.
 var (
-	devNullTail = regexp.MustCompile(`(?:&?>\s*/dev/null|>&\s*/dev/null)(?:\s*2>&1)?\s*$`)
-	appendTail  = regexp.MustCompile(`>>\s*(\S+)\s*2>&1\s*$`)
-	loggerTail  = regexp.MustCompile(`(2>&1\s*)?\|\s*logger(\s+-t\s+\S+)?(\s.*)?$`)
-	cdHead      = regexp.MustCompile(`^cd\s+(.+?)\s*&&\s*(.*)$`)
+	// >/dev/null in any spelling (&>, >& , N>, >>, N>>), both streams when
+	// they both go there, optionally closed by an N>&M duplicate.
+	devNullTail = regexp.MustCompile(`(?:(?:^|\s)(?:\d*&?>{1,2}|>&)\s*/dev/null)+(?:\s+\d*>&\d+)?\s*$`)
+	// N>>target with any target, optionally closed by an N>&M duplicate.
+	appendTail = regexp.MustCompile(`(?:^|\s)\d*>>\s*(\S+)(?:\s+\d*>&\d+)?\s*$`)
+	loggerTail = regexp.MustCompile(`(2>&1\s*)?\|\s*logger(\s+-t\s+\S+)?(\s.*)?$`)
+	cdHead     = regexp.MustCompile(`^cd\s+(.+?)\s*&&\s*(.*)$`)
 )
 
 // flockFlagValues are flags that consume the next token; every other flag
@@ -225,42 +236,49 @@ func (w *walker) translateCommand(ln line, raw, specialExpr string) Doc {
 	doc := Doc{Origin: ln.Text, Mailto: w.mailto, MailtoOff: w.mailtoOff}
 	workdir := ""
 
-	// Pipes and redirections come off the right end, logger outermost.
+	// Pipes and redirections come off the right end, logger outermost. The
+	// /dev/null check runs first so ">>/dev/null" reads as thrown-away
+	// output rather than a log file.
 	if m := loggerTail.FindString(cmd); m != "" {
-		cmd = strings.TrimRight(strings.TrimSuffix(cmd, m), " \t")
+		cmd = strings.TrimRight(strings.TrimSuffix(cmd, m), " 	")
 		w.report.LoggerPipe++
 		doc.Notes = append(doc.Notes, Note{
 			NoteInfo,
 			"output was piped to logger; paceq records it in `paceq logs <name>` instead",
 		})
 	}
-	if m := appendTail.FindStringSubmatch(cmd); m != nil {
-		cmd = strings.TrimRight(strings.TrimSuffix(cmd, m[0]), " \t")
-		w.report.AppendLog++
-		doc.Notes = append(doc.Notes, Note{
-			NoteInfo,
-			"the log went to " + m[1] + "; it lives in `paceq logs <name>` now",
-		})
-	}
 	if m := devNullTail.FindString(cmd); m != "" {
-		cmd = strings.TrimRight(strings.TrimSuffix(cmd, m), " \t")
+		cmd = strings.TrimRight(strings.TrimSuffix(cmd, m), " 	")
 		w.report.DevNull++
 		doc.Notes = append(doc.Notes, Note{
 			NoteWarn,
 			"output went to /dev/null and the log was thrown away; paceq keeps it now (`paceq logs <name>`)",
 		})
 	}
-
-	if inner, lock, ok := unwrapFlock(cmd); ok {
-		cmd = inner
-		doc.Job = &spec.Job{MaxConcurrent: 1} // carrier until the real job exists
-		doc.FlockLock = lock
-		w.report.Flock++
+	if m := appendTail.FindStringSubmatch(cmd); m != nil {
+		cmd = strings.TrimRight(strings.TrimSuffix(cmd, m[0]), " 	")
+		w.report.AppendLog++
+		doc.Notes = append(doc.Notes, Note{
+			NoteInfo,
+			"the log went to " + m[1] + "; it lives in `paceq logs <name>` now",
+		})
 	}
 
-	if m := cdHead.FindStringSubmatch(cmd); m != nil {
-		workdir = unquote(m[1])
-		cmd = strings.TrimSpace(m[2])
+	// cd and flock hide behind each other: "cd X && flock ..." buries the
+	// wrapper after the workdir, "flock ... cd X && Y" buries the workdir
+	// inside the wrapped command. Two passes of the pair unwind both orders;
+	// each pass is a no-op once nothing matches.
+	for pass := 0; pass < 2; pass++ {
+		if m := cdHead.FindStringSubmatch(cmd); m != nil {
+			workdir = unquote(m[1])
+			cmd = strings.TrimSpace(m[2])
+		}
+		if inner, lock, ok := unwrapFlock(cmd); ok {
+			cmd = inner
+			doc.Job = &spec.Job{MaxConcurrent: 1} // carrier until the real job exists
+			doc.FlockLock = lock
+			w.report.Flock++
+		}
 	}
 	if strings.Contains(cmd, "hc-ping.com") || strings.Contains(cmd, "healthchecks.io") {
 		w.report.Healthcheck++
@@ -412,7 +430,10 @@ const (
 // unwrapFlock recognises `flock [flags] lockfile command...` and returns the
 // inner command with the lockfile it guarded. Only flags flock actually takes
 // before its first operand are skipped; anything unexpected leaves the
-// wrapper in place, which the shell decision handles safely.
+// wrapper in place, which the shell decision handles safely. The -c spelling
+// hands ONE word to a shell, so that word is returned whole as the inner
+// command -- gluing the flag onto the front produced "-c systemctl ..."
+// and a guaranteed command-not-found.
 func unwrapFlock(cmd string) (inner string, lockfile string, ok bool) {
 	args, good := shlexSplit(cmd)
 	if !good || len(args) < 3 || filepath.Base(args[0]) != "flock" {
@@ -429,8 +450,11 @@ func unwrapFlock(cmd string) (inner string, lockfile string, ok bool) {
 		case strings.HasPrefix(a, "-"):
 			i++ // unknown flag: skip it, keep looking for the lockfile
 		default:
-			inner := strings.Join(args[i+1:], " ")
-			return inner, a, true
+			rest := args[i+1:]
+			if len(rest) >= 2 && (rest[0] == "-c" || rest[0] == "--command") {
+				return rest[1], a, true
+			}
+			return strings.Join(rest, " "), a, true
 		}
 		if i >= len(args) {
 			break
