@@ -92,6 +92,7 @@ steps:
       "state": "ok"
     }
   ],
+  "maintenance": {},
   "schema_version": 1,
   "summary": {
     "deviations": 0,
@@ -161,6 +162,7 @@ steps:
       "state": "ok"
     }
   ],
+  "maintenance": {},
   "schema_version": 1,
   "summary": {
     "deviations": 1,
