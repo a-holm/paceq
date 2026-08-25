@@ -37,9 +37,11 @@ Usage:
 
 Available Commands:
   apply           Load job files into the database as immutable versions
+  db              Direct database maintenance
   doctor          Check the installation and say what to do about what is wrong
   error           Explain an error or reason code
   explain         Explain what a job, schedule, sensor or run did, and why nothing happened
+  export          Export evidence from the state database
   fsck            Check the state database against its invariants
   help            Help about any command
   import          Bring existing schedules into paceq job files
@@ -47,6 +49,7 @@ Available Commands:
   install-service Write the systemd unit file and its relaxed variant
   logs            Show the log files of one run
   ls              List jobs with their last and next run
+  prune           Apply the retention policies, or estimate them with --dry-run
   run             Run a job now, in this process, and wait for it
   runs            Inspect run history
   schedules       Inspect and control schedules

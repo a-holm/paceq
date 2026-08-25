@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/a-holm/paceq/internal/id"
 )
@@ -476,4 +478,99 @@ func (s *Store) RunKeysSnapshot(ctx context.Context) ([]string, error) {
 		out = append(out, line)
 	}
 	return out, rows.Err()
+}
+
+// SeedOldFinishedRuns writes count terminal runs for one job, finished at
+// even intervals ending at finishedEnd, each with stepsPerRun step rows and
+// one run_event per run. It exists for the retention lock-hold gate: that
+// test needs tens of thousands of rows with children, and driving the real
+// claim/finish chain that many times would measure fixture overhead rather
+// than deletion cost. Nothing outside the retention tests may call it.
+func (s *Store) SeedOldFinishedRuns(ctx context.Context, job, versionID string, count, stepsPerRun int, finishedEnd time.Time) error {
+	const perStmt = 500
+	for done := 0; done < count; {
+		n := min(perStmt, count-done)
+		var sb strings.Builder
+		sb.WriteString(`INSERT INTO runs (id, job_name, job_version_id, origin, state,
+			available_at, reason_code, created_at, started_at, finished_at, updated_at) VALUES `)
+		args := make([]any, 0, n*10)
+		base := finishedEnd.Add(-time.Duration(done) * time.Minute)
+		for i := range n {
+			if i > 0 {
+				sb.WriteString(",")
+			}
+			fin := base.Add(-time.Duration(i) * time.Minute)
+			id := fmt.Sprintf("seed-%s-%06d", job, done+i)
+			ms := fin.UnixMilli()
+			sb.WriteString("(?, ?, ?, 'schedule', 'succeeded', ?, 'OK', ?, ?, ?, ?)")
+			args = append(args, id, job, versionID, ms-3000, ms-3000, ms-1000, ms, ms)
+		}
+		if _, err := s.w.ExecContext(ctx, sb.String(), args...); err != nil {
+			return fmt.Errorf("seed %d old runs for %s: %w", n, job, err)
+		}
+		done += n
+	}
+	for i := range stepsPerRun {
+		if _, err := s.w.ExecContext(ctx, `
+INSERT INTO steps (run_id, name, idx, state, attempt, max_attempts, reason_code)
+SELECT id, ?, ?, 'succeeded', 1, 1, 'OK' FROM runs WHERE job_name = ?`, fmt.Sprintf("step%d", i), i, job); err != nil {
+			return fmt.Errorf("seed steps for %s: %w", job, err)
+		}
+		if _, err := s.w.ExecContext(ctx, `
+INSERT OR IGNORE INTO step_deps (run_id, step_name, depends_on)
+SELECT id, ?, 'prep' FROM runs WHERE job_name = ?`, fmt.Sprintf("step%d", i), job); err != nil {
+			return fmt.Errorf("seed step deps for %s: %w", job, err)
+		}
+	}
+	if _, err := s.w.ExecContext(ctx, `
+INSERT INTO run_events (run_id, at, kind, actor)
+SELECT id, finished_at, 'run_succeeded', 'seed' FROM runs WHERE job_name = ?`, job); err != nil {
+		return fmt.Errorf("seed events for %s: %w", job, err)
+	}
+	return nil
+}
+
+// SeedSkippedTicks writes count skipped ticks for one source, started at even
+// intervals ending at startedEnd. Same purpose as SeedOldFinishedRuns: bulk
+// history for the retention tests, and nothing else.
+func (s *Store) SeedSkippedTicks(ctx context.Context, source string, count int, startedEnd time.Time) error {
+	const perStmt = 1000
+	for done := 0; done < count; {
+		n := min(perStmt, count-done)
+		var sb strings.Builder
+		sb.WriteString(`INSERT INTO ticks (id, source_kind, source_name, scheduled_for, started_at,
+			last_started_at, finished_at, repeat_count, outcome, reason_code) VALUES `)
+		args := make([]any, 0, n*7)
+		base := startedEnd.Add(-time.Duration(done) * time.Second)
+		for i := range n {
+			if i > 0 {
+				sb.WriteString(",")
+			}
+			started := base.Add(-time.Duration(i) * time.Second)
+			ms := started.UnixMilli()
+			sb.WriteString("(?, 'sensor', ?, NULL, ?, ?, ?, 2, 'skipped', 'WINDOW_MISSED')")
+			args = append(args, fmt.Sprintf("seed-tick-%s-%07d", source, done+i), source, ms, ms, ms)
+		}
+		if _, err := s.w.ExecContext(ctx, sb.String(), args...); err != nil {
+			return fmt.Errorf("seed %d skipped ticks for %s: %w", n, source, err)
+		}
+		done += n
+	}
+	return nil
+}
+
+// CountRows returns the row count of one of the tables retention touches.
+// The retention tests assert on it before and after a pass.
+func (s *Store) CountRows(ctx context.Context, table string) (int64, error) {
+	switch table {
+	case "runs", "steps", "step_deps", "run_events", "artifacts", "ticks",
+		"triggers", "run_keys", "daemon_sessions":
+	default:
+		return 0, fmt.Errorf("count rows: table %q is not one retention is allowed to look at", table)
+	}
+	var n int64
+	if err := s.w.QueryRowContext(ctx, "SELECT count(*) FROM "+table).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count %s: %w", table, err)
+	}
+	return n, nil
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/a-holm/paceq/internal/engine"
+	"github.com/a-holm/paceq/internal/janitor"
 	"github.com/a-holm/paceq/internal/store"
 )
 
@@ -129,6 +130,15 @@ type Config struct {
 	// an optimisation and never a dependency.
 	DisableNotifyBus bool
 
+	// Policies carries the retention configuration keys (issue #36). Zero
+	// fields fall back to the shipped defaults, so a config that says
+	// nothing keeps the documented horizons.
+	Policies store.Policies
+
+	// NightlyHour is the local hour the maintenance cycle aims for. Zero
+	// means 03:00 (07 section 6.5). Tests move it to make a slot due.
+	NightlyHour int
+
 	// Signals carries copies of the process signals. When set, the daemon
 	// watches it for the second stop request: two signals mean the operator
 	// insists, and every process group gets SIGKILL before ExitHardStop. Nil
@@ -211,6 +221,15 @@ func (c Config) reconcileEvery() time.Duration {
 // killGrace returns the SIGTERM to SIGKILL gap used for sensor subprocess
 // groups. Zero means the runner default, which the evaluator resolves.
 func (c Config) killGrace() time.Duration { return c.KillGrace }
+
+// nightlyHour resolves the local hour the maintenance cycle aims for
+// (07 section 6.5 names 03:00). Zero means the shipped default.
+func (c Config) nightlyHour() int {
+	if c.NightlyHour > 0 {
+		return c.NightlyHour
+	}
+	return janitor.NightlyHourDefault
+}
 
 // sensorMaxParallel resolves the sensor concurrency cap.
 func (c Config) sensorMaxParallel() int {

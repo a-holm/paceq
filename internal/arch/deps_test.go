@@ -35,16 +35,17 @@ var allowedImports = map[string][]string{
 	"store":     {"model", "spec", "clock", "id", "reason", "faults"},
 	"scheduler": {"store", "clock", "cronx", "reason"},
 	"leases":    {"store", "clock", "reason"},
+	"janitor":   {"store", "clock"},
 	"engine":    {"model", "spec", "store", "runner", "clock", "id", "notify", "logsink", "reason", "retry", "faults"},
 	// daemon composes the /metrics surface (#40): it wires the store's
 	// counters into the obs collector and stamps it with the build
 	// identity, so both imports are deliberate, not drift.
-	"daemon":           {"model", "store", "runner", "clock", "notify", "logsink", "reason", "faults", "engine", "leases", "scheduler", "sensor", "reconcile", "obs/sdnotify", "obs", "buildinfo"},
+	"daemon":           {"model", "store", "runner", "clock", "notify", "logsink", "reason", "faults", "engine", "leases", "scheduler", "sensor", "reconcile", "obs/sdnotify", "obs", "buildinfo", "janitor"},
 	"reconcile":        {"store", "clock", "cronx", "reason", "faults"},
-	"doctor":           {"store"},
+	"doctor":           {"store", "clock"},
 	"explain":          {"store", "reason", "clock", "id"},
 	"status":           {"store", "clock"},
-	"cli":              {"engine", "daemon", "store", "doctor", "explain", "status", "spec", "diag", "obs", "model", "clock", "id", "reason", "logsink", "cronx", "sensor", "buildinfo", "importer/crontab"},
+	"cli":              {"engine", "daemon", "store", "doctor", "explain", "status", "spec", "diag", "obs", "model", "clock", "id", "reason", "logsink", "cronx", "sensor", "buildinfo", "importer/crontab", "janitor"},
 	"importer/crontab": {"spec", "cronx"},
 	"testutil":         {"model", "clock", "id", "store"},
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/a-holm/paceq/internal/clock"
 	"github.com/a-holm/paceq/internal/engine"
 	"github.com/a-holm/paceq/internal/faults"
+	"github.com/a-holm/paceq/internal/janitor"
 	"github.com/a-holm/paceq/internal/leases"
 	"github.com/a-holm/paceq/internal/logsink"
 	"github.com/a-holm/paceq/internal/notify"
@@ -217,8 +218,21 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 				})
 		})
 	})
+	// Maintenance (#36) runs under its own fenced role lease: two daemons
+	// against one database must never retain at the same time, and a slow
+	// backup or a long drain of batches must never block leadership loss.
+	// The loop wakes on the tick but only cycles when the nightly slot is
+	// owed and nobody else holds the lease.
+	maint := janitor.New(janitor.Config{
+		Store:     st,
+		Clock:     clk,
+		LogRoot:   filepath.Join(cfg.StateDir, "logs"),
+		BackupDir: filepath.Join(cfg.StateDir, "backups"),
+		Policies:  cfg.Policies,
+		Log:       log,
+	})
 	launch(grp.ctx, nil, func(c context.Context) error {
-		return janitorLoop(c, d, tickEvery)
+		return maintenanceLoop(c, d, tickEvery, st, maint, cfg.nightlyHour(), cfg.owner())
 	})
 	// The collector is built from the store's read pool and the same
 	// counters the store writes into: two sources, one document (#40).
