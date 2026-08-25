@@ -135,3 +135,21 @@ jobs:
 
       - name: cross build and assert cgo free
         run: scripts/cross-build.sh "${{ matrix.goos }}" "${{ matrix.goarch }}"
+
+  # Issue #43: the release configuration is executed on every pull request,
+  # because a broken .goreleaser.yaml must be caught before anyone tags, not
+  # after. Snapshot mode runs every build, archive and checksum rule and
+  # publishes nothing.
+  release-config:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.26.x
+          # First run compiles the pinned GoReleaser through `go run`; later
+          # runs come out of the build cache, like the other pinned tools.
+          cache-dependency-path: go.mod
+
+      - name: goreleaser snapshot builds and packages without publishing
+        run: make release-snapshot
