@@ -24,8 +24,9 @@ type explainFlags struct {
 }
 
 func newExplainCmd(env Env, g *globals) *cobra.Command {
+	f := &explainFlags{}
 	cmd := &cobra.Command{
-		Use:   "explain",
+		Use:   "explain [job|schedule|sensor|run] <ref>",
 		Short: "Explain what a job, schedule, sensor or run did, and why nothing happened",
 		Long: `Answer "why did nothing happen" from what was actually decided.
 
@@ -44,27 +45,37 @@ References follow one shape:
 A bare name resolves heuristically; when a name could mean two things, the
 refusal says exactly which forms to type.
 
+A bare reference works too - paceq explain nightly - and is resolved
+heuristically; when a name could mean two things the refusal lists every
+reading.
+
 explain reads the state database directly, so it answers with the daemon
 stopped. The window is set with --since (a duration such as 48h or 10m).`,
 	}
+	cmd.PersistentFlags().StringVar(&f.since, "since", "",
+		"how far back to look (a duration: 48h, 10m; default 48h)")
+	cmd.RunE = runArgsE(env, g, func(ctx context.Context, out *ui, args []string) error {
+		if len(args) != 1 {
+			return usageError(fmt.Sprintf("explain takes one bare reference, got %d arguments", len(args)),
+				"paceq explain job|schedule|sensor|run <ref>  names the subject kind")
+		}
+		return runExplain(ctx, env, g, out, "", args[0], *f)
+	})
 	for _, noun := range []string{"job", "schedule", "sensor", "run"} {
-		cmd.AddCommand(newExplainNounCmd(env, g, noun))
+		cmd.AddCommand(newExplainNounCmd(env, g, noun, f))
 	}
 	return cmd
 }
 
-func newExplainNounCmd(env Env, g *globals, noun string) *cobra.Command {
-	var f explainFlags
+func newExplainNounCmd(env Env, g *globals, noun string, f *explainFlags) *cobra.Command {
 	sub := &cobra.Command{
 		Use:   noun + " <ref>",
 		Short: explainShortFor(noun),
 		Args:  exactArgs(1, "one reference such as "+noun+"/<name>"),
 		RunE: runArgsE(env, g, func(ctx context.Context, out *ui, args []string) error {
-			return runExplain(ctx, env, g, out, noun, args[0], f)
+			return runExplain(ctx, env, g, out, noun, args[0], *f)
 		}),
 	}
-	sub.Flags().StringVar(&f.since, "since", "",
-		"how far back to look (a duration: 48h, 10m; default 48h)")
 	return sub
 }
 
@@ -144,6 +155,9 @@ func runExplain(ctx context.Context, env Env, g *globals, out *ui, noun, ref str
 // because a command named one thing but asking for another is a typo, not a
 // question about data.
 func refKindMismatch(noun, ref string) string {
+	if noun == "" {
+		return "" // the bare form accepts every reference spelling
+	}
 	prefix, _, found := strings.Cut(ref, "/")
 	if !found {
 		return ""

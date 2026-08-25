@@ -22,6 +22,18 @@ cp stdout actual_job.json
 maskfile actual_job.json
 cmpjson actual_job.json expected_job.json
 
+# The schedule subject answers from the same one model.
+exec paceq explain schedule nightly-report.nightly -o json
+cp stdout actual_sched.json
+maskfile actual_sched.json
+cmpjson actual_sched.json expected_sched.json
+exec paceq explain schedule nightly-report/nightly --since 1h -o text
+stdout 'schedule nightly-report.nightly'
+
+# A bare unique schedule name resolves without the namespace.
+exec paceq explain nightly --since 1h -o text
+stdout 'schedule nightly-report.nightly'
+
 # The daemon-down marker is a warning on stderr; stdout stays clean for pipes.
 wantexit 0 dd_out.txt dd_err.txt explain job nightly-report --since 1h -o text
 grep 'daemon down' dd_err.txt
@@ -35,6 +47,16 @@ wantexit 3 missing_out.txt missing_err.txt explain job job/no-such-job
 grep 'no job named' missing_err.txt
 wantexit 3 bare_out.txt bare_err.txt explain job no-such-thing
 grep 'nothing named' bare_err.txt
+
+# When everything is fine the report still answers (09 US-16): a real run at
+# a later instant gives the summary a success, an outcome and a duration.
+# It runs under a moved clock so the new run unambiguously sorts newest; the
+# frozen clock makes every delta in the report a constant.
+env PULSEQ_FAKE_CLOCK=2026-09-24T12:00:00Z
+wantexit 0 us16_out.txt us16_err.txt run nightly-report
+exec paceq explain job nightly-report --since 96h -o text
+stdout 'last succeeded 2026-09-24 12:00'
+stdout 'last outcome succeeded'
 
 -- expected_job.txt --
 job nightly-report
@@ -192,6 +214,142 @@ summary: never succeeded, last outcome queued, next 2026-09-24 10:00 (1h00m from
     "job": "nightly-report",
     "kind": "job",
     "ref": "nightly-report"
+  },
+  "summary": {
+    "active_runs": 1,
+    "freshness_state": "unknown",
+    "last_outcome": "queued",
+    "max_concurrent": 4,
+    "next_tick_at_ms": 1790244000000,
+    "paused": false
+  }
+}
+
+-- expected_sched.json --
+{
+  "daemon_up": false,
+  "entries": [
+    {
+      "actor": "scheduler",
+      "at_ms": 1790208360000,
+      "hints": [
+        "treat these rows as outage evidence, not as measurements",
+        "compare them against the daemon session rows covering the same period"
+      ],
+      "kind": "tick",
+      "outcome": "missed",
+      "reason_code": "TICK_MISSED_DAEMON_DOWN",
+      "reason_data": {
+        "outage_id": 1,
+        "scheduled_for": "2026-09-24T00:06:00Z"
+      },
+      "reason_text": "no daemon was running (gap detection)",
+      "ref": "<RUN1>",
+      "repeat_count": 1
+    },
+    {
+      "actor": "scheduler",
+      "at_ms": 1790208180000,
+      "hints": [
+        "treat these rows as outage evidence, not as measurements",
+        "compare them against the daemon session rows covering the same period"
+      ],
+      "kind": "tick",
+      "outcome": "missed",
+      "reason_code": "TICK_MISSED_DAEMON_DOWN",
+      "reason_data": {
+        "outage_id": 1,
+        "scheduled_for": "2026-09-24T00:03:00Z"
+      },
+      "reason_text": "no daemon was running (gap detection)",
+      "ref": "<RUN2>",
+      "repeat_count": 1
+    },
+    {
+      "actor": "daemon",
+      "at_ms": 1790208000000,
+      "duration_ms": 540000,
+      "hints": [
+        "treat these rows as outage evidence, not as measurements",
+        "compare them against the daemon session rows covering the same period"
+      ],
+      "kind": "outage",
+      "outcome": "missed",
+      "reason_code": "TICK_MISSED_DAEMON_DOWN",
+      "reason_data": {
+        "detected_at": "2026-09-24T09:00:00Z",
+        "missed_ticks": 2,
+        "outage_kind": "crash",
+        "to_ms": 1790208540000
+      },
+      "reason_text": "the daemon was down for 9m00s",
+      "ref": "1"
+    },
+    {
+      "actor": "scheduler",
+      "at_ms": 1790157660000,
+      "children": [
+        {
+          "actor": "scheduler",
+          "at_ms": 1790240400000,
+          "children": [
+            {
+              "actor": "scheduler",
+              "at_ms": 1790240400000,
+              "kind": "run",
+              "outcome": "queued",
+              "ref": "<RUN5>"
+            }
+          ],
+          "hints": [
+            "nothing to fix; follow the run id on the trigger row",
+            "dedup keys stay until retention clears them, so a deliberate rerun needs a new key or a bumped epoch"
+          ],
+          "kind": "trigger",
+          "outcome": "accepted",
+          "reason_code": "TRIGGER_ACCEPTED",
+          "reason_data": {
+            "run_key": "key-0"
+          },
+          "reason_text": "became a run",
+          "ref": "<RUN4>"
+        }
+      ],
+      "kind": "tick",
+      "outcome": "triggered",
+      "reason_data": {
+        "scheduled_for": "2026-09-23T10:01:00Z",
+        "trigger_count": 1
+      },
+      "ref": "<RUN3>",
+      "repeat_count": 1
+    },
+    {
+      "actor": "scheduler",
+      "at_ms": 1790154060000,
+      "hints": [
+        "resume the source when it should fire again",
+        "a pause survives restarts, so a pause nobody remembers is the first suspect for a silent job"
+      ],
+      "kind": "tick",
+      "outcome": "skipped",
+      "reason_code": "TICK_SKIPPED_PAUSED",
+      "reason_data": {
+        "scheduled_for": "2026-09-23T09:01:00Z"
+      },
+      "reason_text": "recorded by the explain fixture",
+      "ref": "<RUN6>",
+      "repeat_count": 12
+    }
+  ],
+  "generated_at_ms": 1790240400000,
+  "schema_version": 1,
+  "since_ms": 1790067600000,
+  "subject": {
+    "job": "nightly-report",
+    "kind": "schedule",
+    "ref": "nightly-report.nightly",
+    "schedule": "nightly"
   },
   "summary": {
     "active_runs": 1,
