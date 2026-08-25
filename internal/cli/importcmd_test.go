@@ -320,3 +320,35 @@ func TestImportStdinSplitSurvivesToYaml(t *testing.T) {
 		t.Errorf("stdin payload lost:\n%s", res.stdout)
 	}
 }
+
+// TestImportFiveMinuteStory is the full walk a new user takes: one job in,
+// validated, applied, visible. A single job imports straight into a file
+// every later command accepts.
+func TestImportFiveMinuteStory(t *testing.T) {
+	dir := t.TempDir()
+	if res := runCLI(t, dir, nil, "init"); res.code != 0 {
+		t.Fatalf("init failed: %s", res.stderr)
+	}
+	src := filepath.Join(dir, "c.crontab")
+	if err := os.WriteFile(src, []byte("0 6 * * 1 /usr/local/bin/weekly-report\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "imported.yaml")
+
+	res := runCLI(t, dir, nil, "import", "crontab", "--file", src, "-o", target)
+	if res.code != 0 {
+		t.Fatalf("import failed: %s", res.stderr)
+	}
+	if res := runCLI(t, dir, nil, "validate", target); res.code != 0 {
+		t.Fatalf("validate refused the imported file:\n%s%s", res.stdout, res.stderr)
+	}
+	if res := runCLI(t, dir, nil, "apply", target); res.code != 0 {
+		t.Fatalf("apply refused the imported file:\n%s%s", res.stdout, res.stderr)
+	}
+	// status reads the store back; ls only lists once a schedule has fired,
+	// so the story ends with the job visible where the operator looks.
+	res = runCLI(t, dir, nil, "status")
+	if res.code != 0 || !strings.Contains(res.stdout, "weekly-report") {
+		t.Fatalf("the imported job is not in the catalog:\n%s\nstderr:%s", res.stdout, res.stderr)
+	}
+}
