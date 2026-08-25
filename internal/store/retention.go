@@ -48,11 +48,6 @@ import (
 // size is only the mechanism.
 const PruneBatchLimit = 200
 
-// pruneResult carries what one batch deleted.
-type pruneResult struct {
-	Deleted int64
-}
-
 // runPruneBatch executes one bounded DELETE inside its own BEGIN IMMEDIATE
 // transaction and reports how many rows went away. It exists so the fault
 // point sits in exactly one place, between the statement and the commit of
