@@ -1,0 +1,11 @@
+# Chaos regression seeds (issue #20, AC-11).
+#
+# One integer seed per line; blank lines and # comments are ignored. A seed
+# is checked in only after a sweep failed with it and the failure was
+# diagnosed: each row is a product bug's fingerprint that the nightly's
+# TestChaosRegressions replays at smoke size until the fix retires it.
+#
+# To reproduce a full-size failure before diagnosing it:
+#   PACEQ_CHAOS_SEED=<seed> go test -tags chaos -count=1 ./test/chaos
+#
+# <seed>  [free text: what it found and where the fix landed]

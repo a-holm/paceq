@@ -208,14 +208,18 @@ VALUES (?, ?, ?, 'manual', 'queued', 0, ?, 1, 1)`,
 }
 
 // InjectDoubleCompletedRunKey plants the exact row invariant AC-4 of issue
-// 20 exists for: two succeeded runs sharing one dedup key. The existing
-// duplicate key injection leaves the twin queued, which is a different
-// finding; this one completes both, so only a check that counts COMPLETED
-// runs per key can see it. It returns the shared key.
+// 20 exists for: two completed runs sharing one dedup key. No live path can
+// produce this shape any more - serve refuses to start while one run_key
+// names more than one run (I3 at startup), and a key's second run cannot
+// complete behind the first - which is precisely why the state may only
+// arise from a partial or unfenced write, and why the battery must prove
+// the checker sees it. The injection twins the oldest existing run under
+// one planted key: both rows carry a real job version, real frozen steps
+// and real edges, and the base keeps whatever history execution gave it.
+// It returns the shared key.
 func (s *Store) InjectDoubleCompletedRunKey(ctx context.Context) (string, error) {
 	var key string
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
-		key = "planted-double-completed-run-key"
 		now := s.clk.Now().UTC().UnixMilli()
 		var (
 			baseID  string
@@ -226,66 +230,63 @@ func (s *Store) InjectDoubleCompletedRunKey(ctx context.Context) (string, error)
 ORDER BY created_at LIMIT 1`).Scan(&baseID, &job, &version); err != nil {
 			return fmt.Errorf("inject a double completed run key: %w", err)
 		}
-		stepsOf := func(runID string) error {
-			rows, err := tx.Query(`SELECT name, idx, max_attempts FROM steps WHERE run_id = ?`, baseID)
-			if err != nil {
-				return err
-			}
-			defer func() { _ = rows.Close() }()
-			type seedStep struct {
-				name    string
-				idx     int
-				attempt int
-			}
-			var seeds []seedStep
-			for rows.Next() {
-				var st seedStep
-				if err := rows.Scan(&st.name, &st.idx, &st.attempt); err != nil {
-					_ = rows.Close()
-					return err
-				}
-				seeds = append(seeds, st)
-			}
-			if err := rows.Err(); err != nil {
+		// The twin copies the base's frozen shape, because that is what a
+		// real materialisation writes for a second run of one version.
+		type seedStep struct {
+			name    string
+			idx     int
+			attempt int
+		}
+		var seeds []seedStep
+		rows, err := tx.Query(`SELECT name, idx, max_attempts FROM steps WHERE run_id = ?`, baseID)
+		if err != nil {
+			return fmt.Errorf("inject a double completed run key: %w", err)
+		}
+		for rows.Next() {
+			var st seedStep
+			if err := rows.Scan(&st.name, &st.idx, &st.attempt); err != nil {
 				_ = rows.Close()
 				return err
 			}
-			if err := rows.Close(); err != nil {
-				return err
-			}
-			for _, st := range seeds {
-				if _, err := tx.Exec(`INSERT INTO steps (run_id, name, idx, state,
-max_attempts, attempt, reason_code, started_at, finished_at)
-VALUES (?, ?, ?, 'succeeded', ?, 1, 'STEP_SUCCEEDED', ?, ?)`,
-					runID, st.name, st.idx, st.attempt, now, now); err != nil {
-					return err
-				}
-			}
-			return nil
+			seeds = append(seeds, st)
 		}
-		for _, runID := range []string{baseID, baseID + "-twin"} {
-			// nolint:fencing: fault injection for the harness battery's
-			// negative proof, not engine state: the planted twins must
-			// exist unfenced so the checker can name them.
-			if _, err := tx.Exec(`UPDATE runs SET
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+
+		key = "planted-double-completed-run-key"
+		twin := baseID + "-double"
+		// nolint:fencing: fault injection for the harness battery's
+		// negative proof, not engine state: the planted pair must exist
+		// unfenced so the checker can name it.
+		if _, err := tx.Exec(`UPDATE runs SET
 state = 'succeeded', reason_code = 'RUN_SUCCEEDED',
 started_at = ?, finished_at = ?, run_key = ?
-WHERE id = ?`, now, now, key, runID); err != nil {
-				return fmt.Errorf("inject a double completed run key: %w", err)
-			}
-			if runID == baseID+"-twin" {
-				continue // completed below from its own step rows
-			}
-			if _, err := tx.Exec(`INSERT INTO runs (id, job_name, job_version_id, origin,
+WHERE id = ?`, now, now, key, baseID); err != nil {
+			return fmt.Errorf("inject a double completed run key: %w", err)
+		}
+		if _, err := tx.Exec(`INSERT INTO runs (id, job_name, job_version_id, origin,
 state, available_at, run_key, created_at, updated_at, started_at, finished_at,
 reason_code)
 VALUES (?, ?, ?, 'manual', 'succeeded', 0, ?, 1, 1, ?, ?, 'RUN_SUCCEEDED')`,
-				runID, job, version, key, now, now); err != nil {
+			twin, job, version, key, now, now); err != nil {
+			return fmt.Errorf("inject a double completed run key: %w", err)
+		}
+		for _, st := range seeds {
+			if _, err := tx.Exec(`INSERT INTO steps (run_id, name, idx, state,
+max_attempts, attempt, reason_code, started_at, finished_at)
+VALUES (?, ?, ?, 'succeeded', ?, 1, 'STEP_SUCCEEDED', ?, ?)`,
+				twin, st.name, st.idx, st.attempt, now, now); err != nil {
 				return fmt.Errorf("inject a double completed run key: %w", err)
 			}
-			if err := stepsOf(runID); err != nil {
-				return fmt.Errorf("inject a double completed run key: %w", err)
-			}
+		}
+		if _, err := tx.Exec(`INSERT INTO step_deps (run_id, step_name, depends_on)
+SELECT ?, step_name, depends_on FROM step_deps WHERE run_id = ?`, twin, baseID); err != nil {
+			return fmt.Errorf("inject a double completed run key: %w", err)
 		}
 		return nil
 	})
