@@ -1,0 +1,2 @@
+# temperature logging for the basement
+*/10 * * * * /home/me/bin/read-temp.sh % /var/lib/templog/baseline

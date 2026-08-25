@@ -1,0 +1,2 @@
+# mysql reporting replica checks
+*/30 * * * * mysql -h replica -e 'SHOW SLAVE STATUS\G' % grep -c Seconds_Behind

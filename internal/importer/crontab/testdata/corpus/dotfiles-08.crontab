@@ -1,0 +1,3 @@
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin
+# sync notes to the laptop when it is on the home network
+*/30 * * * * flock -n -w 60 /tmp/syncthings.lock syncthing -no-browser

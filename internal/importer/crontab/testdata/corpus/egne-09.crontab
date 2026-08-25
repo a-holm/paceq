@@ -1,0 +1,2 @@
+# comic pipeline: render overnight batches
+30 23 * * * cd /mnt/lager/comic && ./render-overnight.sh >> render.log 2>&1

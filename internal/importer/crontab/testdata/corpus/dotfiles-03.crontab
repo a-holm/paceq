@@ -1,0 +1,4 @@
+CRON_TZ=Europe/Oslo
+# work hours only
+0 8-16 * * 1-5 /usr/local/bin/slack-status-work
+0 17 * * 1-5 /usr/local/bin/slack-status-off

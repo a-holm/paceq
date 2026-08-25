@@ -1,0 +1,4 @@
+SHELL=/bin/sh
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+# extra disk sweep next to logrotate's own schedule
+15 4 * * * root /usr/local/bin/root-check-disk-space || true

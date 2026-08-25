@@ -1,0 +1,5 @@
+MAILTO=alerts@example.com
+CRON_TZ=UTC
+# run everything in UTC so logs line up across machines
+0 * * * * /usr/local/bin/poll-metrics.sh
+*/20 * * * * /usr/local/bin/watchdog.sh 2>&1 | logger -t watchdog

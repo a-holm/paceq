@@ -1,0 +1,6 @@
+CRON_TZ=Europe/Oslo
+MAILTO=johan@example.no
+PATH=/home/johan/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+
+# paceq campaign board refresh
+*/10 * * * * flock -n /tmp/board-refresh.lock paceq-board-refresh

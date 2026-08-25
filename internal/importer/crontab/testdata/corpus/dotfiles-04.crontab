@@ -1,0 +1,3 @@
+# fetch mail and news
+*/15 * * * * flock -n /var/lock/fetchmail.lock /usr/bin/fetchmail -s
+5,35 * * * * /usr/bin/newsboat -x reload > /dev/null

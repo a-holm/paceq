@@ -96,6 +96,7 @@ FUZZTIME ?= 60s
 fuzz:
 	$(GO) test ./internal/spec -run '^$$' -fuzz 'FuzzParseJobSpec' -fuzztime $(FUZZTIME) -count=1
 	$(GO) test ./internal/cronx -run '^$$' -fuzz 'FuzzCronParse' -fuzztime $(FUZZTIME) -count=1
+	$(GO) test ./internal/importer/crontab -run '^$$' -fuzz 'FuzzCrontabParse' -fuzztime $(FUZZTIME) -count=1
 
 # Detailed numbers behind the gate, including what synchronous=FULL costs.
 # Not part of ci: a benchmark on a shared runner measures the runner.

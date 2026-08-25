@@ -1,0 +1,4 @@
+MAILTO=ops@example.com
+# database maintenance, role db-common
+30 1 * * * postgres /usr/local/bin/pg-backup.sh >> /var/log/pg-backup.log 2>&1
+0 3 * * 1 postgres /usr/local/bin/pg-vacuum.sh
