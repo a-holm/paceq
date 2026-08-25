@@ -238,6 +238,31 @@ func (s *Store) ExplainTicks(ctx context.Context, sources []ExplainSource, since
 	return out, nil
 }
 
+// explainTickByIDSQL reads one tick by its whole id.
+const explainTickByIDSQL = `SELECT ` + explainTickColumns + `
+FROM ticks t WHERE t.id = ?`
+
+// ExplainTickByID reads one recorded evaluation by its whole id: the provenance
+// line of a run report (which tick fired the trigger that queued this run).
+func (s *Store) ExplainTickByID(ctx context.Context, tickID string) (ExplainTick, bool, error) {
+	rows, err := s.r.QueryContext(ctx, explainTickByIDSQL, tickID)
+	if err != nil {
+		return ExplainTick{}, false, fmt.Errorf("read tick %s: %w", tickID, err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		tick, err := scanExplainTick(rows.Scan)
+		if err != nil {
+			return ExplainTick{}, false, fmt.Errorf("scan tick %s: %w", tickID, err)
+		}
+		return tick, true, nil
+	}
+	if err := rows.Err(); err != nil {
+		return ExplainTick{}, false, fmt.Errorf("read tick %s: %w", tickID, err)
+	}
+	return ExplainTick{}, false, nil
+}
+
 // ExplainRunsByPrefix resolves a run id prefix the way git resolves an object:
 // ids are ULIDs, so the prefix is a range scan on the primary key. Every match
 // is returned up to limit, so the caller can name the whole candidate list
@@ -373,6 +398,73 @@ func collectTriggers(rows *sql.Rows, into map[string][]ExplainTrigger) error {
 	return rows.Err()
 }
 
+// ExplainRun is one run as a timeline child needs it: identity, outcome,
+// timing, and the trigger that caused it.
+type ExplainRun struct {
+	ID          string
+	JobName     string
+	Origin      string
+	State       string
+	ReasonCode  string
+	ReasonText  string
+	TriggerID   string
+	CreatedAt   time.Time
+	StartedAt   time.Time
+	FinishedAt  time.Time
+	DeferReason string
+}
+
+// explainRunsByJobSQL walks one job's runs newest first. The trigger id rides
+// along so the report builder can join triggers to their runs in memory
+// instead of asking the database for a direction it has no index for.
+func explainRunsByJobSQL() string {
+	return `SELECT r.id, r.job_name, r.origin, r.state,
+COALESCE(r.reason_code, ''), COALESCE(r.reason_text, ''),
+COALESCE(r.trigger_id, ''), r.created_at, r.started_at, r.finished_at,
+COALESCE(r.defer_reason, '')
+FROM runs r WHERE r.job_name = ? AND (? = '' OR r.id < ?)
+ORDER BY r.id DESC LIMIT ?`
+}
+
+// ExplainRunsByJob reads one page of a job's runs, newest first, strictly
+// older than before. The plan searches idx_runs_history; there is no OFFSET.
+func (s *Store) ExplainRunsByJob(ctx context.Context, jobName, before string, limit int) ([]ExplainRun, error) {
+	if limit <= 0 {
+		limit = ExplainPageSize
+	}
+	rows, err := s.r.QueryContext(ctx, explainRunsByJobSQL(), jobName, before, before, limit)
+	if err != nil {
+		return nil, fmt.Errorf("read the runs of job %s: %w", jobName, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := make([]ExplainRun, 0, limit)
+	for rows.Next() {
+		var (
+			r                 ExplainRun
+			created           int64
+			started, finished sqlNullInt64
+		)
+		if err := rows.Scan(&r.ID, &r.JobName, &r.Origin, &r.State, &r.ReasonCode,
+			&r.ReasonText, &r.TriggerID, &created, &started, &finished,
+			&r.DeferReason); err != nil {
+			return nil, fmt.Errorf("scan a run of job %s: %w", jobName, err)
+		}
+		r.CreatedAt = time.UnixMilli(created).UTC()
+		if started.valid {
+			r.StartedAt = time.UnixMilli(started.value).UTC()
+		}
+		if finished.valid {
+			r.FinishedAt = time.UnixMilli(finished.value).UTC()
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the runs of job %s: %w", jobName, err)
+	}
+	return out, nil
+}
+
 // chunksOf splits ids into batches of at most size.
 func chunksOf(ids []string, size int) [][]string {
 	if len(ids) == 0 {
@@ -482,14 +574,14 @@ WHERE job_name = ? AND state IN ('queued', 'running')`, jobName).Scan(&n)
 // ExplainNextScheduleTick reads when a job's schedules next come due (the
 // earliest unpaused next_tick_at), or nothing when none is scheduled.
 func (s *Store) ExplainNextScheduleTick(ctx context.Context, jobName string) (time.Time, bool, error) {
-	var next int64
+	var next sql.NullInt64
 	err := s.r.QueryRowContext(ctx, `SELECT MIN(next_tick_at) FROM schedules
 WHERE job_name = ? AND paused = 0`, jobName).Scan(&next)
-	if errors.Is(err, sql.ErrNoRows) || (err == nil && next == 0) {
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && !next.Valid) {
 		return time.Time{}, false, nil
 	}
 	if err != nil {
 		return time.Time{}, false, fmt.Errorf("read the next tick of job %s: %w", jobName, err)
 	}
-	return time.UnixMilli(next).UTC(), true, nil
+	return time.UnixMilli(next.Int64).UTC(), true, nil
 }

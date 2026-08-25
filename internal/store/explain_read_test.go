@@ -65,6 +65,7 @@ func TestExplainQueryPlansSearchNotScan(t *testing.T) {
 		{"run prefix", explainRunsPrefixSQL, []any{"01J000000000000000000000000", "01J100000000000000000000000", 10}, "runs"},
 		{"newest run", explainNewestRunSQL(false), []any{"nightly"}, "runs"},
 		{"newest success", explainNewestRunSQL(true), []any{"nightly", "succeeded"}, "runs"},
+		{"runs by job", explainRunsByJobSQL(), []any{"nightly", "", "", 50}, "runs"},
 		{"run events", explainRunEventsSQL, []any{"01J000000000000000000000000"}, "run_events"},
 	}
 
@@ -382,6 +383,43 @@ func TestExplainOutagesSinceWindow(t *testing.T) {
 	}
 	if d := got[0].To.Sub(got[0].From); d != 9*time.Minute {
 		t.Errorf("the outage's span is %s, want 9m", d)
+	}
+}
+
+// TestScheduleReadsCarryEveryScannedColumn pins the projection contract the
+// schedule reads broke once (overlap was added to scanTargets but not to the
+// SELECTs, so every read died on its first row): a seeded row must come back
+// whole through both the single lookup and the listing.
+func TestScheduleReadsCarryEveryScannedColumn(t *testing.T) {
+	ctx := context.Background()
+	s := migratedStore(t)
+	seedScheduleJob(t, s)
+
+	seeded := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	in := ScheduleInput{
+		JobName: "nightly", Name: "due-late", Kind: "cron", Expr: "*/5 * * * *",
+		Timezone: "UTC", Overlap: "queue", NextTickAt: seeded,
+	}
+	row, err := s.UpsertSchedule(ctx, in)
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	got, err := s.GetSchedule(ctx, "nightly", "due-late")
+	if err != nil {
+		t.Fatalf("GetSchedule: %v", err)
+	}
+	if got.Overlap != "queue" || got.Name != "due-late" || !got.NextTickAt.Equal(seeded) {
+		t.Errorf("the single read lost columns: overlap=%q name=%q next=%s", got.Overlap, got.Name, got.NextTickAt)
+	}
+	_ = row
+
+	all, err := s.ListAllSchedules(ctx)
+	if err != nil {
+		t.Fatalf("ListAllSchedules: %v", err)
+	}
+	if len(all) != 1 || all[0].Overlap != "queue" {
+		t.Errorf("the listing lost columns: %+v", all)
 	}
 }
 

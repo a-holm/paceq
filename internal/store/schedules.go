@@ -806,9 +806,11 @@ func (r *ScheduleRow) finalize() {
 }
 
 // listAllSchedulesSQL returns every schedule, active first, then paused.
+// The column list matches scanTargets exactly, overlap included: a column
+// missing here is a Scan error on the first row, not a zero value.
 const listAllSchedulesSQL = `SELECT id, job_name, name, kind, expr, timezone,
        spring_forward, fall_back, catchup, catchup_limit, catchup_window_ms,
-       paused, last_tick_at, next_tick_at, created_at, updated_at
+       overlap, paused, last_tick_at, next_tick_at, created_at, updated_at
   FROM schedules
  ORDER BY paused ASC, job_name ASC, name ASC`
 
@@ -836,10 +838,11 @@ func (s *Store) ListAllSchedules(ctx context.Context) ([]ScheduleRow, error) {
 	return out, nil
 }
 
-// getScheduleSQL reads one schedule by its natural key.
+// getScheduleSQL reads one schedule by its natural key. The column list
+// matches scanTargets exactly, overlap included.
 const getScheduleSQL = `SELECT id, job_name, name, kind, expr, timezone,
        spring_forward, fall_back, catchup, catchup_limit, catchup_window_ms,
-       paused, last_tick_at, next_tick_at, created_at, updated_at
+       overlap, paused, last_tick_at, next_tick_at, created_at, updated_at
   FROM schedules
  WHERE job_name = ? AND name = ?`
 
