@@ -132,8 +132,8 @@ func runExportRun(ctx context.Context, env Env, g *globals, out *ui, f exportFla
 
 	files := map[string]string{}
 	// The archive destination is the operator's own -o flag: a chosen output
-	// path has no fixed root to be scoped under. #nosec G304
-	archive, err := os.Create(dst)
+	// path has no fixed root to be scoped under.
+	archive, err := os.Create(dst) // #nosec G304 - operator-selected destination
 	if err != nil {
 		return internalError(fmt.Sprintf("could not create %s", dst), err)
 	}
