@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/a-holm/paceq/internal/clock"
 	"github.com/a-holm/paceq/internal/store"
 )
 
@@ -47,6 +48,9 @@ type Options struct {
 	Status StatusReader
 	// Local is the time zone name to report. Empty means the process one.
 	Local string
+	// Clock answers what time it is. Nil means clock.System(). Backup age is
+	// measured against it, so a test can pin a report to a moment.
+	Clock clock.Clock
 }
 
 // Report is one doctor run.
@@ -112,7 +116,7 @@ func Run(ctx context.Context, dir string, opt Options) Report {
 		dbFinding, dbUsable := checkDatabaseFile(dbPath)
 		r.add(dbFinding)
 		if dbUsable {
-			r.Findings = append(r.Findings, inspect(ctx, dir, opt.Open)...)
+			r.Findings = append(r.Findings, inspect(ctx, dir, opt.Open, opt.clock())...)
 		} else if len(dbFinding.Next) > 0 {
 			r.add(skipped("the database was not read", dbFinding.Next))
 		}
@@ -138,8 +142,14 @@ func (o Options) withDefaults() Options {
 	if o.Local == "" {
 		o.Local = localZone()
 	}
+	if o.Clock == nil {
+		o.Clock = clock.System()
+	}
 	return o
 }
+
+// clock answers the report's time questions from the injected clock.
+func (o Options) clock() clock.Clock { return o.Clock }
 
 // openState is the production opener. The store takes the state lock first, so
 // a report that gets past it is reading a database nobody else is writing.
@@ -259,7 +269,7 @@ func skipped(reason string, next []string) Finding {
 // inspect opens the database and asks it the questions only it can answer. The
 // state lock decides whether that is possible at all, so the answer to "who
 // holds the lock" comes out of the same attempt.
-func inspect(ctx context.Context, dir string, open Opener) []Finding {
+func inspect(ctx context.Context, dir string, open Opener, clk clock.Clock) []Finding {
 	db, err := open(ctx, dir)
 	if err != nil {
 		var locked *store.LockedError
@@ -296,7 +306,7 @@ func inspect(ctx context.Context, dir string, open Opener) []Finding {
 		checkJournalMode(ctx, db),
 		checkSchemaVersion(ctx, db),
 		CheckAutoVacuum(ctx, db),
-		CheckBackup(ctx, db, time.Now),
+		CheckBackup(ctx, db, clk),
 	}
 }
 

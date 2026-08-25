@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/a-holm/paceq/internal/clock"
 	"github.com/a-holm/paceq/internal/store"
 )
 
@@ -31,7 +32,7 @@ func humanDuration(d time.Duration) string {
 // backup (issue #36). The finding also carries the one sentence that prevents
 // the most common self-inflicted disaster with SQLite: copying a live
 // database file with cp.
-func CheckBackup(ctx context.Context, db DB, now func() time.Time) Finding {
+func CheckBackup(ctx context.Context, db DB, clk clock.Clock) Finding {
 	info, err := db.BackupStatus(ctx)
 	if err != nil {
 		return Finding{
@@ -41,6 +42,7 @@ func CheckBackup(ctx context.Context, db DB, now func() time.Time) Finding {
 			Next:   []string{"check that this database was created by paceq init"},
 		}
 	}
+	now := clk.Now
 
 	if !info.HasBackup {
 		// An installation paceq init created has never had a daemon, so

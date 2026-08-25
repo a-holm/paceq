@@ -6,9 +6,22 @@ import (
 	"testing"
 	"time"
 
+	"github.com/a-holm/paceq/internal/clock"
 	"github.com/a-holm/paceq/internal/doctor"
 	"github.com/a-holm/paceq/internal/store"
 )
+
+// fixedClock answers Now with one planted moment, so age arithmetic in the
+// findings is exact.
+type fixedClock struct{ t time.Time }
+
+func (f fixedClock) Now() time.Time                       { return f.t }
+func (f fixedClock) Mark() clock.Mono                     { return clock.Mono{} }
+func (f fixedClock) Since(clock.Mono) time.Duration       { return 0 }
+func (f fixedClock) NewTimer(d time.Duration) *time.Timer { return time.NewTimer(d) }
+func (f fixedClock) NewTicker(d time.Duration) *time.Ticker {
+	return time.NewTicker(d)
+}
 
 // TestCheckBackupSpeaksForEveryBackupState walks the levels the backup field
 // can take: silence, failure, staleness and health each get their own
@@ -70,7 +83,7 @@ func TestCheckBackupSpeaksForEveryBackupState(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			db := healthy("state")
 			db.backup = tc.info
-			finding := doctor.CheckBackup(context.Background(), db, func() time.Time { return now })
+			finding := doctor.CheckBackup(context.Background(), db, fixedClock{t: now})
 
 			if finding.Level != tc.level {
 				t.Fatalf("level = %v, want %v (%s)", finding.Level, tc.level, finding.Detail)
