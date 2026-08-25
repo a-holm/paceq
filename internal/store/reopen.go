@@ -227,6 +227,11 @@ func (s *Store) ReopenTerminalRunByOperator(ctx context.Context, runID string, a
 	if err != nil {
 		return ReopenResult{}, err
 	}
+	// The crash window right after the reopen committed: the run is
+	// queued under its new token and every reopened step is pending, so
+	// a restart here must simply claim and carry on - no second reopen is
+	// owed and none may happen (#20).
+	faults.Point("M4:reopen:after_commit")
 	return out, nil
 }
 

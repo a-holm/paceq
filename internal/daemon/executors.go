@@ -30,6 +30,18 @@ type executorPool struct {
 	// for exactly this wake. The ticker covers it if the wake never comes,
 	// which makes this an optimisation like every other use of the bus.
 	afterRun func()
+
+	// driving holds the run ids with an execution in flight. The dispatcher
+	// reads the queue again on every tick and every wake, and a claim takes
+	// several store calls, so one id can easily come back before its first
+	// claim has landed. A second submission would put two executors on one
+	// run, and the loser's handback would find the winner's live token in
+	// the keeper's map - owner and epoch both true - and drain a run that
+	// was mid-step. That is the fence-out that requeues live work and lets
+	// an effect run past its crash bound, so the pool refuses to ever have
+	// two executions of one run id inside it.
+	mu      sync.Mutex
+	driving map[string]bool
 }
 
 // runDriver is what the pool needs of the engine. The interface keeps the
@@ -60,19 +72,38 @@ func newExecutorPool(eng runDriver, drain leaseDrainer, log *slog.Logger, worker
 	}
 }
 
-// submit starts one run if a slot is free. It reports false when the pool is
-// full, and the dispatcher simply waits for its next wake; a queued run loses
-// nothing by waiting.
+// submit starts one run if a slot is free and no execution of it is already
+// in flight. It reports false only when the pool is full, and the dispatcher
+// simply waits for its next wake; a queued run loses nothing by waiting. A run
+// already being driven answers true: the dispatcher is done talking either
+// way, and starting a second executor for it would be the overlap bug.
 func (p *executorPool) submit(ctx context.Context, runID string) bool {
+	p.mu.Lock()
+	if p.driving[runID] {
+		p.mu.Unlock()
+		return true
+	}
 	select {
 	case p.slots <- struct{}{}:
 	default:
+		p.mu.Unlock()
 		return false
 	}
+	if p.driving == nil {
+		p.driving = make(map[string]bool)
+	}
+	p.driving[runID] = true
+	p.mu.Unlock()
+
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
-		defer func() { <-p.slots }()
+		defer func() {
+			p.mu.Lock()
+			delete(p.driving, runID)
+			p.mu.Unlock()
+			<-p.slots
+		}()
 		p.execute(ctx, runID)
 	}()
 	return true
@@ -86,27 +117,42 @@ func (p *executorPool) submit(ctx context.Context, runID string) bool {
 // early has left the claim standing behind it; only the row knows which world
 // we are in, and the row is also the thing the next start reads.
 func (p *executorPool) execute(ctx context.Context, runID string) {
+	owed := true
 	if _, err := p.eng.ExecuteRun(ctx, runID); err != nil {
-		// The expected shape here is the drain itself: the kill
-		// answered a dead context, and the verdict write answers to
-		// the same dead context and loses. A lost lease reads the same
-		// way and stays quiet too; the discard event already tells the
-		// story. Any other error means the engine gave up on its own
-		// and someone should hear why.
-		if errors.Is(err, context.Canceled) || errors.Is(err, store.ErrLeaseLost) {
+		switch {
+		case errors.Is(err, store.ErrNotClaimable):
+			// The claim never landed: another holder took the row
+			// between the dispatcher's queue read and this executor's
+			// transaction. Nothing here was ever ours, so nothing can
+			// be owed - reaching for the handback now would find the
+			// live holder's token in the keeper's map (same owner, same
+			// epoch, all true) and drain a run that is mid-step. That
+			// fence-out is what let an effect run past its crash bound,
+			// so a claim loser leaves the row to whoever owns it.
+			owed = false
+			p.log.Debug("another holder claimed the run first", "run", runID)
+		case errors.Is(err, context.Canceled), errors.Is(err, store.ErrLeaseLost):
+			// The expected shape here is the drain itself: the kill
+			// answered a dead context, and the verdict write answers to
+			// the same dead context and loses. A lost lease reads the same
+			// way and stays quiet too; the discard event already tells the
+			// story.
 			p.log.Debug("the executor stopped without a verdict",
 				"run", runID, "error", err)
-		} else {
+		default:
 			p.log.Warn("the executor stopped with an error",
 				"run", runID, "error", err)
 		}
 	}
-	if err := p.handBackWhenOwed(context.WithoutCancel(ctx), runID); err != nil {
-		p.log.Error("could not hand the run back during the drain",
-			"run", runID, "error", err)
+	if owed {
+		if err := p.handBackWhenOwed(context.WithoutCancel(ctx), runID); err != nil {
+			p.log.Error("could not hand the run back during the drain",
+				"run", runID, "error", err)
+		}
 	}
 	// The run has left the pool one way or another: finished, failed,
-	// cancelled, or handed back. Whatever waited for its slot may start.
+	// cancelled, handed back, or taken by another holder before we started.
+	// Whatever waited for its slot may start.
 	if p.afterRun != nil {
 		p.afterRun()
 	}

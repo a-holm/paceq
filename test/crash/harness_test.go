@@ -26,6 +26,7 @@ const (
 	envDir        = "PACEQ_CRASH_DIR"
 	envAppend     = "PACEQ_CRASH_APPEND"
 	envRecoverRun = "PACEQ_CRASH_RECOVER_RUN"
+	envReopenRun  = "PACEQ_CRASH_REOPEN_RUN"
 
 	// armEnv is the variable internal/faults reads in a pulseq_faults
 	// build. Naming it here is what makes an unarmed child harmless.
@@ -135,47 +136,56 @@ func durableTempDir(t *testing.T, pattern string) string {
 }
 
 var (
-	appendOnce sync.Once
+	appendMu   sync.Mutex
 	appendPath string
 )
 
-// appendFixture builds testdata/fakecmd once per run of the package.
+// appendFixture builds testdata/fakecmd once per run of the package. A failed
+// build is not remembered: the next row retries it, so one transient failure
+// cannot poison every later row with an empty binary path.
 func appendFixture(t *testing.T) string {
 	t.Helper()
 
-	appendOnce.Do(func() {
-		path := filepath.Join(durableTempDir(t, "paceq-crash-append"), "append-fixture")
-		build := exec.Command("go", "build", "-o", path, "./testdata/fakecmd")
-		build.Dir = moduleRoot(t)
-		if out, err := build.CombinedOutput(); err != nil {
-			t.Fatalf("build the append fixture: %v\n%s", err, out)
-		}
-		appendPath = path
-	})
+	appendMu.Lock()
+	defer appendMu.Unlock()
+	if appendPath != "" {
+		return appendPath
+	}
+	path := filepath.Join(durableTempDir(t, "paceq-crash-append"), "append-fixture")
+	build := exec.Command("go", "build", "-o", path, "./testdata/fakecmd")
+	build.Dir = moduleRoot(t)
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build the append fixture: %v\n%s", err, out)
+	}
+	appendPath = path
 	return appendPath
 }
 
 var (
-	childOnce sync.Once
+	childMu   sync.Mutex
 	childPath string
 )
 
 // taggedChild builds this package's test binary with -tags pulseq_faults, the
-// only build anywhere in the pipeline that may kill itself.
+// only build anywhere in the pipeline that may kill itself. A failed build is
+// not remembered, for the same reason the append fixture's is not.
 func taggedChild(t *testing.T) string {
 	t.Helper()
 
-	childOnce.Do(func() {
-		path := filepath.Join(durableTempDir(t, "paceq-crash-child"), "crash-child.test")
-		build := exec.Command("go", "test", "-c",
-			"-tags", "pulseq_faults",
-			"-o", path, ".")
-		build.Dir = filepath.Join(moduleRoot(t), "test", "crash")
-		if out, err := build.CombinedOutput(); err != nil {
-			t.Fatalf("build the crashing child: %v\n%s", err, out)
-		}
-		childPath = path
-	})
+	childMu.Lock()
+	defer childMu.Unlock()
+	if childPath != "" {
+		return childPath
+	}
+	path := filepath.Join(durableTempDir(t, "paceq-crash-child"), "crash-child.test")
+	build := exec.Command("go", "test", "-c",
+		"-tags", "pulseq_faults",
+		"-o", path, ".")
+	build.Dir = filepath.Join(moduleRoot(t), "test", "crash")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build the crashing child: %v\n%s", err, out)
+	}
+	childPath = path
 	return childPath
 }
 
@@ -242,22 +252,24 @@ func childRunID(sc Scenario, out string) string {
 	return ""
 }
 
-// procCarriesMarker reports whether any live process names the marker in its
-// command line. The scan is read-only: /proc holds one numeric directory per
-// process on Linux, which is exactly the orphan check issue #75 asks for.
-func procCarriesMarker(marker string) bool {
+// procCarriesRunID reports whether any live process carries PACEQ_RUN_ID
+// naming this run in its environment. The runner hands every step command
+// that variable, so a crashed executor leaves exactly these processes
+// behind - including grandchildren, which inherit the environment of the
+// command that spawned them. This is the orphan check issue #20 spells out,
+// sharpened to one exact value so another test's processes elsewhere on the
+// machine can never be mistaken for ours.
+func procCarriesRunID(runID string) bool {
+	marker := "PACEQ_RUN_ID=" + runID
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return false
 	}
 	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
 		if _, err := strconv.Atoi(entry.Name()); err != nil {
 			continue // not a process directory
 		}
-		raw, err := os.ReadFile("/proc/" + entry.Name() + "/cmdline")
+		raw, err := os.ReadFile("/proc/" + entry.Name() + "/environ")
 		if err != nil {
 			continue // gone between listing and reading
 		}
@@ -268,22 +280,28 @@ func procCarriesMarker(marker string) bool {
 	return false
 }
 
-// waitOrphansGone blocks until no process names the marker any more. A first
-// attempt killed under exec dies by itself once its output pipe breaks, which
-// happens promptly after the executor's death; waiting turns that into an
-// assertion instead of a hope.
-func waitOrphansGone(t *testing.T, marker string) {
+// requireNoOrphansForRun blocks until nothing carrying this run's id is
+// alive, then asserts it: an orphan may take a moment to notice its pipes
+// are gone, but it may never survive the deadline.
+func requireNoOrphansForRun(t *testing.T, sc Scenario, runID string) {
 	t.Helper()
 
+	if runID == "" {
+		return // the crash landed before any step command existed
+	}
 	deadline := time.Now().Add(orphanDeadline)
-	for procCarriesMarker(marker) {
+	for procCarriesRunID(runID) {
 		if time.Now().After(deadline) {
-			t.Fatalf("an orphaned command carrying %q is still alive after %s",
-				marker, orphanDeadline)
+			t.Fatalf("%s: an orphaned command carrying PACEQ_RUN_ID=%s is still alive after %s",
+				sc.describe(), runID, orphanDeadline)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// waitOrphansGone was the command-line marker sweep. The environment sweep
+// above replaced it: PACEQ_RUN_ID reaches grandchildren too, which a marker
+// on the effect file's path never could.
 
 // restartEngine wires a fresh engine onto the crashed workspace: the new
 // executor a restart would start. It claims with the long lease, because it

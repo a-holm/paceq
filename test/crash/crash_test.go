@@ -8,10 +8,12 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/a-holm/paceq/internal/clock"
 	"github.com/a-holm/paceq/internal/engine"
 	"github.com/a-holm/paceq/internal/logsink"
+	"github.com/a-holm/paceq/internal/model"
 	"github.com/a-holm/paceq/internal/reason"
 	"github.com/a-holm/paceq/internal/store"
 )
@@ -36,16 +38,30 @@ func runRow(t *testing.T, sc Scenario) {
 	ws := newWorkspace(t)
 	ctx := context.Background()
 
-	out, killed := runChild(t, ws, sc, sc.KillAt, nil)
-	if sc.KillAt == "" || sc.KillAt == unknownPoint {
+	// A reopen row crashes inside the operator's reopen, not inside the
+	// run: its first child is unarmed and runs clean to a terminal
+	// failure, and the armed second child does the dying.
+	arm := sc.KillAt
+	if sc.Kind == "reopen" {
+		arm = ""
+	}
+	out, killed := runChild(t, ws, sc, arm, nil)
+	if arm == "" || arm == unknownPoint || sc.Kind == "reopen" {
 		requireChildSurvived(t, sc, out, killed)
 	} else {
 		requireChildKilled(t, sc, out, killed)
 	}
 
 	runID := childRunID(sc, out)
-	if sc.Kind == "execute" && runID == "" {
+	if (sc.Kind == "execute" || sc.Kind == "reopen") && runID == "" {
 		t.Fatalf("%s: the child printed no run id\n%s", sc.describe(), out)
+	}
+
+	if sc.Kind == "reopen" {
+		// Phase 2: die inside the reopen transaction itself.
+		phase2, killed2 := runChild(t, ws, sc, sc.KillAt,
+			map[string]string{envReopenRun: runID})
+		requireChildKilled(t, sc, phase2, killed2)
 	}
 
 	s := openStore(t, ws)
@@ -54,10 +70,9 @@ func runRow(t *testing.T, sc Scenario) {
 	requireIntegrity(t, ctx, s, "after the crash")
 	requireFsckFindings(t, ctx, s, "after the crash", sc.TransientFindings)
 	requireNoAbandonedChains(t, ctx, s, "after the crash")
-
-	if sc.WaitsForOrphan && sc.KillAt != "" {
-		waitOrphansGone(t, ws.EffectFile)
-	}
+	requireNoDoubleCompletedRunKeys(t, ctx, s, "after the crash")
+	requireRunAggregateConsistency(t, ctx, s, "after the crash", sc.TransientFindings)
+	requireNoOrphansForRun(t, sc, runID)
 
 	finalState, finalRunID := converge(t, ctx, s, ws, sc, runID)
 	if !contains(sc.allowedFinalStates(), finalState) {
@@ -65,11 +80,116 @@ func runRow(t *testing.T, sc Scenario) {
 			sc.describe(), finalState, sc.allowedFinalStates())
 	}
 
-	requireEffects(t, sc, readEffects(t, ws.EffectFile))
+	requireEffects(t, sc, expectedEffectKeys(sc, finalRunID),
+		skippedEffectKeys(sc, finalRunID), readEffects(t, ws.EffectFile))
 	requireEventStory(t, ctx, s, sc, finalRunID)
+
+	// A retry reopens failed and skipped steps only. The first step of a
+	// reopen row succeeded before the crash, so it must still carry its
+	// single first attempt: the positive proof that the retry spared the
+	// work that was already done.
+	if sc.Kind == "reopen" {
+		detail, err := s.GetRun(ctx, finalRunID)
+		if err != nil {
+			t.Fatalf("read run %s after convergence: %v", finalRunID, err)
+		}
+		for _, st := range detail.Steps {
+			if st.Name != sc.Steps[0].Name {
+				continue
+			}
+			if st.Attempt != 1 || st.State != "succeeded" {
+				t.Errorf("%s: step %s was to have been spared by the retry, but sits at attempt %d in %q",
+					sc.describe(), st.Name, st.Attempt, st.State)
+			}
+		}
+	}
 
 	requireIntegrity(t, ctx, s, "after convergence")
 	requireFsckClean(t, ctx, s, "after convergence")
+	requireNoDoubleCompletedRunKeys(t, ctx, s, "after convergence")
+	requireRunAggregateConsistency(t, ctx, s, "after convergence", nil)
+	requireTerminalReasonCodes(t, ctx, s, sc, finalRunID)
+}
+
+// requireNoDoubleCompletedRunKeys is the explicit dedup invariant of the
+// crash battery (issue #20): however many times a crashed attempt was
+// repeated, no run_key may end up behind two completed runs. The store's
+// own sweep answers; this helper only names what it found.
+func requireNoDoubleCompletedRunKeys(t *testing.T, ctx context.Context,
+	s *store.Store, when string,
+) {
+	t.Helper()
+
+	keys, err := s.DoubleCompletedRunKeys(ctx)
+	if err != nil {
+		t.Fatalf("sweep for doubled run keys %s: %v", when, err)
+	}
+	for _, key := range keys {
+		t.Errorf("%s: two or more succeeded runs share the run_key %q", when, key)
+	}
+	if len(keys) > 0 {
+		t.Fatalf("%s: %d doubled run keys", when, len(keys))
+	}
+}
+
+// requireRunAggregateConsistency is I10 made explicit for the battery: every
+// run's stored state must be the aggregate of its steps. A window whose
+// transaction never committed predicts exactly one mismatch until recovery
+// finishes the run, so the row's transient contract applies here too.
+func requireRunAggregateConsistency(t *testing.T, ctx context.Context,
+	s *store.Store, when string, predicted []string,
+) {
+	t.Helper()
+
+	mismatches, err := s.RunAggregateMismatches(ctx)
+	if err != nil {
+		t.Fatalf("sweep for aggregate mismatches %s: %v", when, err)
+	}
+	for _, m := range mismatches {
+		if contains(predicted, "I10") {
+			t.Logf("%s: predicted aggregate disagreement on run %s (state %s, steps aggregate to %s)",
+				when, m.RunID, m.State, m.Aggregate)
+			continue
+		}
+		t.Errorf("%s: run %s says %q but its steps aggregate to %q",
+			when, m.RunID, m.State, m.Aggregate)
+	}
+}
+
+// requireTerminalReasonCodes walks one converged run and refuses any
+// terminal state - the run's or a step's - that carries no reason code or
+// the catalogue's unknown placeholder. A terminal state that cannot say why
+// it happened is a state nobody can trust.
+func requireTerminalReasonCodes(t *testing.T, ctx context.Context,
+	s *store.Store, sc Scenario, runID string,
+) {
+	t.Helper()
+
+	detail, err := s.GetRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("read run %s for the reason sweep: %v", runID, err)
+	}
+	if isTerminal(detail.Run.State) && unexplained(detail.Run.ReasonCode) {
+		t.Errorf("%s: terminal run in state %q carries reason code %q",
+			sc.describe(), detail.Run.State, detail.Run.ReasonCode)
+	}
+	for _, st := range detail.Steps {
+		if !isTerminalStep(st.State) {
+			continue
+		}
+		if unexplained(st.ReasonCode) {
+			t.Errorf("%s: step %s is terminal in state %q with reason code %q",
+				sc.describe(), st.Name, st.State, st.ReasonCode)
+		}
+	}
+}
+
+func unexplained(code string) bool {
+	return code == "" || code == "UNKNOWN"
+}
+
+func isTerminalStep(state string) bool {
+	return contains([]string{"succeeded", "failed", "skipped", "cancelled"}, state)
 }
 
 // converge is the restart: a fresh engine recovers what it can and drives the
@@ -121,6 +241,23 @@ func converge(t *testing.T, ctx context.Context, s *store.Store, ws *workspace,
 		t.Logf("recovery left the run in %q", state)
 		if isTerminal(state) {
 			return state, finalRunID
+		}
+
+	case "reopen":
+		// The armed reopen either rolled back (the run is still failed
+		// and still owes its reopen) or committed (it is queued with
+		// nothing owed). Recovery has nothing running to close in
+		// either shape; a failed run gets its clean reopen here.
+		state, err := eng.Recover(ctx, runID)
+		if err != nil {
+			t.Fatalf("recover run %s: %v", runID, err)
+		}
+		t.Logf("recovery left the run in %q", state)
+		if state != string(model.RunQueued) {
+			if _, err := s.ReopenTerminalRunByOperator(ctx, runID, "crash-restart",
+				store.ReopenOpts{RetryBudget: 1}); err != nil {
+				t.Fatalf("reopen run %s after the crashed retry: %v", runID, err)
+			}
 		}
 
 	default:
@@ -227,27 +364,66 @@ func requireNoAbandonedChains(t *testing.T, ctx context.Context, s *store.Store,
 	}
 }
 
-// requireEffects holds the count to its bound and checks the attribution: all
-// lines share one idempotency key, and no two lines claim the same attempt.
-func requireEffects(t *testing.T, sc Scenario, effects []effect) {
+// requireEffects holds the count to its bound and checks the attribution: on
+// a single-step row all lines share one idempotency key and no two lines
+// claim the same attempt; on a DAG row every running step's own documented
+// key must appear, nothing else may, each key's lines sit inside the row's
+// per-step bound, and every declared-skipped step's key must be absent.
+func requireEffects(t *testing.T, sc Scenario, wantKeys, skippedKeys map[string]string, effects []effect) {
 	t.Helper()
 
 	if len(effects) < sc.MinEffects || len(effects) > sc.MaxEffects {
 		t.Fatalf("%s: %d effects landed, want between %d and %d (lines: %v)",
 			sc.describe(), len(effects), sc.MinEffects, sc.MaxEffects, effects)
 	}
-	keys := map[string]bool{}
-	attempts := map[int]bool{}
+	counts := map[string]int{}
+	attempts := map[string]bool{}
 	for _, e := range effects {
-		keys[e.Key] = true
-		if attempts[e.Attempt] {
-			t.Errorf("%s: two effect lines claim attempt %d", sc.describe(), e.Attempt)
+		counts[e.Key]++
+		pair := e.Key + "\x00" + strconv.Itoa(e.Attempt)
+		if attempts[pair] {
+			t.Errorf("%s: two effect lines claim attempt %d under one key",
+				sc.describe(), e.Attempt)
 		}
-		attempts[e.Attempt] = true
+		attempts[pair] = true
 	}
-	if len(keys) != 1 {
-		t.Errorf("%s: effect lines carry %d idempotency keys, want exactly one",
-			sc.describe(), len(keys))
+
+	if len(wantKeys) == 0 {
+		if len(counts) != 1 {
+			t.Errorf("%s: effect lines carry %d idempotency keys, want exactly one",
+				sc.describe(), len(counts))
+		}
+		return
+	}
+
+	floor := sc.StepMinEffects
+	if floor == 0 {
+		floor = 1
+	}
+	ceiling := sc.StepMaxEffects
+	for key, step := range wantKeys {
+		n := counts[key]
+		if n < floor || (ceiling > 0 && n > ceiling) {
+			t.Errorf("%s: step %s landed %d effects, want between %d and %d",
+				sc.describe(), step, n, floor, ceiling)
+		}
+	}
+	if len(counts) != len(wantKeys) {
+		unexpected := make([]string, 0)
+		for key := range counts {
+			if _, ok := wantKeys[key]; !ok {
+				unexpected = append(unexpected, key)
+			}
+		}
+		t.Errorf("%s: effect keys cover %d of %d steps (unexpected keys: %v)",
+			sc.describe(), len(counts), len(wantKeys), unexpected)
+	}
+
+	for key, step := range skippedKeys {
+		if n := counts[key]; n > 0 {
+			t.Errorf("%s: step %s landed %d effects, want none: it was skipped before it could run",
+				sc.describe(), step, n)
+		}
 	}
 }
 
@@ -305,7 +481,7 @@ func TestCrashInsideRecovery(t *testing.T) {
 	if runID == "" {
 		t.Fatalf("phase 1 printed no run id\n%s", out)
 	}
-	waitOrphansGone(t, ws.EffectFile)
+	requireNoOrphansForRun(t, sc, runID)
 
 	// Phase 2: recovery, armed. The child dies between the requeue's
 	// state write and its event row.
@@ -336,7 +512,8 @@ func TestCrashInsideRecovery(t *testing.T) {
 	if finalState != "succeeded" {
 		t.Fatalf("the restart after the killed recovery ended %q, want succeeded", finalState)
 	}
-	requireEffects(t, sc, readEffects(t, ws.EffectFile))
+	requireEffects(t, sc, expectedEffectKeys(sc, runID),
+		skippedEffectKeys(sc, runID), readEffects(t, ws.EffectFile))
 	requireEventStory(t, ctx, s, sc, runID)
 	requireFsckClean(t, ctx, s, "after the restart")
 }
@@ -399,6 +576,19 @@ func TestChildProcess(t *testing.T) {
 		return
 	}
 
+	if rec := os.Getenv(envReopenRun); rec != "" {
+		// Reopen mode: the parent wants this process to die inside the
+		// operator's reopen transaction of a run an earlier child
+		// drove to a terminal failure.
+		res, err := s.ReopenTerminalRunByOperator(ctx, rec, "crash-child",
+			store.ReopenOpts{RetryBudget: 1})
+		if err != nil {
+			t.Fatalf("reopen run %s: %v", rec, err)
+		}
+		fmt.Printf("PACEQ-REOPENED %s epoch %d steps %d\n", rec, res.NewEpoch, len(res.Reopened))
+		return
+	}
+
 	applyJob(t, s, sc, os.Getenv(envAppend), ws.EffectFile)
 
 	res, err := s.MaterializeManualTrigger(ctx, store.ManualTriggerInput{
@@ -429,6 +619,21 @@ func TestChildProcess(t *testing.T) {
 		return
 	}
 
+	if sc.CancelWhenStep != "" {
+		// The row aims its own cancellation at a live step: the
+		// watcher fires while ExecuteRun is mid-graph, and its
+		// request is what the observe window below commits around.
+		watcherCtx, stopWatcher := context.WithCancel(ctx)
+		defer stopWatcher()
+		go func() {
+			defer stopWatcher()
+			if err := requestCancelOnceRunning(watcherCtx, s, res.Run.ID,
+				sc.CancelWhenStep, ws.EffectFile, sc.MinEffects); err != nil {
+				fmt.Printf("PACEQ-CANCEL-WATCH-ERROR %v\n", err)
+			}
+		}()
+	}
+
 	state, err := eng.ExecuteRun(ctx, res.Run.ID)
 	if err != nil {
 		t.Fatalf("execute run %s: %v", res.Run.ID, err)
@@ -436,29 +641,110 @@ func TestChildProcess(t *testing.T) {
 	fmt.Printf("PACEQ-DONE %s\n", state)
 }
 
-// applyJob records the frozen job version a scenario runs. One step, whose
-// whole effect is one line in the workspace's effect file; the drip variant
-// keeps attempt 1 alive so an under-exec kill lands inside execution.
+// requestCancelOnceRunning is the child's own cancellation watcher: it
+// blocks until the named step of the run is running and the row's whole
+// effect floor is already on file, and then records the cancellation
+// request, so the request commits under a live step that has done the work
+// the row counts on. It fails loudly when it cannot aim: a row that cannot
+// aim its cancellation is a row that proves nothing.
+func requestCancelOnceRunning(ctx context.Context, s *store.Store, runID, step, effectFile string, minEffects int) error {
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		detail, err := s.GetRun(ctx, runID)
+		if err != nil {
+			return fmt.Errorf("watch run %s for step %s: %w", runID, step, err)
+		}
+		running := false
+		for _, st := range detail.Steps {
+			if st.Name == step && st.State == "running" {
+				running = true
+				break
+			}
+		}
+		lines := 0
+		if raw, err := os.ReadFile(effectFile); err == nil {
+			lines = len(strings.Split(strings.TrimRight(string(raw), "\n"), "\n"))
+			if strings.TrimSpace(string(raw)) == "" {
+				lines = 0
+			}
+		}
+		if running && lines >= minEffects {
+			if _, err := s.RequestCancel(ctx, runID, "crash-harness", "mid fan-out"); err != nil {
+				return fmt.Errorf("request the cancellation of run %s: %w", runID, err)
+			}
+			fmt.Printf("PACEQ-CANCEL-REQUESTED %s\n", step)
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("step %s of run %s never ran with %d effects on file (running=%v lines=%d)",
+				step, runID, minEffects, running, lines)
+		}
+		time.Sleep(pollInterval)
+	}
+}
+
+// applyJob records the frozen job version a scenario runs. A single-step row
+// freezes the one-step job; a DAG row freezes its Steps in order, every step
+// appending to the same effect file so one count covers the whole run. The
+// drip variant keeps attempt 1 alive so an under-exec kill lands inside
+// execution.
 func applyJob(t *testing.T, s *store.Store, sc Scenario, appendBin, effectFile string) {
 	t.Helper()
 
-	mode := "append"
-	if sc.WaitsForOrphan {
-		mode = "first-drip"
-	}
 	quote := func(s string) string { return strconv.Quote(s) }
-	step := fmt.Sprintf(`{"name":"only","run":[%s,%s,%s],"shell":false`,
-		quote(appendBin), quote(mode), quote(effectFile))
-	if sc.RetryMax > 0 {
-		step += fmt.Sprintf(`,"retry":{"max":%d}`, sc.RetryMax)
+
+	var steps []string
+	if len(sc.Steps) > 0 {
+		for _, st := range sc.Steps {
+			step := fmt.Sprintf(`{"name":%q`, st.Name)
+			if len(st.Needs) > 0 {
+				names := make([]string, len(st.Needs))
+				for i, n := range st.Needs {
+					names[i] = quote(n)
+				}
+				step += fmt.Sprintf(`,"needs":[%s]`, strings.Join(names, ","))
+			}
+			mode := st.Mode
+			if mode == "" {
+				mode = "append"
+			}
+			step += fmt.Sprintf(`,"run":[%s,%s,%s]`,
+				quote(appendBin), quote(mode), quote(effectFile))
+			if st.RetryMax > 0 {
+				retry := fmt.Sprintf(`{"max":%d`, st.RetryMax)
+				if st.RetryInitial != "" {
+					d, err := time.ParseDuration(st.RetryInitial)
+					if err != nil {
+						t.Fatalf("parse the retry wait of step %s: %v", st.Name, err)
+					}
+					// The canonical form spells waits in whole
+					// milliseconds, so that is what the frozen
+					// document carries.
+					retry += fmt.Sprintf(`,"backoff":"fixed","initial_ms":%d,"jitter":"none"`,
+						d.Milliseconds())
+				}
+				step += `,"retry":` + retry + "}"
+			}
+			steps = append(steps, step+"}")
+		}
+	} else {
+		mode := "append"
+		if sc.WaitsForOrphan {
+			mode = "first-drip"
+		}
+		step := fmt.Sprintf(`{"name":"only","run":[%s,%s,%s]`,
+			quote(appendBin), quote(mode), quote(effectFile))
+		if sc.RetryMax > 0 {
+			step += fmt.Sprintf(`,"retry":{"max":%d}`, sc.RetryMax)
+		}
+		steps = append(steps, step+"}")
 	}
-	step += "}"
 	// The ceiling is generous on purpose (#68): these rows probe crash
 	// windows of the tick chain and of execution, not admission control,
 	// and the manual run this child seeds must not stand the tick row's
 	// fire-time down before its window is ever reached.
 	spec := fmt.Sprintf(`{"schema":"paceq.job.v1","name":%q,"max_concurrent":200,`+
-		`"timeout_ms":60000,"steps":[%s]}`, jobName, step)
+		`"timeout_ms":60000,"steps":[%s]}`, jobName, strings.Join(steps, ","))
 
 	if _, _, err := s.UpsertJobVersion(context.Background(), store.JobVersionInput{
 		JobName:  jobName,
@@ -550,6 +836,47 @@ func TestFsckDetectsEveryPlantedViolation(t *testing.T) {
 		if !containsString(chains, subject) {
 			t.Fatalf("the chain sweep reported %v, want the planted finding %q",
 				chains, subject)
+		}
+	})
+
+	t.Run("double_completed_run_key_explicit", func(t *testing.T) {
+		s, cleanup := seedQueuedRun(t)
+		defer cleanup()
+		key, err := s.InjectDoubleCompletedRunKey(context.Background())
+		if err != nil {
+			t.Fatalf("plant: %v", err)
+		}
+		keys, err := s.DoubleCompletedRunKeys(context.Background())
+		if err != nil {
+			t.Fatalf("sweep: %v", err)
+		}
+		if !containsString(keys, key) {
+			t.Fatalf("the dedup sweep reported %v, want the planted key %q",
+				keys, key)
+		}
+	})
+
+	t.Run("aggregate_mismatch_explicit", func(t *testing.T) {
+		s, cleanup := seedSucceededRun(t)
+		defer cleanup()
+		subject, err := s.InjectFailedStepUnderSucceededRun(context.Background())
+		if err != nil {
+			t.Fatalf("plant: %v", err)
+		}
+		mismatches, err := s.RunAggregateMismatches(context.Background())
+		if err != nil {
+			t.Fatalf("sweep: %v", err)
+		}
+		named := false
+		for _, m := range mismatches {
+			if strings.Contains(subject, m.RunID) {
+				named = true
+				break
+			}
+		}
+		if !named {
+			t.Fatalf("the consistency sweep reported %v, want the planted run behind %q",
+				mismatches, subject)
 		}
 	})
 

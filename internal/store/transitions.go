@@ -424,6 +424,12 @@ func (s *Store) RecordStepOutcome(ctx context.Context, runID, name string, out S
 // failure. Both carry the failed step in reason_data so explain can walk
 // straight back to the root.
 func propagateSkipTx(tx *sql.Tx, runID, failedStep string, attempt int, now time.Time) error {
+	// The crash windows of the closure itself (#20): one before any
+	// pending dependant is computed or written, one after every write.
+	// Both sit inside the caller's verdict transaction, so a kill in
+	// either rolls the failure verdict and the skips back together and no
+	// observer can ever see the failure without its closed downstream.
+	faults.Point("M4:skip:before_writes")
 	rows, err := tx.Query(`WITH RECURSIVE closure(step_name) AS (
 			SELECT step_name FROM step_deps WHERE run_id = ? AND depends_on = ?
 			UNION
@@ -494,6 +500,7 @@ func propagateSkipTx(tx *sql.Tx, runID, failedStep string, attempt int, now time
 			return err
 		}
 	}
+	faults.Point("M4:skip:after_writes")
 	return nil
 }
 

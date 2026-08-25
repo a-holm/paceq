@@ -1,0 +1,107 @@
+# The M4 exit demo, daemon-down IPC mode: no socket file ever exists, so
+# every operator write travels the flock path straight into the database.
+# The diamond runs green, one branch fails, everything downstream of the
+# failure leaves without running and with its own reason code, and one
+# operator retry reopens exactly the failed and skipped steps while the
+# succeeded ones are reused untouched. A bare serve then drains the reopened
+# run: an executor, not an endpoint, because no socket was configured.
+
+env PULSEQ_FAKE_CLOCK=
+exec paceq init
+mkdir effects marks
+cp diamond.yaml jobs/diamond.yaml
+exec paceq apply
+
+# Phase one: the whole diamond, green ...
+exec paceq run diamond
+writeid green.id
+wantexit 0 green.json - runs show @green.id -o json
+grep '"state":"succeeded","reason_code":"RUN_SUCCEEDED"' green.json
+
+# ... and the two branches really are siblings under transform: each one
+# begins no earlier than the moment transform finished.
+assertafter @green.id transform load-warehouse
+assertafter @green.id transform load-cache
+
+# Phase two: the warehouse branch is blocked on purpose, the run fails,
+# and every step that needed it ends skipped instead of running.
+mark marks/fail-warehouse
+wantexitwall 5 failed.json failed_err.txt run diamond
+grep '"state":"failed"' failed.json
+grep '"reason_code":"RUN_FAILED_STEP"' failed.json
+grep 'step "load-warehouse" failed' failed_err.txt
+
+writeid failed.id
+wantexit 0 show_failed.json - runs show @failed.id -o json
+grep '"name":"load-warehouse","state":"failed"' show_failed.json
+
+# The reason codes are exact: the direct dependant of the failure reads
+# UPSTREAM_FAILED; anything reached through another skip reads
+# UPSTREAM_SKIPPED. The untouched branch stays succeeded.
+grep '"name":"publish","state":"skipped","reason_code":"STEP_SKIPPED_UPSTREAM_FAILED"' show_failed.json
+grep '"name":"report","state":"skipped","reason_code":"STEP_SKIPPED_UPSTREAM_SKIPPED"' show_failed.json
+grep '"name":"notify","state":"skipped","reason_code":"STEP_SKIPPED_UPSTREAM_SKIPPED"' show_failed.json
+grep '"name":"load-cache","state":"succeeded"' show_failed.json
+
+# Phase three: the operator retry. It must reopen the failed step and its
+# skipped followers, never a step that already succeeded, and the epoch
+# moves so nothing from the closed attempt writes behind the new one.
+rm marks/fail-warehouse
+wantexit 0 retry.json - runs retry @failed.id -o json
+maskfile retry.json
+grep '"run_id":"<RUN1>"' retry.json
+grep '"new_epoch":2' retry.json
+grep '"reopened":\["load-warehouse","publish","report","notify"\]' retry.json
+
+# A retry queues work, it does not run it: until an executor claims the
+# run again, the succeeded steps' effects are still exactly their first
+# pass, and the blocked step has still written nothing.
+expecteffects @failed.id extract=1 transform=1 load-cache=1 load-warehouse=0 publish=0 report=0 notify=0
+
+# The drain. serve owns the state from here and executes what the reopen
+# made claimable; with no socket configured it is an executor only, so
+# every CLI write above and below took the flock path.
+startdaemon
+waitrun @failed.id succeeded 60s
+stopdaemon
+
+# The retried run is green in place, the same id it always had.
+wantexit 0 final.json - runs show @failed.id -o json
+grep '"state":"succeeded","reason_code":"RUN_SUCCEEDED"' final.json
+
+# The warehouse step really ran again: attempt 2 exists beside attempt 1.
+wantexit 0 wh2.ndjson - logs @failed.id --step load-warehouse --attempt 2
+grep '"attempt":2' wh2.ndjson
+
+# And the reuse contract, counted at the effect files of this very run:
+# the three steps that succeeded the first time never ran a second time,
+# and each reopened step wrote its effect exactly once more.
+expecteffects @failed.id extract=1 transform=1 load-cache=1 load-warehouse=1 publish=1 report=1 notify=1
+
+# The whole story leaves the invariants standing.
+exec paceq fsck
+
+-- diamond.yaml --
+name: diamond
+description: One root, two parallel branches, one collector, and a second level behind the warehouse branch.
+steps:
+  - name: extract
+    run: ["/bin/sh", "-c", "echo extract >> effects/$PACEQ_RUN_ID.extract.txt"]
+  - name: transform
+    needs: [extract]
+    run: ["/bin/sh", "-c", "echo transform >> effects/$PACEQ_RUN_ID.transform.txt"]
+  - name: load-warehouse
+    needs: [transform]
+    run: ["/bin/sh", "-c", "test ! -e marks/fail-warehouse && echo \"load-warehouse attempt $PACEQ_ATTEMPT\" && echo load-warehouse >> effects/$PACEQ_RUN_ID.load-warehouse.txt && sleep 1"]
+  - name: publish
+    needs: [load-warehouse]
+    run: ["/bin/sh", "-c", "echo publish >> effects/$PACEQ_RUN_ID.publish.txt"]
+  - name: report
+    needs: [publish]
+    run: ["/bin/sh", "-c", "echo report >> effects/$PACEQ_RUN_ID.report.txt"]
+  - name: load-cache
+    needs: [transform]
+    run: ["/bin/sh", "-c", "echo load-cache >> effects/$PACEQ_RUN_ID.load-cache.txt && sleep 1"]
+  - name: notify
+    needs: [load-cache, report]
+    run: ["/bin/sh", "-c", "echo notify >> effects/$PACEQ_RUN_ID.notify.txt"]

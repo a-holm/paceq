@@ -1,0 +1,97 @@
+# The M4 exit demo, daemon-up IPC mode: after the two foreground phases the
+# daemon takes this state directory over behind .paceq/paceq.sock, and the
+# same operator retry travels the socket instead of the lock file. The
+# answer means the same thing, and the daemon's own dispatcher executes
+# what the reopen made claimable. Reads keep answering while the daemon
+# holds the state, because history is read through the read only pool.
+
+env PULSEQ_FAKE_CLOCK=
+exec paceq init
+mkdir effects marks
+cp diamond.yaml jobs/diamond.yaml
+exec paceq apply
+
+# Phase one: the whole diamond, green ...
+exec paceq run diamond
+writeid green.id
+wantexit 0 green.json - runs show @green.id -o json
+grep '"state":"succeeded","reason_code":"RUN_SUCCEEDED"' green.json
+
+# ... and the two branches really are siblings under transform: each one
+# begins no earlier than the moment transform finished.
+assertafter @green.id transform load-warehouse
+assertafter @green.id transform load-cache
+
+# Phase two: the warehouse branch is blocked on purpose, the run fails,
+# and every step that needed it ends skipped instead of running.
+mark marks/fail-warehouse
+wantexitwall 5 failed.json failed_err.txt run diamond
+grep '"state":"failed"' failed.json
+grep '"reason_code":"RUN_FAILED_STEP"' failed.json
+
+writeid failed.id
+wantexit 0 show_failed.json - runs show @failed.id -o json
+grep '"name":"load-warehouse","state":"failed"' show_failed.json
+grep '"name":"publish","state":"skipped","reason_code":"STEP_SKIPPED_UPSTREAM_FAILED"' show_failed.json
+grep '"name":"report","state":"skipped","reason_code":"STEP_SKIPPED_UPSTREAM_SKIPPED"' show_failed.json
+grep '"name":"notify","state":"skipped","reason_code":"STEP_SKIPPED_UPSTREAM_SKIPPED"' show_failed.json
+grep '"name":"load-cache","state":"succeeded"' show_failed.json
+
+# The daemon takes over. From this line on it owns the state directory,
+# and its socket is the way in for every write.
+rm marks/fail-warehouse
+startdaemon -socket
+
+# History still answers while the daemon holds the state.
+wantexit 0 locked.json - runs show @failed.id -o json
+grep '"state":"failed"' locked.json
+
+# Phase three: the same operator retry, now carried by the socket.
+wantexit 0 retry.json - runs retry @failed.id -o json
+maskfile retry.json
+grep '"run_id":"<RUN1>"' retry.json
+grep '"new_epoch":2' retry.json
+grep '"reopened":\["load-warehouse","publish","report","notify"\]' retry.json
+
+# No "nothing has run yet" row here on purpose: behind the socket lives an
+# executor, and the dispatcher may claim the reopened run the moment the
+# retry answers. The final effect counts below are the reuse contract.
+
+# The daemon's dispatcher claims the reopened run and drives it to green.
+waitrun @failed.id succeeded 60s
+stopdaemon
+
+wantexit 0 final.json - runs show @failed.id -o json
+grep '"state":"succeeded","reason_code":"RUN_SUCCEEDED"' final.json
+
+wantexit 0 wh2.ndjson - logs @failed.id --step load-warehouse --attempt 2
+grep '"attempt":2' wh2.ndjson
+
+expecteffects @failed.id extract=1 transform=1 load-cache=1 load-warehouse=1 publish=1 report=1 notify=1
+
+exec paceq fsck
+
+-- diamond.yaml --
+name: diamond
+description: One root, two parallel branches, one collector, and a second level behind the warehouse branch.
+steps:
+  - name: extract
+    run: ["/bin/sh", "-c", "echo extract >> effects/$PACEQ_RUN_ID.extract.txt"]
+  - name: transform
+    needs: [extract]
+    run: ["/bin/sh", "-c", "echo transform >> effects/$PACEQ_RUN_ID.transform.txt"]
+  - name: load-warehouse
+    needs: [transform]
+    run: ["/bin/sh", "-c", "test ! -e marks/fail-warehouse && echo \"load-warehouse attempt $PACEQ_ATTEMPT\" && echo load-warehouse >> effects/$PACEQ_RUN_ID.load-warehouse.txt && sleep 1"]
+  - name: publish
+    needs: [load-warehouse]
+    run: ["/bin/sh", "-c", "echo publish >> effects/$PACEQ_RUN_ID.publish.txt"]
+  - name: report
+    needs: [publish]
+    run: ["/bin/sh", "-c", "echo report >> effects/$PACEQ_RUN_ID.report.txt"]
+  - name: load-cache
+    needs: [transform]
+    run: ["/bin/sh", "-c", "echo load-cache >> effects/$PACEQ_RUN_ID.load-cache.txt && sleep 1"]
+  - name: notify
+    needs: [load-cache, report]
+    run: ["/bin/sh", "-c", "echo notify >> effects/$PACEQ_RUN_ID.notify.txt"]

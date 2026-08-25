@@ -227,6 +227,44 @@ WHERE run_id = ? AND kind = 'run.started'`, runID); err != nil {
 	}
 }
 
+// TestFsckReadsADiscardedResultWithoutCrashing pins I15's blind spot: a
+// run.result_discarded event is history, not state (it carries no from_state
+// and no to_state), and the lease-lost path writes one on every honest
+// handover race. The chain window must skip it exactly like the fencing
+// window does, and it must never turn into a scan error: fsck that crashes
+// on a legal row enforces nothing.
+func TestFsckReadsADiscardedResultWithoutCrashing(t *testing.T) {
+	ctx := context.Background()
+	s, runID := plantSeededRun(t)
+
+	if _, _, err := s.ClaimRun(ctx, runID, LeaseInput{Owner: "exec-1"}); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := s.StartStep(ctx, runID, "build", LeaseRef{Owner: "exec-1", Epoch: 1}); err != nil {
+		t.Fatalf("start build: %v", err)
+	}
+	// The exact shape leasekeeper.discardResult writes: no states at all.
+	if err := s.AppendRunEvent(ctx, RunEvent{
+		RunID:      runID,
+		Kind:       "run.result_discarded",
+		Actor:      "exec-1",
+		DetailJSON: `{"lease_epoch":1,"why":"lease lost"}`,
+	}); err != nil {
+		t.Fatalf("append the discarded result: %v", err)
+	}
+
+	violations, err := s.Fsck(ctx)
+	if err != nil {
+		t.Fatalf("fsck must read a discarded result, it crashed: %v", err)
+	}
+	for _, v := range violations {
+		if v.Check == "I15" && strings.Contains(v.Subject, runID) &&
+			strings.Contains(v.Detail, "result_discarded") {
+			t.Fatalf("a discarded result was judged as a chain break: %+v", v)
+		}
+	}
+}
+
 func TestFsckCatchesATerminalRowWithoutAReasonCode(t *testing.T) {
 	ctx := context.Background()
 	s, runID := plantSeededRun(t)
