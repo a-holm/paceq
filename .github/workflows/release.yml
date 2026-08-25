@@ -1,0 +1,192 @@
+# The release pipeline (issue #43). Pushing a v* tag runs three jobs in order:
+# the double-build reproducibility gate, GoReleaser itself, and a smoke run
+# against the real artifacts of the draft release. Nothing publishes itself:
+# [M5-09] reviews and presses the button.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+# Create the draft release and upload its assets; nothing beyond that.
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CGO_ENABLED: "0"
+  GOFLAGS: -mod=readonly
+  # No implicit toolchain downloads, exactly like ci.yml.
+  GOTOOLCHAIN: local
+
+jobs:
+  # Plan 08 §5: reproducible is verified, not claimed. The tagged commit is
+  # built twice, each time into its own cold build cache and its own source
+  # tree, so neither a shared compilation artifact nor a shared build path can
+  # hide a difference, and the two binaries must agree byte for byte. The
+  # flags and ldflags mirror .goreleaser.yaml exactly; if they drift, this
+  # gate verifies a different binary than the one that ships.
+  reproducible:
+    name: double-build gate (plan 08 §5)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.27.x
+          cache-dependency-path: go.mod
+
+      # The date form matters: GoReleaser ships buildinfo.Date from
+      # {{ .CommitDate }}, which it renders as UTC RFC3339 (tmpl.go:
+      # CommitDate.UTC().Format(time.RFC3339)). A raw %cI carries the local
+      # offset, so injecting it here would make this gate verify binaries
+      # that differ from the ones that ship.
+      - name: build linux/amd64 twice from cold caches and compare
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse "${GITHUB_REF_NAME}^{commit}")"
+          date="$(date -u -d "$(git show -s --format=%cI "$commit")" +%Y-%m-%dT%H:%M:%SZ)"
+          version="${GITHUB_REF_NAME#v}"
+          ldflags="-s -w -X github.com/a-holm/paceq/internal/buildinfo.Version=$version -X github.com/a-holm/paceq/internal/buildinfo.Commit=$commit -X github.com/a-holm/paceq/internal/buildinfo.Date=$date"
+          # $1 is where the binary and this build's cold cache land, $2 the
+          # tree to build from; the subshell keeps the two builds independent.
+          build() {
+            (
+              cd "$2"
+              GOCACHE="$1-gocache" CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+                go build -trimpath -buildvcs=true -ldflags "$ldflags" \
+                -o "$1" ./cmd/paceq
+            )
+          }
+          # The second build runs from a fresh clone at another absolute path,
+          # with its own cold cache: -trimpath is what makes two builds of one
+          # commit agree across directories, so a build that loses it cannot
+          # slip through by only sharing a directory with its twin.
+          git clone --quiet . /tmp/paceq-rebuild
+          git -C /tmp/paceq-rebuild checkout --quiet "$commit"
+          build /tmp/paceq-a .
+          build /tmp/paceq-b /tmp/paceq-rebuild
+          sha256sum /tmp/paceq-a /tmp/paceq-b
+          if ! cmp -s /tmp/paceq-a /tmp/paceq-b; then
+            echo "::error::the double build disagrees on sha256: not reproducible, refusing to release (plan 08 §5)"
+            exit 1
+          fi
+          echo "double build: identical sha256"
+
+      # Static linkage is asserted on the artifact, not inherited from the
+      # build flags: a cgo leak shows up here as a dynamic ELF.
+      - name: static linkage and size budget for linux/amd64
+        run: |
+          set -euo pipefail
+          description="$(file -b /tmp/paceq-a)"
+          case "$description" in
+            *"statically linked"*|*"static-pie linked"*) ;;
+            *) echo "::error::the binary is dynamically linked, a cgo leak: $description"; exit 1 ;;
+          esac
+          size="$(wc -c </tmp/paceq-a)"
+          budget=$((30 * 1024 * 1024))
+          echo "linux/amd64: $size bytes ($((size / 1024 / 1024)) MiB) of the $budget byte budget"
+          if [ "$size" -ge "$budget" ]; then
+            echo "::error::the binary is over the 30 MB budget (SYNTESE §4.9)"
+            exit 1
+          fi
+
+      # Every shipped platform gets the same probe and the same budget, and the
+      # numbers land in the log so growth towards the ceiling is visible long
+      # before it bites.
+      - name: size log for every platform
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse "${GITHUB_REF_NAME}^{commit}")"
+          # Same UTC RFC3339 form GoReleaser ships, as in the gate above.
+          date="$(date -u -d "$(git show -s --format=%cI "$commit")" +%Y-%m-%dT%H:%M:%SZ)"
+          version="${GITHUB_REF_NAME#v}"
+          budget=$((30 * 1024 * 1024))
+          for target in linux/arm64 darwin/amd64 darwin/arm64; do
+            goos="${target%/*}"
+            arch="${target#*/}"
+            out="/tmp/paceq-$goos-$arch"
+            GOCACHE=/tmp/paceq-a-gocache CGO_ENABLED=0 GOOS="$goos" GOARCH="$arch" go build \
+              -trimpath -buildvcs=true \
+              -ldflags "-s -w -X github.com/a-holm/paceq/internal/buildinfo.Version=$version -X github.com/a-holm/paceq/internal/buildinfo.Commit=$commit -X github.com/a-holm/paceq/internal/buildinfo.Date=$date" \
+              -o "$out" ./cmd/paceq
+            size="$(wc -c <"$out")"
+            echo "$target: $size bytes ($((size / 1024 / 1024)) MiB), $(file -b "$out")"
+            if [ "$size" -ge "$budget" ]; then
+              echo "::error::$target is over the 30 MB budget (SYNTESE §4.9)"
+              exit 1
+            fi
+          done
+
+  # One deklarativ fil does the cross builds, archives, checksums and the draft
+  # release. Runs only after the double-build gate agrees.
+  goreleaser:
+    name: goreleaser draft release
+    needs: reproducible
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.27.x
+          cache-dependency-path: go.mod
+      - name: build, package and upload the draft
+        run: make release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # More than --version: this drives the first-run story from plan 09 §6.3
+  # against the actual release artifacts, downloaded from the draft. Draft
+  # assets are not reachable by unauthenticated curl, which is why the download
+  # goes through gh with the workflow token.
+  smoke:
+    name: smoke the released artifacts
+    needs: goreleaser
+    runs-on: ubuntu-24.04
+    steps:
+      - name: download every asset of the draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir dist
+          gh release download "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --dir dist --clobber
+          ls -l dist
+
+      - name: verify checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum -c checksums.txt
+
+      # The first-run story from plan 09 §6.3 with nothing invented: every
+      # command here is one the binary registers. The run id comes back as
+      # JSON from `run` itself, and `status` and `logs` read it back out of
+      # the state the run left behind.
+      - name: init, validate, apply, run hello, read it back
+        run: |
+          set -euo pipefail
+          cd dist
+          tar xzf paceq_*_linux_amd64.tar.gz
+          ./paceq version --json | jq -e '
+            has("version") and has("commit") and has("date")
+            and has("go_version") and has("os") and has("arch")
+          '
+          export PATH="$PWD:$PATH"
+          mkdir project
+          cd project
+          paceq init
+          paceq validate
+          paceq apply
+          runid="$(paceq -o json run hello --wait | jq -er '.run.id')"
+          echo "hello ran as $runid"
+          paceq status hello > /dev/null
+          paceq logs "$runid" > /dev/null
+          echo "smoke: init, validate, apply, run, status and logs all exited 0"

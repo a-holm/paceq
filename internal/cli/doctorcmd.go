@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/a-holm/paceq/internal/buildinfo"
 	"github.com/a-holm/paceq/internal/doctor"
 )
 
@@ -77,7 +78,7 @@ func buildFinding() doctor.Finding {
 	return doctor.Finding{
 		Level:  doctor.OK,
 		Title:  "paceq",
-		Detail: fmt.Sprintf("%s (%s/%s, %s)", version, runtime.GOOS, runtime.GOARCH, runtime.Version()),
+		Detail: fmt.Sprintf("%s (%s/%s, %s)", buildinfo.Get().Version, runtime.GOOS, runtime.GOARCH, runtime.Version()),
 	}
 }
 

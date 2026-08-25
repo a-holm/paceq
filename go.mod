@@ -1,8 +1,6 @@
 module github.com/a-holm/paceq
 
-go 1.25.0
-
-toolchain go1.26.6
+go 1.27.0
 
 require (
 	github.com/adhocore/gronx v1.20.3

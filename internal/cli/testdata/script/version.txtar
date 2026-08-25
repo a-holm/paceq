@@ -4,9 +4,10 @@
 exec paceq version
 stdout '"version":'
 stdout '"commit":'
-stdout '"built":'
-stdout '"go":'
-stdout '"platform":'
+stdout '"date":'
+stdout '"go_version":'
+stdout '"os":'
+stdout '"arch":'
 stdout '"schema_version":'
 
 # -o text is the same facts for a person.

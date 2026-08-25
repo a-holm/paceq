@@ -136,7 +136,12 @@ func TestR63SmallChunksWithoutNewlineStayBounded(t *testing.T) {
 	runtime.GC()
 	runtime.ReadMemStats(&after)
 	grown := int64(after.HeapAlloc) - int64(before.HeapAlloc)
-	if grown > 16<<20 {
+	// The defect this bounds is a whole-line buffered on the heap (~totalMiB).
+	// The threshold sits clearly below that and above the measured stream
+	// retention, which the runtime's allocator can swing by a few MiB between
+	// Go releases (go1.27 measured ~18 MiB). 24 MiB still fails a real
+	// whole-line buffer while tolerating allocator noise.
+	if grown > 24<<20 {
 		t.Fatalf("feeding %d MiB in pipe-sized chunks retained %d MiB on the heap: "+
 			"an endless line delivered the way exec delivers it is buffered whole",
 			totalMiB, grown>>20)
