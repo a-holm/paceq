@@ -193,6 +193,17 @@ sensors-examples:
 	@$(GO) test ./examples/sensors/ -count=1
 	@$(GO) test ./internal/store/ -run 'TestExampleSensorProductionPath' -count=1
 
+# install.sh is shell too, so it gets the same deal as the sensor scripts
+# above: parse-check always, shellcheck when it is installed.
+install-script:
+	@sh -n install.sh || { echo "sh -n failed for install.sh"; exit 1; }
+	@echo "install-script: install.sh parses under sh -n"
+	@if ! command -v shellcheck >/dev/null 2>&1; then \
+		echo "SKIP install-script/shellcheck: shellcheck not installed"; \
+	else \
+		shellcheck install.sh; \
+	fi
+
 # Gold standard fixtures are expectations, not code: a commit that edits one
 # must carry a FIXTURE-CHANGE: line with the reason (plan 04 section 8 point
 # 2). The same check runs as a GitHub Actions job on every pull request. It is
@@ -201,7 +212,7 @@ sensors-examples:
 fixture-change:
 	scripts/check-fixture-change.sh origin/main HEAD
 
-ci: fmt-check vet staticcheck gosec govulncheck tidy-check test property gate fuzz build test-scratch sensors-examples cross
+ci: fmt-check vet staticcheck gosec govulncheck tidy-check test property gate fuzz build test-scratch sensors-examples install-script cross
 
 hooks:
 	git config core.hooksPath .githooks
