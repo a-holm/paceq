@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -130,6 +131,8 @@ func runExportRun(ctx context.Context, env Env, g *globals, out *ui, f exportFla
 	}
 
 	files := map[string]string{}
+	// The archive destination is the operator's own -o flag: a chosen output
+	// path has no fixed root to be scoped under. #nosec G304
 	archive, err := os.Create(dst)
 	if err != nil {
 		return internalError(fmt.Sprintf("could not create %s", dst), err)
@@ -158,7 +161,14 @@ func runExportRun(ctx context.Context, env Env, g *globals, out *ui, f exportFla
 		return writeFailure(dst, err)
 	}
 
-	// Log attempts come straight off disk, newest naming first by spec order.
+	// Log attempts come straight off disk, newest naming first by spec
+	// order. The os.Root keeps every read inside the log directory even if
+	// a database row ever carried a hostile relative path.
+	logRootFS, err := os.OpenRoot(filepath.Join(stateDir, "logs"))
+	if err != nil {
+		return internalError("could not open the log directory", err)
+	}
+	defer func() { _ = logRootFS.Close() }()
 	root := logsink.NewRoot(stateDir)
 	for _, step := range data.Steps {
 		attempts, err := root.AttemptFiles(data.Run.ID, step.Name)
@@ -166,18 +176,22 @@ func runExportRun(ctx context.Context, env Env, g *globals, out *ui, f exportFla
 			return internalError("could not list the log files of this run", err)
 		}
 		for _, attempt := range attempts {
-			path, err := root.Abs(attempt.RelPath)
-			if err != nil {
+			if _, err := root.Abs(attempt.RelPath); err != nil {
 				return internalError("could not resolve a log path", err)
 			}
-			payload, err := os.ReadFile(path)
+			f, err := logRootFS.Open(attempt.RelPath)
 			if err != nil {
 				return notFoundError(
-					fmt.Sprintf("the log file %s is gone", path),
+					fmt.Sprintf("the log file %s is gone from the log directory", attempt.RelPath),
 					attempt.RelPath,
 					"the database row survives; only the file aged out of the log directory",
 					"",
 				)
+			}
+			payload, readErr := io.ReadAll(f)
+			_ = f.Close()
+			if readErr != nil {
+				return internalError("could not read a log attempt", readErr)
 			}
 			name := fmt.Sprintf("logs/%s.%d.ndjson", step.Name, attempt.Attempt)
 			if err := addFile(name, payload, 0o600); err != nil {
