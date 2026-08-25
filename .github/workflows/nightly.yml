@@ -56,8 +56,11 @@ jobs:
         if: always()
         run: |
           echo "### Chaos nightly" >> "$GITHUB_STEP_SUMMARY"
-          grep 'chaos report:' chaos-output.log >> "$GITHUB_STEP_SUMMARY" \
-            || echo "no chaos report line was logged" >> "$GITHUB_STEP_SUMMARY"
+          if grep 'chaos report:' chaos-output.log >> "$GITHUB_STEP_SUMMARY"; then
+            :
+          else
+            echo "no chaos report line was logged" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       # AC-11: on failure the evidence is archived as a CI artifact - the
       # state database with its wal and shm siblings, the step logs, every
