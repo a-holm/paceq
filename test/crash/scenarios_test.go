@@ -460,7 +460,36 @@ var scenarios = append([]Scenario{
 	// skipped steps only, extract is spared with its one attempt and its
 	// one effect, transform succeeds on attempt 2, and six lines land in
 	// all.
-}, reopenedDiamond()...)
+}, append(reopenedDiamond(),
+	// The wide fan-out row (#20): killed right after the root's verdict
+	// committed, before any leaf was claimed. The graph's width is what
+	// the row exercises - twenty frozen edges, twenty pending steps and
+	// a collector that needs them all must survive a crash that caught
+	// the run between two of them, and nothing may run twice on the way
+	// back.
+	Scenario{
+		Name: "wide_fanout_result", KillAt: dagOutcomeAfterCommit, Kind: "execute",
+		Steps:      wideFanout(),
+		MinEffects: 22, MaxEffects: 22,
+		StepMinEffects: 1, StepMaxEffects: 1,
+		ExpectRequeue: true,
+	},
+)...)
+
+// wideFanout is one root feeding twenty leaves feeding one collector: the
+// width the wide_fanout row crashes in.
+func wideFanout() []dagStep {
+	steps := make([]dagStep, 0, 22)
+	steps = append(steps, dagStep{Name: "root"})
+	var leaves []string
+	for i := 1; i <= 20; i++ {
+		name := fmt.Sprintf("leaf%02d", i)
+		leaves = append(leaves, name)
+		steps = append(steps, dagStep{Name: name, Needs: []string{"root"}})
+	}
+	steps = append(steps, dagStep{Name: "collector", Needs: leaves})
+	return steps
+}
 
 // reopenedDiamond builds the two operator-reopen cells over one failed
 // diamond: transform fails on attempt 1 without a budget, the kill window
