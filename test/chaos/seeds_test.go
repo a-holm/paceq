@@ -18,6 +18,16 @@ func TestRegressionSeedsFileParses(t *testing.T) {
 	}
 }
 
+func TestSeedFromEnvUsesFallbackAndOverride(t *testing.T) {
+	if got := seedFromEnv(t, 17); got != 17 {
+		t.Fatalf("unset seed = %d, want fallback 17", got)
+	}
+	t.Setenv(envSeed, "23")
+	if got := seedFromEnv(t, 17); got != 23 {
+		t.Fatalf("set seed = %d, want 23", got)
+	}
+}
+
 func seedFromEnv(t *testing.T, fallback int64) int64 {
 	t.Helper()
 
