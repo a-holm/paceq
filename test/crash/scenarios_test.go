@@ -85,14 +85,23 @@ type Scenario struct {
 }
 
 // dagStep is one step of a DAG row's frozen spec: its name, the steps it
-// needs, and whether it carries a retry budget. A crashed attempt is handed
-// back to the step's own policy, so the step a kill catches mid-flight
-// carries RetryMax 1: the row then proves bounded duplication instead of a
-// terminal failure.
+// needs, whether it carries a retry budget, and how its command behaves. A
+// crashed attempt is handed back to the step's own policy, so the step a
+// kill catches mid-flight carries RetryMax 1: the row then proves bounded
+// duplication instead of a terminal failure.
+//
+// Mode picks the fixture command's behaviour: "" or "append" appends one
+// effect and exits 0; "first-drip" hangs attempt 1 so a kill can land under
+// execution; "fail-first" fails attempt 1 after writing its effect and
+// succeeds on any later attempt. RetryInitial, when set with a retry budget,
+// pins the backoff policy so a parked retry waits milliseconds, not the
+// thirty second default.
 type dagStep struct {
-	Name     string
-	Needs    []string
-	RetryMax int
+	Name         string
+	Needs        []string
+	RetryMax     int
+	Mode         string
+	RetryInitial string
 }
 
 // Crash points, named after the window they sit in so a failing row names
@@ -125,6 +134,7 @@ const (
 	// start_step transition; the store-level M4:claim:after_update point
 	// belongs to a claim path ExecuteRun does not walk, so no row arms it.
 	dagOutcomeAfterCommit = "M4:outcome:after_commit"
+	dagRetryAfterPlan     = "M4:retry:after_plan"
 )
 
 func succeeded() []string { return []string{"succeeded"} }
@@ -334,6 +344,31 @@ var scenarios = []Scenario{
 		MinEffects: 5, MaxEffects: 5,
 		StepMinEffects: 1, StepMaxEffects: 1,
 		ExpectRequeue: true,
+	},
+
+	// The retry row (#20): whs fails its first attempt while carrying the
+	// diamond's parallel cap on the run, and the crash lands inside the
+	// one transaction that was about to schedule attempt 2. The rollback
+	// erases verdict and retry plan together; recovery closes the dead
+	// attempt as STEP_FAILED_EXECUTOR_LOST and hands it to the same
+	// policy, so the second attempt still comes - bounded, once, after
+	// the fixed millisecond wait the frozen spec pins. Six lines in all:
+	// whs twice, every other step once.
+	{
+		Name: "retry_parallel", KillAt: dagRetryAfterPlan, Kind: "execute",
+		Steps: []dagStep{
+			{Name: "extract"},
+			{Name: "transform", Needs: []string{"extract"}},
+			{
+				Name: "whs", Needs: []string{"transform"},
+				RetryMax: 1, RetryInitial: "10ms", Mode: "fail-first",
+			},
+			{Name: "cache", Needs: []string{"transform"}},
+			{Name: "notify", Needs: []string{"whs", "cache"}},
+		},
+		MinEffects: 6, MaxEffects: 6,
+		StepMinEffects: 1, StepMaxEffects: 2,
+		ExpectRequeue: true, ExpectExecutorLost: true,
 	},
 }
 

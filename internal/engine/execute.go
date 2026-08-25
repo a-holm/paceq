@@ -463,6 +463,11 @@ func (e *Engine) runStep(ctx context.Context, d *drive, name string, h *heldRun)
 				ReasonCode:    reason.STEPRetryScheduled,
 				DetailJSON:    detailJSON(facts),
 			}
+			// The crash window inside the verdict transaction that
+			// carries a retry plan: a kill here erases the failure
+			// verdict and the scheduled attempt together, and recovery
+			// hands the dead attempt back to the same policy (#20).
+			faults.Point("M4:retry:after_plan")
 		} else {
 			outcome.ReasonCode = reason.STEPRetriesExhausted
 			outcome.DetailJSON = mergeDetail(outcome.DetailJSON, map[string]any{

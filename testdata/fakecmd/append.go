@@ -13,6 +13,9 @@
 //	first-drip <file>  write one effect line, then, on attempt 1 only,
 //	                   keep writing to stdout until the reader goes away
 //	                   or a hard cap passes; any later attempt exits at once
+//	fail-first <file>  write one effect line, exit 1 on attempt 1 and
+//	                   exit 0 on any later attempt: a step whose first
+//	                   try fails and whose retry succeeds
 package main
 
 import (
@@ -77,6 +80,19 @@ func main() {
 			die("append needs a file")
 		}
 		appendEffect(args[0])
+
+	case "fail-first":
+		if len(args) < 1 {
+			die("fail-first needs a file")
+		}
+		appendEffect(args[0])
+		if attempt() <= 1 {
+			// The first try fails: the effect is on file, the
+			// verdict is failure, and the step's own retry
+			// policy owes a second attempt.
+			os.Exit(1)
+		}
+		os.Exit(0)
 
 	case "first-drip":
 		if len(args) < 1 {

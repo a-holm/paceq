@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/a-holm/paceq/internal/clock"
 	"github.com/a-holm/paceq/internal/engine"
@@ -477,7 +478,6 @@ func applyJob(t *testing.T, s *store.Store, sc Scenario, appendBin, effectFile s
 	t.Helper()
 
 	quote := func(s string) string { return strconv.Quote(s) }
-	runArg := fmt.Sprintf(`[%s,%s,%s]`, quote(appendBin), quote("append"), quote(effectFile))
 
 	var steps []string
 	if len(sc.Steps) > 0 {
@@ -490,9 +490,26 @@ func applyJob(t *testing.T, s *store.Store, sc Scenario, appendBin, effectFile s
 				}
 				step += fmt.Sprintf(`,"needs":[%s]`, strings.Join(names, ","))
 			}
-			step += `,"run":` + runArg
+			mode := st.Mode
+			if mode == "" {
+				mode = "append"
+			}
+			step += fmt.Sprintf(`,"run":[%s,%s,%s]`,
+				quote(appendBin), quote(mode), quote(effectFile))
 			if st.RetryMax > 0 {
-				step += fmt.Sprintf(`,"retry":{"max":%d}`, st.RetryMax)
+				retry := fmt.Sprintf(`{"max":%d`, st.RetryMax)
+				if st.RetryInitial != "" {
+					d, err := time.ParseDuration(st.RetryInitial)
+					if err != nil {
+						t.Fatalf("parse the retry wait of step %s: %v", st.Name, err)
+					}
+					// The canonical form spells waits in whole
+					// milliseconds, so that is what the frozen
+					// document carries.
+					retry += fmt.Sprintf(`,"backoff":"fixed","initial_ms":%d,"jitter":"none"`,
+						d.Milliseconds())
+				}
+				step += `,"retry":` + retry + "}"
 			}
 			steps = append(steps, step+"}")
 		}
