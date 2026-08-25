@@ -79,7 +79,7 @@ func DefaultPolicies() Policies {
 
 // withDefaults fills zero fields from DefaultPolicies, so a caller may set
 // only the keys it cares about.
-func (p Policies) withDefaults() Policies {
+func (p Policies) WithDefaults() Policies {
 	d := DefaultPolicies()
 	if p.LogShardDays <= 0 {
 		p.LogShardDays = d.LogShardDays
