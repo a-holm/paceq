@@ -1,29 +1,54 @@
-# status is the morning view: every job, its newest run, how it ended and
-# how long ago. A job that has never run says so instead of vanishing. This
-# is the golden for the JSON a script reads.
+# status is the morning view (#30): one line per job on one screen,
+# deviations sorted first, an aggregate line above them, and a hint naming
+# the explain command under every deviation. The exit code is half of the
+# contract - monitoring runs this from cron and reads nothing else - so this
+# script walks it end to end. It is also the golden for the --json document,
+# whose schema_version makes a shape change break visibly here.
 
 exec paceq init
 cp nightly.yaml jobs/nightly.yaml
 cp import.yaml jobs/import.yaml
 exec paceq apply
 
-# One job runs; the other never has.
+# One job succeeds; one has never run. Everything is inside its window:
+# exit 0, and the daemon field answers honestly about being down.
 env PULSEQ_FAKE_CLOCK=2026-09-24T09:05:00Z
 exec paceq run nightly
 env PULSEQ_FAKE_CLOCK=2026-09-24T09:00:00Z
 
-wantexit 0 status.json status_err.txt status -o json
-maskfile status.json
-cmpjson status.json status_golden.json
+wantexit 0 ok.json ok_err.txt status -o json
+maskfile ok.json
+cmpjson ok.json status_ok_golden.json
 
-# The table marks the healthy job and points at the empty one.
-wantexit 0 text.txt text_err.txt status -o text
-grep 'nightly' text.txt
-grep 'no runs yet' text.txt
+# The text table works without UTF-8 (LC_ALL=C), marks daemon down, and
+# says plainly which job never ran.
+wantexit 0 ok.txt ok_txt_err.txt status -o text
+grep 'daemon down' ok.txt
+grep 'no runs yet' ok.txt
+grep 'nightly' ok.txt
 
-# A job name nothing matches is the did-you-mean refusal.
-wantexit 3 nj.json nj_err.txt status nightl
-grep 'did you mean "nightly"?' nj_err.txt
+# A name nothing matches is the did-you-mean refusal: exit 3.
+wantexit 3 - - status nightl
+
+# A reference draws its block; the bare form resolves heuristically.
+wantexit 0 ref.json ref_err.txt status nightly
+maskfile ref.json
+cmpjson ref.json status_ref_golden.json
+
+# Now import dies inside the window. The overview puts it first, carries
+# the runnable hint under its row, and leaves via exit 5 while every byte
+# of data stays on stdout.
+env PULSEQ_FAKE_CLOCK=2026-09-24T09:06:00Z
+! exec paceq run import
+env PULSEQ_FAKE_CLOCK=2026-09-24T09:00:00Z
+
+wantexit 5 bad.json bad_err.txt status -o json
+maskfile bad.json
+cmpjson bad.json status_golden.json
+
+wantexit 5 bad.txt bad_txt_err.txt status -o text
+grep '^1 deviations' bad.txt
+grep 'last run did not succeed - run `paceq explain job import`' bad.txt
 
 -- nightly.yaml --
 name: nightly
@@ -37,27 +62,113 @@ name: import
 description: Bring yesterday's numbers in.
 steps:
   - name: fetch
-    run: ["/bin/echo", "import done"]
+    run: ["/bin/sh", "-c", "echo dying on purpose; exit 9"]
 
--- status_golden.json --
-[
-  {
-    "job": "hello"
+-- status_ok_golden.json --
+{
+  "daemon": {
+    "up": false
   },
-  {
-    "job": "import"
+  "generated_at": "2026-09-24T09:00:00Z",
+  "jobs": [
+    {
+      "name": "hello",
+      "state": "idle"
+    },
+    {
+      "name": "import",
+      "state": "idle"
+    },
+    {
+      "last_run": {
+        "duration_ms": 0,
+        "finished_at": "2026-09-24T09:05:00Z",
+        "id": "<RUN1>",
+        "outcome": "succeeded",
+        "reason_code": "RUN_SUCCEEDED",
+        "started_at": "2026-09-24T09:05:00Z"
+      },
+      "name": "nightly",
+      "state": "ok"
+    }
+  ],
+  "schema_version": 1,
+  "summary": {
+    "deviations": 0,
+    "failed_24h": 0,
+    "jobs": 3,
+    "queued": 0,
+    "running": 0,
+    "sensors_in_error": 0,
+    "sla_breached": 0
+  }
+}
+-- status_ref_golden.json --
+{
+  "daemon": {
+    "up": false
   },
-  {
-    "available_at": "2026-09-24T09:05:00Z",
-    "created_at": "2026-09-24T09:05:00Z",
+  "generated_at": "2026-09-24T09:00:00Z",
+  "last_run": {
+    "duration_ms": 0,
     "finished_at": "2026-09-24T09:05:00Z",
     "id": "<RUN1>",
-    "job": "nightly",
+    "outcome": "succeeded",
     "reason_code": "RUN_SUCCEEDED",
-    "reason_data": "{}",
-    "started_at": "2026-09-24T09:05:00Z",
-    "state": "succeeded",
-    "steps_done": 1,
-    "steps_total": 1
+    "started_at": "2026-09-24T09:05:00Z"
+  },
+  "schema_version": 1,
+  "state": "ok",
+  "subject": {
+    "job": "nightly",
+    "kind": "job"
   }
-]
+}
+-- status_golden.json --
+{
+  "daemon": {
+    "up": false
+  },
+  "generated_at": "2026-09-24T09:00:00Z",
+  "jobs": [
+    {
+      "hint": "paceq explain job import",
+      "last_run": {
+        "duration_ms": 0,
+        "finished_at": "2026-09-24T09:06:00Z",
+        "id": "<RUN1>",
+        "outcome": "failed",
+        "reason_code": "RUN_FAILED_STEP",
+        "started_at": "2026-09-24T09:06:00Z"
+      },
+      "name": "import",
+      "state": "failed"
+    },
+    {
+      "name": "hello",
+      "state": "idle"
+    },
+    {
+      "last_run": {
+        "duration_ms": 0,
+        "finished_at": "2026-09-24T09:05:00Z",
+        "id": "<RUN2>",
+        "outcome": "succeeded",
+        "reason_code": "RUN_SUCCEEDED",
+        "started_at": "2026-09-24T09:05:00Z"
+      },
+      "name": "nightly",
+      "state": "ok"
+    }
+  ],
+  "schema_version": 1,
+  "summary": {
+    "deviations": 1,
+    "failed_24h": 1,
+    "jobs": 3,
+    "queued": 0,
+    "running": 0,
+    "sensors_in_error": 0,
+    "sla_breached": 0
+  }
+}
