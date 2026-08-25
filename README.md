@@ -74,7 +74,7 @@ commit twice and refuses to ship unless both builds agree byte for byte
 
 ## Build
 
-Building requires Go 1.25 or newer. The full local gate needs Go 1.26 or newer, or `GOTOOLCHAIN=auto`, because staticcheck declares Go 1.26. No C toolchain: the binary is built with `CGO_ENABLED=0` and is statically linked. The race detector in `make test` is the single exception. It builds the test binaries with cgo and never touches the shipped artifact.
+Building requires Go 1.27 or newer (the version go.mod asks for; `GOTOOLCHAIN=auto` fetches it if needed). No C toolchain: the binary is built with `CGO_ENABLED=0` and is statically linked. The race detector in `make test` is the single exception. It builds the test binaries with cgo and never touches the shipped artifact.
 
 ```
 make build     # bin/paceq
@@ -90,7 +90,7 @@ Run `make hooks` once after cloning. It points git at `.githooks`, so formatting
 
 ## Continuous integration
 
-[.github/workflows/ci.yml](.github/workflows/ci.yml) runs on every pull request and on every push to main. The `verify` job runs `make fmt-check`, `make vet`, `make staticcheck`, `make gosec`, `make govulncheck`, `make tidy-check`, `make test`, `make gate`, `make fuzz` and `make build`, one target per step so a red run names the gate that failed. `make fuzz` gives the job file parser sixty seconds of fuzzing per pull request, because a job file is untrusted input. The `cross-build` job runs `scripts/cross-build.sh` per platform. `make ci` runs that same set locally. Every gate blocks; nothing in the pipeline is advisory. The pipeline builds with the current Go 1.26 toolchain, which does not weaken the Go 1.25 floor above: `go vet` reports any standard library symbol newer than the version in go.mod.
+[.github/workflows/ci.yml](.github/workflows/ci.yml) runs on every pull request and on every push to main. The `verify` job runs `make fmt-check`, `make vet`, `make staticcheck`, `make gosec`, `make govulncheck`, `make tidy-check`, `make test`, `make gate`, `make fuzz` and `make build`, one target per step so a red run names the gate that failed. `make fuzz` gives the job file parser sixty seconds of fuzzing per pull request, because a job file is untrusted input. The `cross-build` job runs `scripts/cross-build.sh` per platform. `make ci` runs that same set locally. Every gate blocks; nothing in the pipeline is advisory. The pipeline builds with the current Go 1.27 toolchain, which matches the floor in go.mod exactly: `go vet` reports any standard library symbol newer than the version in go.mod.
 
 The cross build is the gate behind the promise of one static binary per platform. For each target it proves that no package outside the standard library needs cgo, that the built binary records `CGO_ENABLED=0`, that Linux binaries are statically linked and built for the expected architecture, and that the binary stays under the 30 MB budget.
 
