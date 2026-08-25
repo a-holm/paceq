@@ -20,6 +20,7 @@ GOFUMPT     := mvdan.cc/gofumpt@v0.11.0
 STATICCHECK := honnef.co/go/tools/cmd/staticcheck@v0.8.0
 GOSEC       := github.com/securego/gosec/v2/cmd/gosec@v2.28.0
 GOVULNCHECK := golang.org/x/vuln/cmd/govulncheck@v1.7.0
+GORELEASER  := github.com/goreleaser/goreleaser/v2@v2.17.0
 
 # The shipped binary is cgo free. Every target inherits this.
 export CGO_ENABLED = 0
@@ -38,7 +39,7 @@ export GOFLAGS += -buildvcs=false
 CROSS_TARGETS := linux/amd64 linux/arm64 darwin/arm64
 
 .PHONY: all build test property gate chaos bench fuzz fmt fmt-check vet staticcheck lint gosec govulncheck \
-	tidy-check cross test-scratch sensors-examples ci fixture-change hooks clean
+	tidy-check cross release-snapshot release test-scratch sensors-examples ci fixture-change hooks clean
 
 all: build
 
@@ -138,6 +139,19 @@ cross:
 		scripts/cross-build.sh "$${target%/*}" "$${target#*/}" || exit 1; \
 	done
 
+# The release pipeline (issue #43), driven by the same pinned GoReleaser a tag
+# push runs. release-snapshot is the pull request gate: it runs every build,
+# archive, checksum and naming rule against a throwaway dist directory without
+# publishing anything, so a broken .goreleaser.yaml is caught before anyone
+# tags. It needs real git metadata for -buildvcs, which a linked worktree of
+# the bare checkout does not have; run it from a full clone. `make release` is
+# what the release workflow runs on a v* tag; it creates a draft release that
+# M5-09 reviews before publishing.
+release-snapshot:
+	$(GO) run $(GORELEASER) release --snapshot --clean
+
+release:
+	$(GO) run $(GORELEASER) release --clean
 
 # Scratch container proof for the tzdata embed (issue #47): inside FROM
 # scratch there is no /usr/share/zoneinfo, no shell and no network, so the
