@@ -462,7 +462,11 @@ func (j *Janitor) backup(ctx context.Context) BackupOutcome {
 	}
 	dst := j.backupPath()
 
-	deep := !info.LastDeepCheck.IsZero() && j.clk.Now().Sub(info.LastDeepCheck) >= DeepCheckEvery
+	// The verification ladder: quick_check on an ordinary night,
+	// integrity_check once the week has rolled since the last deep pass. A
+	// database with no recorded deep pass gets the deep one right away - it
+	// is the baseline that makes every later quick check meaningful.
+	deep := info.LastDeepCheck.IsZero() || j.clk.Now().Sub(info.LastDeepCheck) >= DeepCheckEvery
 	pragma := "quick_check"
 	if deep {
 		pragma = "integrity_check"
