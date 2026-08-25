@@ -1,0 +1,32 @@
+# The M4 shape as a runnable job: one root, two branches that may run at
+# the same time, and a collector that waits for both. The commands write
+# their effect lines under effects/ keyed by the run id, so a demo can
+# count exactly how often each step ran. The warehouse branch also honours
+# a marker file: while marks/fail-warehouse exists, the step exits 1 and
+# the failure closes its downstream with skip reasons.
+#
+# scripts/demo-m4.sh walks this job through the whole M4 story: green,
+# failure, skipped downstream, retry that reuses what already succeeded.
+name: diamond
+description: One root, two parallel branches, one collector, and a second level behind the warehouse branch.
+steps:
+  - name: extract
+    run: ["/bin/sh", "-c", "echo extract >> effects/$PACEQ_RUN_ID.extract.txt"]
+  - name: transform
+    needs: [extract]
+    run: ["/bin/sh", "-c", "echo transform >> effects/$PACEQ_RUN_ID.transform.txt"]
+  - name: load-warehouse
+    needs: [transform]
+    run: ["/bin/sh", "-c", "test ! -e marks/fail-warehouse && echo \"load-warehouse attempt $PACEQ_ATTEMPT\" && echo load-warehouse >> effects/$PACEQ_RUN_ID.load-warehouse.txt && sleep 1"]
+  - name: publish
+    needs: [load-warehouse]
+    run: ["/bin/sh", "-c", "echo publish >> effects/$PACEQ_RUN_ID.publish.txt"]
+  - name: report
+    needs: [publish]
+    run: ["/bin/sh", "-c", "echo report >> effects/$PACEQ_RUN_ID.report.txt"]
+  - name: load-cache
+    needs: [transform]
+    run: ["/bin/sh", "-c", "echo load-cache >> effects/$PACEQ_RUN_ID.load-cache.txt && sleep 1"]
+  - name: notify
+    needs: [load-cache, report]
+    run: ["/bin/sh", "-c", "echo notify >> effects/$PACEQ_RUN_ID.notify.txt"]
