@@ -145,6 +145,7 @@ func newRoot(env Env) *cobra.Command {
 		newRunCmd(env, &g),
 		newServeCmd(env, &g),
 		newRunsCmd(env, &g),
+		newExplainCmd(env, &g),
 		newSchedulesCmd(env, &g),
 		newSensorsCmd(env, &g),
 		newStatusCmd(env, &g),
