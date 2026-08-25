@@ -319,6 +319,9 @@ func (s *Store) MaterializeTick(ctx context.Context, in TickInput) (TickResult, 
 	sourceName := in.Schedule.JobName + "/" + in.Schedule.Name
 
 	out := TickResult{}
+	// The verdict that actually lands in ticks.outcome, decided inside the
+	// transaction below and observed after it commits (#40).
+	var finalOutcome, finalReason string
 	err = s.withTx(ctx, func(tx *sql.Tx) error {
 		// Pause is re-read INSIDE the transaction. A pause applied between
 		// discovery and this instant must turn the evaluation into a
@@ -332,6 +335,10 @@ func (s *Store) MaterializeTick(ctx context.Context, in TickInput) (TickResult, 
 			return fmt.Errorf("read the pause flag of schedule %s: %w", sourceName, err)
 		}
 
+		// fo/fr follow the verdict that actually lands in ticks.outcome: the
+		// pause re-read and the admission gate can both rewrite a triggered
+		// evaluation into a stand-down inside the transaction, and the counter
+		// must record what committed, not what was asked for (#40).
 		outcome := in.Outcome
 		reasonCode := in.ReasonCode
 		if paused == 1 && outcome == OutcomeTriggered {
@@ -339,6 +346,7 @@ func (s *Store) MaterializeTick(ctx context.Context, in TickInput) (TickResult, 
 			reasonCode = reason.TICKSkippedPaused
 			out.Run = Run{}
 		}
+		finalOutcome, finalReason = outcome, string(reasonCode)
 
 		faults.Point("M2:tick:before_insert")
 
@@ -401,13 +409,15 @@ func (s *Store) MaterializeTick(ctx context.Context, in TickInput) (TickResult, 
 			// it has already converted the claimed tick row into the
 			// skipped row with its reason inside this same transaction,
 			// so one row per fire-time stays the idempotency gate's
-			// promise.
-			run, err := s.admitTickRun(tx, in, now, at, tickID, sourceName, fireAt, actor)
+			// promise. The verdict it left behind is what the counter
+			// records.
+			run, verdict, code, err := s.admitTickRun(tx, in, now, at, tickID, sourceName, fireAt, actor)
 			if err != nil {
 				return err
 			}
 			out.Run = run
 			out.Deferred = run.DeferReason != ""
+			finalOutcome, finalReason = verdict, string(code)
 		default:
 			// A skip or an error closes its own evaluation: started,
 			// finished, explained. No trigger, no run.
@@ -433,6 +443,11 @@ WHERE id = ?`, at, tickID); err != nil {
 		return TickResult{}, err
 	}
 	faults.Point("M2:tick:after_commit")
+	if out.Claimed {
+		// Only a claimed fire-time was an event: a follower pass that lost
+		// the UNIQUE gate committed nothing and counts nowhere (#40).
+		s.observeTick("schedule", in.Schedule.Name, finalOutcome, finalReason)
+	}
 	return out, nil
 }
 
@@ -455,7 +470,7 @@ WHERE id = ?`, at, tickID); err != nil {
 //     the reason code, and the caller records that in the same transaction.
 func (s *Store) admitTickRun(tx *sql.Tx, in TickInput, now time.Time, at int64,
 	tickID, sourceName string, fireAt time.Time, actor string,
-) (Run, error) {
+) (Run, string, reason.Code, error) {
 	// The version is chosen inside the transaction, so an apply racing the
 	// loop still freezes one whole version rather than a mix of two.
 	var versionID, specJSON string
@@ -463,13 +478,13 @@ func (s *Store) admitTickRun(tx *sql.Tx, in TickInput, now time.Time, at int64,
 FROM jobs j JOIN job_versions v ON v.id = j.current_version_id
 WHERE j.name = ?`, in.Schedule.JobName).Scan(&versionID, &specJSON); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return Run{}, fmt.Errorf("materialise %s: no job version is current: %w", sourceName, ErrNotFound)
+			return Run{}, "", "", fmt.Errorf("materialise %s: no job version is current: %w", sourceName, ErrNotFound)
 		}
-		return Run{}, fmt.Errorf("find the current version of job %s: %w", in.Schedule.JobName, err)
+		return Run{}, "", "", fmt.Errorf("find the current version of job %s: %w", in.Schedule.JobName, err)
 	}
 	job, err := spec.FromIR([]byte(specJSON))
 	if err != nil {
-		return Run{}, fmt.Errorf("read the frozen spec of job %s (version %s): %w",
+		return Run{}, "", "", fmt.Errorf("read the frozen spec of job %s (version %s): %w",
 			in.Schedule.JobName, versionID, err)
 	}
 	limit := job.MaxConcurrent
@@ -481,7 +496,7 @@ WHERE j.name = ?`, in.Schedule.JobName).Scan(&versionID, &specJSON); err != nil 
 	// transaction. Nothing between the SELECT and the INSERT can commit.
 	active, blocking, err := activeRunsForJobTx(tx, in.Schedule.JobName, at)
 	if err != nil {
-		return Run{}, err
+		return Run{}, "", "", err
 	}
 
 	if active >= limit && overlapOf(in.Schedule.Overlap) != "queue" {
@@ -493,9 +508,9 @@ WHERE j.name = ?`, in.Schedule.JobName).Scan(&versionID, &specJSON); err != nil 
 				blocking, active, limit)
 		}
 		if err := markTickStoodDownTx(tx, tickID, at, code, text, deferDataJSON(blocking, active, limit)); err != nil {
-			return Run{}, err
+			return Run{}, "", "", err
 		}
-		return Run{}, nil
+		return Run{}, OutcomeSkipped, code, nil
 	}
 
 	deferred := active >= limit
@@ -503,9 +518,9 @@ WHERE j.name = ?`, in.Schedule.JobName).Scan(&versionID, &specJSON); err != nil 
 	run, err := s.materializeTickRun(tx, in, now, at, tickID, sourceName, fireAt, actor,
 		versionID, job, deferred, blocking, active, limit, concKey)
 	if err != nil {
-		return Run{}, err
+		return Run{}, "", "", err
 	}
-	return run, nil
+	return run, OutcomeTriggered, "", nil
 }
 
 // markTickStoodDownTx converts the just claimed triggered tick row into the

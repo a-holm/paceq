@@ -664,6 +664,9 @@ func (s *Store) ReapExpiredRuns(ctx context.Context, opt ReapOptions) ([]ReapedR
 	if err != nil {
 		return nil, err
 	}
+	// Every reaped run was a lease a dead holder kept: one hook call per
+	// sweep, after the transaction, so a refused reclaim counts nowhere (#40).
+	s.observeLeaseReclaims(len(out))
 	return out, nil
 }
 
