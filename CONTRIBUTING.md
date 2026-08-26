@@ -25,3 +25,22 @@ the catalogue tests reject an empty excuse. If you add a writer for an exempt
 code, add the scenario in the same commit and drop the exemption.
 
 Pull requests carry the same rule as a checkbox in the template.
+
+## Generated documentation
+
+Two reference pages are generated, never hand-edited:
+[docs/reference/cli.md](docs/reference/cli.md) from the cobra command tree and
+[docs/reference/reason-codes.md](docs/reference/reason-codes.md) from the
+reason catalogue. Their staleness tests run inside `make test`, so changing
+help text or a catalogue entry without regenerating is red. Run
+
+```
+make docs
+```
+
+and commit the regenerated pages together with your change. The same gate
+keeps the prose honest: code blocks marked `<!-- run -->` in the README and
+tutorials execute against a freshly built binary on every test run, relative
+links in every markdown file must resolve, the phrase "exactly-once" is never
+written as a promise, only inside a negation, and user-facing material stays
+in English (see internal/cli/docsexamples_test.go).

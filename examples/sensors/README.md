@@ -22,7 +22,8 @@ quiet run. The reference contract is `docs/reference/sensor-contract.md`.
 
 A sensor is a program that answers one question: what is new since the cursor?
 You do not move files, you do not mark them read. You say what is new and let
-paceq's run_keys dedup + cursor give you exactly once. That frees you from
+paceq's run_keys dedup + cursor give you at most one run per trigger identity.
+That frees you from
 the classic dropbox bug where moving the file and crashing lose data.
 
 `mal.sh` is the blank form. Run it through the linter to see a valid answer:

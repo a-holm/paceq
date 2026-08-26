@@ -33,6 +33,31 @@ These are promises paceq does not make (plans: 02 §4.2, 00 §4.11).
 - **No guarantee that the last log lines before a power cut survive.** Logs are files, written with buffered I/O and never fsynced per line. Each line carries a sequence number, so loss and truncation are detectable rather than invisible (plans: 00 §3.9).
 - **No sub-second scheduling and no queue semantics.** paceq is a scheduler. See [SCOPE.md](../SCOPE.md).
 
+## What this means in practice
+
+A job **can** be started twice under unlucky timing: the daemon dies between
+spawning a step and committing its result, and on restart the step runs again
+(G3). If running twice would cost money, corrupt data, or send a duplicate
+mail, make the step idempotent - and every step already carries the key to do
+it with: `PACEQ_IDEMPOTENCY_KEY` is stable across retries and duplicate starts
+of the same step in the same run.
+
+```bash
+#!/bin/sh
+# One lock file per idempotency key: a second start is a no-op.
+lock="/var/lock/$PACEQ_IDEMPOTENCY_KEY"
+[ -e "$lock" ] && { echo "already done"; exit 0; }
+do_the_work && touch "$lock"
+```
+
+The same discipline applies to anything a step talks to that keeps its own
+state: pass `$PACEQ_IDEMPOTENCY_KEY` as a request ID, an event key or an
+upsert key, and a replayed step folds into the work its earlier self did
+instead of doubling it.
+
+We will never advertise exactly-once. Anyone who does is describing a
+different failure model than the one you actually run in.
+
 ## What `synchronous=NORMAL` means
 
 paceq runs SQLite in WAL mode with `synchronous=NORMAL` as the default (plans: 00 §3.8, 00 §3.11). This is a deliberate choice, and it is only defensible because this section states what it costs.
@@ -54,6 +79,10 @@ The whole system is at-least-once with reconciliation. `NORMAL` costs at most a 
 `FULL` is available as a configuration key for anyone who wants to pay for it. It fsyncs on every commit and closes the power-cut window. It does not change any guarantee above; it narrows the window in which G1 falls back on re-evaluation.
 
 ## Cursor and run_key are two notions with two reset flags
+
+The operator-facing version of this section, with the worked example, is
+[docs/cursor-vs-run-key.md](cursor-vs-run-key.md). What follows is the
+contract it rests on.
 
 A sensor runs a dedup identity that is a triple: `(source_id, epoch, run_key)`. The `run_key` is the natural identity of what changed (the file, the row); the epoch is the operator's way to say "start over" without deleting anything. This is what G2's uniqueness cites, and it is what makes the "reset gives replay" promise real: 50 new files give 50 runs, an immediate rerun gives 0 runs, and a reset gives 50 new runs.
 
