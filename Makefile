@@ -49,7 +49,7 @@ CROSS_TARGETS := linux/amd64 linux/arm64 darwin/arm64
 
 .PHONY: all build test property gate chaos bench fuzz fmt fmt-check vet staticcheck lint gosec govulncheck \
 	tidy-check cross release-snapshot release test-scratch sensors-examples install-script \
-	prom-check-metrics prom-check-rules prom-rules explain-checklist ci fixture-change hooks clean
+	prom-check-metrics prom-check-rules prom-rules explain-checklist docs ci fixture-change hooks clean
 
 all: build
 
@@ -103,6 +103,15 @@ property:
 # reason) lives in internal/reason and runs under make test.
 explain-checklist:
 	$(GO) test ./internal/explain -run 'TestScenario|TestNoTickDue|TestMinimumScenarioListIsPresent|TestEveryTerminalReasonHasScenario' -count=1 -v
+
+# Regenerate every generated reference page (issue #48): the CLI reference from
+# the cobra tree and the reason codes from the catalogue. Both carry freshness
+# gates that run under make test, so a help-text or catalogue change without
+# regenerating is red there; this target is how you make it green. Generated
+# output carries no date, so an unchanged tree regenerates to identical bytes.
+docs:
+	$(GO) generate ./internal/cli
+	$(GO) generate ./internal/reason
 
 # The parser gate. A job file is untrusted input, so the fuzz targets run on
 # every pull request rather than nightly only. -count=1 is required with -fuzz
