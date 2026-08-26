@@ -22,6 +22,10 @@ question cron never could: why did it not run?
   SQLite state, property-tested sensor cursors, fuzzed parsers.
 - `paceq doctor`, `paceq validate`, `paceq fsck` and `paceq logs` to find out
   what is wrong instead of guessing.
+- Documentation for every v0.1 surface: two five-minute tutorials, the
+  guarantees page, a generated CLI reference, troubleshooting anchored in
+  reason codes, and operations guides for systemd, backups, monitoring and
+  upgrades.
 - One static binary per platform (linux/amd64, linux/arm64, darwin/amd64,
   darwin/arm64), no runtime, no Docker, no package manager. Every release
   carries sha256 checksums, is built reproducibly (the same tag built twice
