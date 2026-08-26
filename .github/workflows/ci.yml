@@ -89,6 +89,14 @@ jobs:
       - name: go test -race
         run: make test
 
+      # Issue #27: the why-didnt-run checklist. One named scenario per way work
+      # can silently not happen, each asserting stored row, valid reason_code
+      # and explain rendering, plus the gate that crosses the table against the
+      # reason catalogue - so a new code path that declines work without a
+      # stored, explainable reason is red here instead of rotting into UNKNOWN.
+      - name: explain checklist
+        run: make explain-checklist
+
       # The sensor-cursor property test (issue #16) is a model-based crash sweep
       # over a real SQLite file. It runs under -race here with a bounded seed and
       # action count so it finishes deterministically in CI time. It is deliberately

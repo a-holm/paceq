@@ -340,7 +340,10 @@ func newCatalog() map[Code]Entry {
 				"check the system journal for clock steps around the miss",
 				"a machine that suspends needs catchup enabled, or it collects these rows",
 			},
-			Terminal: true,
+			Terminal:       true,
+			ScenarioExempt: true,
+			ExemptReason: "reserved: no writer exists yet - the gap detector has no " +
+				"clock-jump branch. Add the scenario in the same change as the writer.",
 		},
 
 		{
@@ -381,7 +384,10 @@ func newCatalog() map[Code]Entry {
 				"apply the definition that declares the job",
 				"or remove the schedule or sensor that keeps firing at a job that is gone",
 			},
-			Terminal: true,
+			Terminal:       true,
+			ScenarioExempt: true,
+			ExemptReason: "reserved by the catalogue (M1-05): no producer validates a " +
+				"trigger against job existence yet, so no scenario can provoke it.",
 		},
 		{
 			Code:  TRIGGERRejectedJobPaused,
@@ -394,7 +400,10 @@ func newCatalog() map[Code]Entry {
 			Remedy: []string{
 				"unpause the job if its triggers should become runs again",
 			},
-			Terminal: true,
+			Terminal:       true,
+			ScenarioExempt: true,
+			ExemptReason: "reserved by the catalogue (M1-05): no producer checks the " +
+				"job's pause flag at trigger admission yet, so no scenario can provoke it.",
 		},
 		{
 			Code:  TRIGGERRejectedPayload,
@@ -407,7 +416,10 @@ func newCatalog() map[Code]Entry {
 				"read reason_text on this trigger: it names the field that failed",
 				"fix the sensor so it emits params the job's schema accepts",
 			},
-			Terminal: true,
+			Terminal:       true,
+			ScenarioExempt: true,
+			ExemptReason: "reserved by the catalogue (M1-05): no producer validates a " +
+				"payload against the job's schema yet, so no scenario can provoke it.",
 		},
 
 		{
@@ -492,7 +504,10 @@ func newCatalog() map[Code]Entry {
 			Remedy: []string{
 				"runs closed this way are safe to start again once the daemon is back",
 			},
-			Terminal: true,
+			Terminal:       true,
+			ScenarioExempt: true,
+			ExemptReason: "unused today: the shutdown drain closes in-flight runs as " +
+				"RUN_INTERRUPTED_SHUTDOWN. Revisit if a shutdown ever cancels instead of interrupting.",
 		},
 		{
 			Code:  RUNInterruptedShutdown,
@@ -558,7 +573,11 @@ func newCatalog() map[Code]Entry {
 				"check whether the host rebooted or the daemon crashed mid run",
 				"the step logs survive; read them for how far the run got",
 			},
-			Terminal: true,
+			Terminal:       true,
+			ScenarioExempt: true,
+			ExemptReason: "the reaper's spent-attempt arm needs runs.attempt past its " +
+				"budget, and no producer raises it yet - internal/store's own test " +
+				"plants the row directly. Add the scenario together with the writer.",
 		},
 		{
 			Code:  RUNPoisoned,
@@ -814,7 +833,10 @@ func newCatalog() map[Code]Entry {
 			Remedy: []string{
 				"nothing to fix; correlate other rows of the same period through the epoch beside this one",
 			},
-			Terminal: true,
+			Terminal:       true,
+			ScenarioExempt: true,
+			ExemptReason: "lease lifecycle rows live in lease_events, which no explain " +
+				"surface reads yet; the checklist covers ticks/triggers/runs/steps.",
 		},
 		{
 			Code:  LEASELost,
@@ -828,7 +850,10 @@ func newCatalog() map[Code]Entry {
 				"one such row per overlap window is the mechanism working, not a fault",
 				"rows repeating without an obvious second daemon point at two statedirs against one database file",
 			},
-			Terminal: true,
+			Terminal:       true,
+			ScenarioExempt: true,
+			ExemptReason: "lease lifecycle rows live in lease_events, which no explain " +
+				"surface reads yet; the checklist covers ticks/triggers/runs/steps.",
 		},
 		{
 			Code:  LEASETakenOver,
@@ -842,7 +867,10 @@ func newCatalog() map[Code]Entry {
 				"look for the dead holder's session row to learn how it died",
 				"a takeover right after every deploy means stop times exceed the ttl: raise TimeoutStopSec or the ttl",
 			},
-			Terminal: true,
+			Terminal:       true,
+			ScenarioExempt: true,
+			ExemptReason: "lease lifecycle rows live in lease_events, which no explain " +
+				"surface reads yet; the checklist covers ticks/triggers/runs/steps.",
 		},
 	}
 
