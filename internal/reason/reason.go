@@ -31,6 +31,11 @@ func (c Code) String() string { return string(c) }
 // complete on purpose: short for lists, Explanation for `paceq error`, Remedy
 // for what to do next, DataKeys for the shape of reason_data, Terminal for
 // whether the code ends its object.
+//
+// ScenarioExempt and ExemptReason belong to the M5-02 explain checklist: a
+// terminal code the scenario suite deliberately carries no why-didnt-run row
+// for. An exemption without its non-empty ExemptReason is a shortcut, not a
+// decision, and internal/reason's catalogue test fails on exactly that.
 type Entry struct {
 	Code        Code
 	Level       Level
@@ -39,6 +44,9 @@ type Entry struct {
 	Remedy      []string
 	DataKeys    []string
 	Terminal    bool
+
+	ScenarioExempt bool
+	ExemptReason   string
 }
 
 // catalog is the whole catalogue, one entry per code. It is a variable only

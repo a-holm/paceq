@@ -49,7 +49,7 @@ CROSS_TARGETS := linux/amd64 linux/arm64 darwin/arm64
 
 .PHONY: all build test property gate chaos bench fuzz fmt fmt-check vet staticcheck lint gosec govulncheck \
 	tidy-check cross release-snapshot release test-scratch sensors-examples install-script \
-	prom-check-metrics prom-check-rules prom-rules ci fixture-change hooks clean
+	prom-check-metrics prom-check-rules prom-rules explain-checklist ci fixture-change hooks clean
 
 all: build
 
@@ -95,6 +95,14 @@ chaos:
 # gets it, just through this step; raise -prop.seeds for a deeper sweep.
 property:
 	CGO_ENABLED=1 $(GO) test -race -tags rapid ./internal/store -run TestSensorCursorProperties -count=1 -prop.seeds=10 -prop.actions=10
+
+# The explain checklist (issue #27): the M5-02 why-didnt-run scenarios plus the
+# gate that crosses them against the reason catalogue. It is a named CI step as
+# well as part of make ci, so a red row names the checklist instead of drowning
+# in the full suite. The catalogue rule itself (every exemption carries its
+# reason) lives in internal/reason and runs under make test.
+explain-checklist:
+	$(GO) test ./internal/explain -run 'TestScenario|TestNoTickDue|TestMinimumScenarioListIsPresent|TestEveryTerminalReasonHasScenario' -count=1 -v
 
 # The parser gate. A job file is untrusted input, so the fuzz targets run on
 # every pull request rather than nightly only. -count=1 is required with -fuzz
@@ -250,7 +258,7 @@ prom-rules:
 fixture-change:
 	scripts/check-fixture-change.sh origin/main HEAD
 
-ci: fmt-check vet staticcheck gosec govulncheck tidy-check test property gate fuzz build test-scratch sensors-examples install-script prom-check-metrics prom-check-rules prom-rules cross
+ci: fmt-check vet staticcheck gosec govulncheck tidy-check test property gate fuzz build test-scratch sensors-examples install-script prom-check-metrics prom-check-rules prom-rules explain-checklist cross
 
 hooks:
 	git config core.hooksPath .githooks

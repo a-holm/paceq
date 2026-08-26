@@ -254,3 +254,27 @@ func TestCatalogueMatchesTheStableList(t *testing.T) {
 		}
 	}
 }
+
+// TestScenarioExemptsCarryReasons holds the M5-02 exemption discipline: a
+// terminal code may sit out the explain checklist only when the catalogue
+// says so explicitly, and an exemption without its non-empty reason is just
+// a shortcut wearing a label. The scenario gate in internal/explain skips
+// exactly the entries this test keeps honest.
+func TestScenarioExemptsCarryReasons(t *testing.T) {
+	exempts := 0
+	for _, entry := range All() {
+		if !entry.ScenarioExempt {
+			continue
+		}
+		exempts++
+		if !entry.Terminal {
+			t.Errorf("%s is marked ScenarioExempt but not Terminal: only terminal codes are in the checklist's scope, so the mark is meaningless there", entry.Code)
+		}
+		if strings.TrimSpace(entry.ExemptReason) == "" {
+			t.Errorf("%s is exempt from the explain checklist with no reason: fill ExemptReason beside ScenarioExempt, or write the scenario and drop the exemption", entry.Code)
+		}
+	}
+	if exempts == 0 {
+		t.Fatalf("no ScenarioExempt entries found: the exemption rule guards nothing and the catalogue grew a field for nothing")
+	}
+}
