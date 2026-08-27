@@ -596,6 +596,125 @@ Inherited flags:
 | `--quiet` | `-q` | only report what needs attention |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
+### `paceq notifications`
+
+Inspect and manage the notification outbox
+
+Every alert paceq decided to send lives here first, delivered or not.
+
+The outbox is the audit trail for "did we notify about this?": one row per
+(event, rule), written in the same transaction as the state change it is
+about. Delivered rows are kept until retention retires them; failed ones stay
+until you retry or acknowledge them by hand.
+
+Usage:
+
+    paceq notifications
+
+Inherited flags:
+
+| Flag | | Meaning |
+|---|---|---|
+| `--db` | `- ` | state database to use (default: ./.paceq/state.db) |
+| `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
+| `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
+| `--quiet` | `-q` | only report what needs attention |
+| `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
+
+#### `paceq notifications list`
+
+List outbox rows, newest first
+
+List notification rows newest first. Filters narrow the answer:
+--since takes a duration like 24h, --state one of pending, delivered or
+failed, --subject matches the job or sensor name exactly.
+
+Usage:
+
+    paceq notifications list [flags]
+
+Flags:
+
+| Flag | | Meaning |
+|---|---|---|
+| `--limit` | `- ` | how many rows to show (default 200) |
+| `--since` | `- ` | only rows created within this long ago, e.g. 24h |
+| `--state` | `- ` | pending, delivered or failed |
+| `--subject` | `- ` | match this job or sensor name exactly |
+
+Inherited flags:
+
+| Flag | | Meaning |
+|---|---|---|
+| `--db` | `- ` | state database to use (default: ./.paceq/state.db) |
+| `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
+| `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
+| `--quiet` | `-q` | only report what needs attention |
+| `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
+
+#### `paceq notifications retry`
+
+Give a failed or pending notification another delivery attempt now
+
+Reset a failed notification back into rotation: available_at moves to
+now, attempts keep their count - history does not rewrite itself. A delivered
+row refuses, because it did go out.
+
+Usage:
+
+    paceq notifications retry <id>
+
+Inherited flags:
+
+| Flag | | Meaning |
+|---|---|---|
+| `--db` | `- ` | state database to use (default: ./.paceq/state.db) |
+| `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
+| `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
+| `--quiet` | `-q` | only report what needs attention |
+| `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
+
+#### `paceq notifications show`
+
+Show one notification, payload included
+
+Usage:
+
+    paceq notifications show <id>
+
+Inherited flags:
+
+| Flag | | Meaning |
+|---|---|---|
+| `--db` | `- ` | state database to use (default: ./.paceq/state.db) |
+| `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
+| `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
+| `--quiet` | `-q` | only report what needs attention |
+| `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
+
+#### `paceq notifications test`
+
+Send a synthetic event through one configured notifier
+
+Build a synthetic failure event exactly like a real one would have been,
+and hand it to the named notifier from config.yaml. Nothing is written to the
+outbox: what you see is pure delivery plumbing, exit 0 when the notifier
+accepted the event.
+
+Usage:
+
+    paceq notifications test <notifier>
+
+Inherited flags:
+
+| Flag | | Meaning |
+|---|---|---|
+| `--db` | `- ` | state database to use (default: ./.paceq/state.db) |
+| `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
+| `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
+| `--quiet` | `-q` | only report what needs attention |
+| `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
+
 ### `paceq prune`
 
 Apply the retention policies, or estimate them with --dry-run

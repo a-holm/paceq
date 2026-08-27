@@ -49,6 +49,7 @@ Available Commands:
   install-service Write the systemd unit file and its relaxed variant
   logs            Show the log files of one run
   ls              List jobs with their last and next run
+  notifications   Inspect and manage the notification outbox
   prune           Apply the retention policies, or estimate them with --dry-run
   run             Run a job now, in this process, and wait for it
   runs            Inspect run history

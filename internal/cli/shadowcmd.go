@@ -100,7 +100,7 @@ meaningful report yet, and - always, first - that nothing is executing.`,
 }
 
 // parseSince accepts Go durations plus day and week units cron users write.
-func parseSince(s string) (time.Duration, error) {
+func parseSinceWindow(s string) (time.Duration, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return 0, fmt.Errorf("empty duration")
@@ -152,7 +152,7 @@ func parseSince(s string) (time.Duration, error) {
 func runShadowReport(ctx context.Context, env Env, g *globals, out *ui, f shadowFlags) error {
 	window := 7 * 24 * time.Hour
 	if f.since != "" && f.since != "7d" {
-		d, err := parseSince(f.since)
+		d, err := parseSinceWindow(f.since)
 		if err != nil {
 			return validationError("--since "+f.since+" is not a duration I understand",
 				fmt.Errorf("%v", err),

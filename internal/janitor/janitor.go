@@ -55,6 +55,11 @@ type Store interface {
 	PruneRunKeysBatch(ctx context.Context, cutoff time.Time) (int64, error)
 	PruneSessionsBatch(ctx context.Context, cutoff time.Time, keepMin int) (int64, error)
 
+	// Notification retention (#29): delivered rows past the horizon go,
+	// failed rows stay for ever, orphaned throttle bookkeeping follows.
+	PruneDeliveredNotificationsBatch(ctx context.Context, cutoff time.Time) (int64, error)
+	PruneOrphanedWindowsBatch(ctx context.Context) (int64, error)
+
 	EstimateRetention(ctx context.Context, p store.Policies, now time.Time) (store.RetentionPlan, error)
 
 	IncrementalVacuum(ctx context.Context, maxPages int) error
@@ -131,11 +136,15 @@ type Totals struct {
 	Ticks        int64 `json:"ticks"`
 	RunKeys      int64 `json:"run_keys"`
 	Sessions     int64 `json:"daemon_sessions"`
+
+	// Notifications is the delivered outbox row count pruned this pass
+	// (#29). Failed rows are never touched.
+	Notifications int64 `json:"notifications"`
 }
 
 // Total sums every deleted row across the database.
 func (t Totals) Total() int64 {
-	return t.Runs + t.SkippedTicks + t.Ticks + t.RunKeys + t.Sessions
+	return t.Runs + t.SkippedTicks + t.Ticks + t.RunKeys + t.Sessions + t.Notifications
 }
 
 // BackupOutcome says what the nightly backup did.
@@ -271,6 +280,22 @@ func (j *Janitor) pruneDatabase(ctx context.Context) (Result, Totals, error) {
 		return res, totals, fmt.Errorf("daemon_sessions: %w", err)
 	}
 	res.Phases = append(res.Phases, "daemon_sessions")
+
+	// Delivered notifications age out together with everything else (#29);
+	// failed rows are the audit's long memory and are never touched here.
+	// The throttle bookkeeping whose opener row this pass removed follows,
+	// so the windows table cannot grow orphaned entries for ever.
+	totals.Notifications, b, err = j.drain(ctx, func(ctx context.Context) (int64, error) {
+		return j.st.PruneDeliveredNotificationsBatch(ctx, now.AddDate(0, 0, -j.pol.OutboxDeliveredDays))
+	})
+	if werr := drainWindows(ctx, j); werr != nil {
+		res.failed("notification windows", werr)
+	}
+	res.Batches += b
+	if err != nil {
+		return res, totals, fmt.Errorf("notifications: %w", err)
+	}
+	res.Phases = append(res.Phases, "notifications")
 
 	// Last, deliberately: deleting a dedup key means an old trigger can fire
 	// again, so this horizon is the longest and the step comes after

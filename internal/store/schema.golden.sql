@@ -84,6 +84,31 @@ CREATE TABLE outages (
   CHECK (to_ts >= from_ts)
 ) STRICT;
 
+CREATE TABLE outbox (
+  id           INTEGER PRIMARY KEY,
+  topic        TEXT    NOT NULL,               -- run.failed | run.succeeded | job.sla_breached
+  subject      TEXT    NOT NULL,               -- job or sensor name (filtering + group_by)
+  target       TEXT    NOT NULL,               -- named notifier from configuration
+  payload      TEXT    NOT NULL,               -- JSON, serialised once at insertion
+  dedup_key    TEXT    NOT NULL,               -- topic|subject|target|<event key>
+  created_at   INTEGER NOT NULL,
+  available_at INTEGER NOT NULL,
+  attempts     INTEGER NOT NULL DEFAULT 0,
+  delivered_at INTEGER,
+  failed_at    INTEGER,                        -- permanent give-up after max_attempts
+  last_error   TEXT
+) STRICT;
+
+CREATE TABLE outbox_windows (
+  topic      TEXT    NOT NULL,
+  target     TEXT    NOT NULL,
+  group_key  TEXT    NOT NULL,
+  opener_id  INTEGER NOT NULL,
+  opened_at  INTEGER NOT NULL,
+  suppressed INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (topic, target, group_key)
+) STRICT;
+
 CREATE TABLE run_events (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   run_id      TEXT    NOT NULL REFERENCES runs (id) ON DELETE CASCADE,
@@ -239,6 +264,11 @@ CREATE TABLE shadow_observations (
   UNIQUE(source, observed_at, raw)
 ) STRICT;
 
+CREATE TABLE sla_episodes (
+  job         TEXT    PRIMARY KEY,
+  breached_at INTEGER NOT NULL
+) STRICT;
+
 CREATE TABLE step_deps (
   run_id     TEXT NOT NULL REFERENCES runs (id) ON DELETE CASCADE,
   step_name  TEXT NOT NULL,
@@ -326,6 +356,13 @@ CREATE INDEX idx_job_versions_job ON job_versions (job_name, version DESC);
 
 CREATE INDEX idx_lease_events_lease ON lease_events (lease, id);
 
+CREATE INDEX idx_outbox_pending ON outbox(available_at, id)
+  WHERE delivered_at IS NULL AND failed_at IS NULL;
+
+CREATE INDEX idx_outbox_subject ON outbox(subject, created_at DESC);
+
+CREATE INDEX idx_outbox_windows_opener ON outbox_windows(opener_id);
+
 CREATE INDEX idx_run_events_run ON run_events (run_id, id);
 
 CREATE INDEX idx_run_keys_age ON run_keys (first_seen_at);
@@ -375,6 +412,8 @@ CREATE INDEX idx_triggers_run_id ON triggers (run_id)
 CREATE INDEX idx_triggers_tick ON triggers (tick_id);
 
 CREATE INDEX outages_by_time ON outages (from_ts DESC);
+
+CREATE UNIQUE INDEX ux_outbox_dedup ON outbox(dedup_key);
 
 CREATE UNIQUE INDEX ux_runs_conc_key ON runs (concurrency_key)
   WHERE concurrency_key IS NOT NULL AND state IN ('queued', 'running');

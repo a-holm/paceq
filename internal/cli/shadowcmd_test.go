@@ -25,19 +25,19 @@ func TestParseSince(t *testing.T) {
 		{in: "", err: true},
 	}
 	for _, tc := range cases {
-		got, err := parseSince(tc.in)
+		got, err := parseSinceWindow(tc.in)
 		if tc.err {
 			if err == nil {
-				t.Errorf("parseSince(%q) accepted %q, want refusal", tc.in, got)
+				t.Errorf("parseSinceWindow(%q) accepted %q, want refusal", tc.in, got)
 			}
 			continue
 		}
 		if err != nil {
-			t.Errorf("parseSince(%q): %v", tc.in, err)
+			t.Errorf("parseSinceWindow(%q): %v", tc.in, err)
 			continue
 		}
 		if got != tc.want {
-			t.Errorf("parseSince(%q) = %s, want %s", tc.in, got, tc.want)
+			t.Errorf("parseSinceWindow(%q) = %s, want %s", tc.in, got, tc.want)
 		}
 	}
 }
