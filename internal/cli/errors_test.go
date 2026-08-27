@@ -36,7 +36,10 @@ func TestEveryErrorCarriesAllThreeParts(t *testing.T) {
 		"timeoutError":     timeoutError("opening the state took longer than allowed", context.DeadlineExceeded),
 		"interruptedError": interruptedError(context.Canceled),
 		"internalError":    internalError("could not write paceq.yaml", errors.New("read only file system")),
-		"pathError":        pathError("jobs/nightly.yaml", fs.ErrNotExist),
+		"cutoverFailure": cutoverFailure("the crontab was not changed: the write failed after the backup was taken", errors.New("disk full"),
+			"the state before the cutover is in .paceq/crontab.backup.2027-01-12T09-14-03",
+			"restore it with:  paceq cutover --rollback --from .paceq/crontab.backup.2027-01-12T09-14-03"),
+		"pathError": pathError("jobs/nightly.yaml", fs.ErrNotExist),
 
 		"classify": classify(ctx, errors.New("something nobody classified")),
 	}

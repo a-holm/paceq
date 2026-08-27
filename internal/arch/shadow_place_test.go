@@ -33,7 +33,10 @@ func TestShadowIsOnlyReadAtTheMaterialisationSeam(t *testing.T) {
 		filepath.Join("cli", "servecmd.go"):      true,
 		filepath.Join("cli", "root.go"):          true,
 		// The import next-steps hint quotes the future flag; no decision.
-		filepath.Join("cli", "importcmd.go"):       true,
+		filepath.Join("cli", "importcmd.go"): true,
+		// Cutover's help quotes the shadow fence in its safety story; the
+		// decision itself goes through the explain report engine.
+		filepath.Join("cli", "cutover.go"):         true,
 		filepath.Join("status", "build.go"):        true,
 		filepath.Join("status", "report.go"):       true,
 		filepath.Join("explain", "explain.go"):     true,
