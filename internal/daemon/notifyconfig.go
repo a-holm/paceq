@@ -60,7 +60,7 @@ type notifierDoc struct {
 		OnSuccess   []string `yaml:"on_success"`
 		Throttle    string   `yaml:"throttle"`
 		GroupBy     []string `yaml:"group_by"`
-		MaxAttempts *int     `yaml:"max_attempts"`
+		MaxAttempts int      `yaml:"max_attempts"` // zero means unset here
 	} `yaml:"notify_defaults"`
 }
 
@@ -179,8 +179,8 @@ func parseNotificationConfig(data []byte) (*NotificationConfig, error) {
 		}
 	}
 	cfg.Defaults.GroupBy = doc.NotifyDefaults.GroupBy
-	if doc.NotifyDefaults.MaxAttempts != nil {
-		n := *doc.NotifyDefaults.MaxAttempts
+	if doc.NotifyDefaults.MaxAttempts != 0 {
+		n := doc.NotifyDefaults.MaxAttempts
 		if n < 1 || n > 100 {
 			return nil, fmt.Errorf("max_attempts is %d, want 1..100", n)
 		}

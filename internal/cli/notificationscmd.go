@@ -142,9 +142,9 @@ func buildFilter(f notificationsFlags, now clockNowFn) (store.NotificationFilter
 		return store.NotificationFilter{}, err
 	}
 	if !store.ValidListState(f.state) {
-		return store.NotificationFilter{}, validationError(
+		return store.NotificationFilter{}, usageError(
 			fmt.Sprintf("--state %q is not one of pending, delivered, failed", f.state),
-			nil, "pick --state pending, --state delivered or --state failed")
+			"pick --state pending, --state delivered or --state failed")
 	}
 	return store.NotificationFilter{Since: since, State: f.state, Subject: f.subject, Limit: f.limit}, nil
 }
@@ -421,10 +421,6 @@ func oneLine(s string) string {
 // renderNotificationsText draws the audit table. Widths are measured from the
 // SAME cell-rendering code the rows use, over the visible rows only (the
 // M5-03 column lesson), so a wide subject stretches its own column honestly.
-type notificationCell struct{ s string }
-
-func (n notificationCell) width() int { return len(n.s) }
-
 func notificationRowCells(row store.NotificationSummary) []string {
 	created := row.CreatedAt
 	when := notificationStamp(&created)
