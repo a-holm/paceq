@@ -305,10 +305,10 @@ func TestPrunePlansEstimatesWithoutTouchingAnything(t *testing.T) {
 	if res.Deleted.Runs != want {
 		t.Fatalf("real pass deleted %d runs, plan promised %d", res.Deleted.Runs, want)
 	}
-	// Two hundred rows per batch means two deleting batches for 250 rows,
+	// Two hundred rows per batch means two deleting batches for 250 runs,
 	// then the probe that comes back empty - plus one empty probe per
-	// remaining rule.
-	if res.Batches != 7 {
+	// remaining rule, notifications included (#29).
+	if res.Batches != 8 {
 		t.Fatalf("pass made %d batches, want 3 for runs plus one per idle rule", res.Batches)
 	}
 }

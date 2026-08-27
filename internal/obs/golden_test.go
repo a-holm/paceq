@@ -34,6 +34,10 @@ type stubSource struct {
 
 	writeWait float64
 	busy      uint64
+
+	notifPending int64
+	notifFailed  int64
+	delivery     store.DeliverySnapshot
 }
 
 func (s *stubSource) MetricsRunsByStates(context.Context) ([]store.MetricsJobStateCount, error) {
@@ -73,6 +77,14 @@ func (s *stubSource) MetricsDBBytes(context.Context) (int64, int64, error) {
 }
 func (s *stubSource) TakeWriteWaitMax() float64 { return s.writeWait }
 func (s *stubSource) BusyTotal() uint64         { return s.busy }
+func (s *stubSource) MetricsNotificationsPending(context.Context) (int64, error) {
+	return s.notifPending, nil
+}
+
+func (s *stubSource) MetricsNotificationsFailedTotal(context.Context) (int64, error) {
+	return s.notifFailed, nil
+}
+func (s *stubSource) TakeDelivery() store.DeliverySnapshot { return s.delivery }
 
 // fixture builds the canonical small estate the golden test pins.
 func fixture() (*stubSource, *clock.Fake) {
@@ -120,12 +132,28 @@ func fixture() (*stubSource, *clock.Fake) {
 
 		writeWait: 0.019,
 		busy:      3,
+
+		notifPending: 2,
+		notifFailed:  1,
+		delivery:     store.DeliverySnapshot{SumSeconds: 0.75, TotalCount: 3},
 	}
 
 	counters := NewCounters()
 	counters.ObserveTick("schedule", "nightly", store.OutcomeTriggered, "")
 	counters.ObserveTick("sensor", "dropzone", store.OutcomeSkipped, "TICK_SKIPPED_SENSOR")
 	counters.ObserveLeaseReclaims(7)
+	// Three delivery observations: two fast sends land inside the first
+	// bucket, one slow one only clears the 0.5 bucket, which pins every
+	// le line's shape in the golden document.
+	src.delivery.BucketCounts = make([]uint64, len(store.DeliveryBuckets()))
+	for i, edge := range store.DeliveryBuckets() {
+		switch {
+		case edge >= 0.5:
+			src.delivery.BucketCounts[i] = 2
+		case edge >= 0.01:
+			src.delivery.BucketCounts[i] = 1
+		}
+	}
 	src.counters = counters
 	return src, clk
 }

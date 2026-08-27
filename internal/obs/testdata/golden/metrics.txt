@@ -79,3 +79,24 @@ pulseq_backup_last_success_timestamp_seconds 1773490400
 pulseq_backup_last_verified 1
 # HELP pulseq_gc_last_success_timestamp_seconds Unix time of the newest completed retention sweep.
 # TYPE pulseq_gc_last_success_timestamp_seconds gauge
+# HELP pulseq_notifications_pending Outbox rows not yet delivered or given up on.
+# TYPE pulseq_notifications_pending gauge
+pulseq_notifications_pending 2
+# HELP pulseq_notifications_failed_total Notifications given up on permanently after max_attempts.
+# TYPE pulseq_notifications_failed_total counter
+pulseq_notifications_failed_total 1
+# HELP pulseq_notification_delivery_seconds Wall time of one notifier send attempt, success or failure alike.
+# TYPE pulseq_notification_delivery_seconds histogram
+pulseq_notification_delivery_seconds{le="0.01"} 1
+pulseq_notification_delivery_seconds{le="0.05"} 1
+pulseq_notification_delivery_seconds{le="0.1"} 1
+pulseq_notification_delivery_seconds{le="0.25"} 1
+pulseq_notification_delivery_seconds{le="0.5"} 2
+pulseq_notification_delivery_seconds{le="1"} 2
+pulseq_notification_delivery_seconds{le="2.5"} 2
+pulseq_notification_delivery_seconds{le="5"} 2
+pulseq_notification_delivery_seconds{le="10"} 2
+pulseq_notification_delivery_seconds{le="30"} 2
+pulseq_notification_delivery_seconds{le="+Inf"} 3
+pulseq_notification_delivery_seconds_sum 0.75
+pulseq_notification_delivery_seconds_count 3

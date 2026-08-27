@@ -215,11 +215,14 @@ type RetentionPlan struct {
 	Ticks        int64 `json:"ticks"`
 	RunKeys      int64 `json:"run_keys"`
 	Sessions     int64 `json:"daemon_sessions"`
+	// Notifications counts DELIVERED outbox rows past their horizon (#29);
+	// failed rows are kept for ever and never estimated as deletable.
+	Notifications int64 `json:"notifications"`
 }
 
 // Total sums the database-side deletions the plan would perform.
 func (p RetentionPlan) Total() int64 {
-	return p.Runs + p.SkippedTicks + p.Ticks + p.RunKeys + p.Sessions
+	return p.Runs + p.SkippedTicks + p.Ticks + p.RunKeys + p.Sessions + p.Notifications
 }
 
 // EstimateRetention counts, per rule, the rows a full retention pass over
@@ -285,6 +288,11 @@ SELECT count(*) FROM daemon_sessions d
           ORDER BY d2.started_at DESC, d2.id DESC
           LIMIT ?)`,
 				[]any{sessionsCutoff(now, p).UnixMilli(), p.SessionsKeepMin},
+			},
+			{
+				&plan.Notifications, `
+SELECT count(*) FROM outbox WHERE delivered_at IS NOT NULL AND delivered_at < ?`,
+				[]any{outboxCutoff(now, p).UnixMilli()},
 			},
 		}
 		for _, c := range counts {

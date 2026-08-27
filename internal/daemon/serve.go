@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -133,7 +134,24 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 	// must be able to let the intake die first while process groups are
 	// still draining, which is the whole two phase idea.
 	execCtx, stopExec := context.WithCancel(context.WithoutCancel(ctx))
+	// Notification configuration is read once per boot (#29): a config.yaml
+	// with bad values refuses the boot outright, because an invalid alerting
+	// configuration is exactly how "nobody got told" happens silently.
+	notifyCfg, nerr := LoadNotificationConfig(cfg.StateDir, cfg.ConfigDir)
+	if nerr != nil {
+		stopExec()
+		_ = st.Close()
+		return fmt.Errorf("serve: %w", nerr)
+	}
+	notifs := NewNotifications(st, clk, log, notifyCfg, os.Stderr)
 	eng := newEngine(cfg, st, clk)
+	if notifyCfg != nil {
+		eng.Notify = &notify.Planner{
+			Defaults: notifyCfg.Defaults,
+			Now:      func() time.Time { return clk.Now() },
+		}
+		eng.Host = notifs.Host
+	}
 	pool := newExecutorPool(eng, eng, log, cfg.workerCount())
 	// A run leaving the pool frees its concurrency slot; the dispatcher
 	// hears about it at once, so a deferred run starts on the release
@@ -195,6 +213,15 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 	// the last process group comes down.
 	launch(grp.ctx, nil, func(c context.Context) error {
 		return eng.RunLeaseRenewals(c)
+	})
+	// Notification delivery (#29): one dispatcher under the flock-writer,
+	// plus the freshness checker. Both drain on the shared tick; neither
+	// holds a role lease, because the flock already guarantees one writer.
+	launch(grp.ctx, nil, func(c context.Context) error {
+		return notificationDispatchLoop(c, d, tickEvery, notifs)
+	})
+	launch(grp.ctx, nil, func(c context.Context) error {
+		return slaCheckLoop(c, d, defaultSLACheckEvery, notifs)
 	})
 	// The reaper owns expired-lease sweeps under its fenced role lease; the
 	// 30 second reconciliation safety net rides along inside the same
