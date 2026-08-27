@@ -121,6 +121,11 @@ type Store struct {
 	writeWaitMaxNanos atomic.Int64
 	busyTotal         atomic.Uint64
 
+	// delivery is the notifier-send histogram (#29): dispatcher attempts of
+	// every length feed it, the /metrics scrape reads it. Atomics for the
+	// same reason as its two neighbours.
+	delivery deliveryHist
+
 	// lock is the state directory claim, held when the store was opened through
 	// OpenState. Close releases it.
 	lock *StateLock
