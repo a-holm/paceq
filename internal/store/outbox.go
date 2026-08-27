@@ -312,17 +312,18 @@ func redactNote(n model.Notification) map[string]string {
 // NotificationSummary is the CLI-facing view of one outbox row (#29): stable
 // fields, RFC-timestamped facts, the payload verbatim.
 type NotificationSummary struct {
-	ID        int64      `json:"id"`
-	Topic     string     `json:"topic"`
-	Subject   string     `json:"subject"`
-	Target    string     `json:"target"`
-	State     string     `json:"state"` // pending | delivered | failed
-	CreatedAt time.Time  `json:"created_at"`
-	Delivered *time.Time `json:"delivered_at,omitempty"`
-	Failed    *time.Time `json:"failed_at,omitempty"`
-	Attempts  int        `json:"attempts"`
-	LastError string     `json:"last_error,omitempty"`
-	Payload   string     `json:"payload"`
+	ID          int64      `json:"id"`
+	Topic       string     `json:"topic"`
+	Subject     string     `json:"subject"`
+	Target      string     `json:"target"`
+	State       string     `json:"state"` // pending | delivered | failed
+	CreatedAt   time.Time  `json:"created_at"`
+	AvailableAt time.Time  `json:"available_at"`
+	Delivered   *time.Time `json:"delivered_at,omitempty"`
+	Failed      *time.Time `json:"failed_at,omitempty"`
+	Attempts    int        `json:"attempts"`
+	LastError   string     `json:"last_error,omitempty"`
+	Payload     string     `json:"payload"`
 }
 
 // State derives from the timestamps exactly like every other reader here:
@@ -339,21 +340,25 @@ func rowState(delivered, failed sql.NullInt64) string {
 }
 
 const notificationColumns = `id, topic, subject, target, payload, created_at,
-	attempts, delivered_at, failed_at, last_error`
+	available_at, attempts, delivered_at, failed_at, last_error`
 
 // scanNotification scans one row in notificationColumns order.
 func scanNotification(scan func(...any) error) (NotificationSummary, error) {
 	var (
 		n                 NotificationSummary
 		created           sql.NullInt64
+		available         sql.NullInt64
 		delivered, failed sql.NullInt64
 		lastError         sql.NullString
 	)
 	if err := scan(&n.ID, &n.Topic, &n.Subject, &n.Target, &n.Payload, &created,
-		&n.Attempts, &delivered, &failed, &lastError); err != nil {
+		&available, &n.Attempts, &delivered, &failed, &lastError); err != nil {
 		return n, err
 	}
 	n.CreatedAt = time.UnixMilli(created.Int64).UTC()
+	if available.Valid {
+		n.AvailableAt = time.UnixMilli(available.Int64).UTC()
+	}
 	n.State = rowState(delivered, failed)
 	if delivered.Valid {
 		t := time.UnixMilli(delivered.Int64).UTC()

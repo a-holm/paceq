@@ -315,7 +315,13 @@ func TestMaxAttemptsGivesUpForeverAndRetryUnlocks(t *testing.T) {
 	if rerr != nil || next != "failed" {
 		t.Fatalf("retry = %q (%v), want unlocking the failed row", next, rerr)
 	}
-	retried, qerr := s.ClaimOutbox(ctx, 5, now.Add(25*time.Hour+time.Second), time.Second)
+	// "Due again now" means the STORE's now, so the deterministic claim time
+	// is the row's own new available_at, read back rather than assumed.
+	unlocked, lerr := s.ListNotifications(ctx, NotificationFilter{State: "pending", Limit: 1})
+	if lerr != nil || len(unlocked) != 1 {
+		t.Fatalf("unlocked row missing after retry: %v (%v)", unlocked, lerr)
+	}
+	retried, qerr := s.ClaimOutbox(ctx, 5, unlocked[0].AvailableAt.Add(time.Millisecond), time.Second)
 	if qerr != nil || len(retried) != 1 || retried[0].Attempts != msgs[0].Attempts+1 {
 		t.Fatalf("retried row claims as %+v (%v): attempts must rise, not reset", retried, qerr)
 	}
