@@ -71,6 +71,80 @@ Inherited flags:
 | `--quiet` | `-q` | only report what needs attention |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
+### `paceq cutover`
+
+Comment imported jobs out of the crontab, with a way back
+
+The migration's last step (M6-03): after import and shadow mode,
+comment the crontab lines that paceq now owns out of the crontab - and be
+able to undo it in one minute.
+
+The line is never deleted. Every commented-out line gets a marker above it
+that names the paceq job and the instant of the cutover, and the original
+line stands verbatim behind one '#', so a rollback is removing one
+character, not re-parsing:
+
+  # pulseq:cutover 2027-01-12T09:14:03+01:00 job=backup-db
+  #0 3 * * * /opt/backup/dump.sh >> /var/log/backup.log 2>&1
+
+Before any change, the whole crontab is copied to a backup file that is
+never overwritten; every run leaves its own backup behind. --rollback puts
+the lines back; --from restores a named backup wholesale. --status reports
+what is cut over, what still runs under cron, and which backups exist.
+
+A job without a single successful run in paceq is skipped unless --force
+says otherwise (PSQ-CUT-001), a line that changed since the import is
+never touched (PSQ-CUT-003), and a job whose shadow report shows
+unresolved deviations is cut over with a warning. Import never cuts over;
+this command is always the separate, deliberate act.
+
+The source: your own crontab by default, --user for another user's, --file
+for a crontab-format file. A file is written back in place after its own
+backup, which is the only mode allowed to touch /etc/crontab or
+/etc/cron.d - system files usually belong to configuration management, and
+paceq warns before writing one.
+
+Exit codes: 0 ok (including "nothing to do"), 3 unknown job or missing
+source, 1 when the crontab could not be written back.
+
+Examples:
+
+```text
+paceq cutover --dry-run            show the diff, write nothing
+  paceq cutover                      cut over every ready imported job
+  paceq cutover --job backup-db      cut over one job
+  paceq cutover --status             what is cut over, what remains
+  paceq cutover --rollback           put every marked line back
+  paceq cutover --rollback --from .paceq/crontab.backup.2027-01-12T09-14-03
+```
+
+Usage:
+
+    paceq cutover [flags]
+
+Flags:
+
+| Flag | | Meaning |
+|---|---|---|
+| `--dry-run` | `- ` | show exactly what would change, write nothing |
+| `--file` | `- ` | act on this crontab-format file instead of the spool |
+| `--force` | `- ` | cut over jobs without a successful paceq run |
+| `--from` | `- ` | with --rollback: restore this backup file instead of uncommenting |
+| `--job` | `- ` | limit to this job (repeatable) |
+| `--rollback` | `- ` | remove the cutover markers and restore the lines |
+| `--status` | `- ` | report what is cut over, what remains, which backups exist |
+| `--user` | `- ` | act on this user's crontab instead of your own |
+
+Inherited flags:
+
+| Flag | | Meaning |
+|---|---|---|
+| `--db` | `- ` | state database to use (default: ./.paceq/state.db) |
+| `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
+| `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
+| `--quiet` | `-q` | only report what needs attention |
+| `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
+
 ### `paceq db`
 
 Direct database maintenance
