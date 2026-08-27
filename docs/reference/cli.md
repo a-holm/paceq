@@ -1355,8 +1355,113 @@ Flags:
 | `--jobs-dir` | `- ` | directory the scheduler reads job files from |
 | `--metrics-listen` | `- ` | opt-in TCP bind for /metrics; loopback only, e.g. 127.0.0.1:9753 (default: unix socket only) |
 | `--no-notify-bus` | `- ` | disable the wake-up bus and run on tickers alone (a test switch that must change nothing) |
+| `--observe` | `- ` | with --shadow, where observed cron starts come from: none, journald or file=<path> |
+| `--shadow` | `- ` | shadow mode: plan and record every schedule, execute nothing (#32) |
 | `--socket` | `- ` | unix socket for the health endpoints (empty: disabled until M2-08) |
 | `--workers` | `- ` | runs executed at once (0: one per CPU) |
+
+Inherited flags:
+
+| Flag | | Meaning |
+|---|---|---|
+| `--db` | `- ` | state database to use (default: ./.paceq/state.db) |
+| `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
+| `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
+| `--quiet` | `-q` | only report what needs attention |
+| `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
+
+### `paceq shadow`
+
+Shadow mode reporting: what would have run, compared to cron
+
+The migration's trust mechanism (M6-02).
+
+Shadow mode runs while `paceq serve --shadow` is up: every schedule is
+planned, evaluated and recorded exactly as normally - fire-times, skip
+reasons, catch-up policy - but no run is ever materialised and nothing
+executes. Observed cron starts can be captured from journald or a syslog
+file for comparison.
+
+This group reads that history and never writes. It works with the daemon
+down, through the read-only database pool.
+
+Nothing you see here ran. That sentence exists because it matters.
+
+Examples:
+
+```text
+paceq shadow report --since 7d
+    The weekly view: matches, deviations and overlaps per job.
+
+  paceq shadow status
+    How long shadow mode has been up and whether there is enough data yet.
+```
+
+Usage:
+
+    paceq shadow
+
+Inherited flags:
+
+| Flag | | Meaning |
+|---|---|---|
+| `--db` | `- ` | state database to use (default: ./.paceq/state.db) |
+| `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
+| `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
+| `--quiet` | `-q` | only report what needs attention |
+| `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
+
+#### `paceq shadow report`
+
+Per-job diff between Pulseq's shadow decisions and observed cron
+
+Compare what the shadow scheduler decided against what cron actually did.
+
+Every job gets: how many fires Pulseq would have started, the stand-downs its
+own overlap protection would have taken (the ones cron cannot do), and -
+when observations were captured - which starts matched, drifted, or only one
+side saw. Timezone drift shows as one steady offset with a concrete fix.
+Jobs without enough history are marked unknown instead of guessed about.
+
+--since takes 30m/2h/7d/3w style durations (default 7d). --job narrows to one
+job name. Without any log source the report degrades to an analytic diff of
+the expressions themselves and says so; it does not fail.
+
+Exit codes: 0 ok, 3 unknown job, 4 bad duration.
+
+Usage:
+
+    paceq shadow report [--since <duration>] [--job <name>] [--json] [flags]
+
+Flags:
+
+| Flag | | Meaning |
+|---|---|---|
+| `--job` | `- ` | limit the diff to one job |
+| `--json` | `- ` | print the stable JSON document instead of prose |
+| `--since` | `- ` | how far back to look (30m, 12h, 3d, 1w) |
+
+Inherited flags:
+
+| Flag | | Meaning |
+|---|---|---|
+| `--db` | `- ` | state database to use (default: ./.paceq/state.db) |
+| `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
+| `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
+| `--quiet` | `-q` | only report what needs attention |
+| `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
+
+#### `paceq shadow status`
+
+Short shadow overview: uptime, tick count, enough-data verdict
+
+One glance at the shadow itself: since when it has been recording,
+how many evaluations were marked, whether the ground is thick enough for a
+meaningful report yet, and - always, first - that nothing is executing.
+
+Usage:
+
+    paceq shadow status
 
 Inherited flags:
 

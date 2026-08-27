@@ -191,13 +191,13 @@ func TestCoreSchemaRejectsInvalidRows(t *testing.T) {
 		},
 		{
 			"unknown tick outcome",
-			"CHECK constraint failed: outcome IN ('running', 'triggered', 'skipped', 'error', 'missed')",
+			"CHECK constraint failed: outcome IN ('running', 'triggered', 'skipped',\n                                       'error', 'missed', 'shadow_triggered')",
 			`INSERT INTO ticks (id, source_kind, source_name, started_at, last_started_at, outcome)
 				VALUES ('01J0TICK2', 'sensor', 'inbox', 2001, 2001, 'maybe')`,
 		},
 		{
 			"skipped tick without a reason code",
-			"CHECK constraint failed: outcome IN ('running', 'triggered') OR reason_code IS NOT NULL",
+			"CHECK constraint failed: outcome IN ('running', 'triggered', 'shadow_triggered')\n         OR reason_code IS NOT NULL",
 			`INSERT INTO ticks (id, source_kind, source_name, started_at, last_started_at, outcome)
 				VALUES ('01J0TICK2', 'sensor', 'inbox', 2001, 2001, 'skipped')`,
 		},

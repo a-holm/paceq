@@ -123,10 +123,70 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 
 	// The scheduler owns the schedule decisions under its fenced role lease;
 	// the loop below only wakes it and marks the health surface.
-	schedSrc, err := scheduler.New(scheduler.Config{Store: st, Clock: clk, Holder: sess.ID, Log: log})
+	schedSrc, err := scheduler.New(scheduler.Config{Store: st, Clock: clk, Holder: sess.ID, Log: log, Shadow: cfg.Shadow})
 	if err != nil {
 		_ = st.Close()
 		return fmt.Errorf("serve: %w", err)
+	}
+
+	// Shadow mode (#32) persists its marker and its comparison source so
+	// every other process - status, report, explain - can state honestly
+	// whether the schedules it looks at executed anything. A normal start
+	// clears the marker; shadow capture then sweeps the log source. The
+	// writes ride a cancel-proof context: a graceful stop may have cancelled
+	// ctx by the time the daemon shuts down, and clearing the marker then
+	// must not turn a clean stop into a reported error.
+	metaCtx := context.WithoutCancel(ctx)
+	var obsSrc scheduler.ObservationSource
+	if cfg.Shadow {
+		spec, err := scheduler.ParseObserveSpec(cfg.Observe)
+		if err != nil {
+			_ = st.Close()
+			return fmt.Errorf("serve: %w", err)
+		}
+		if err := st.SetShadowRuntime(metaCtx, true, spec.StoreName()); err != nil {
+			_ = st.Close()
+			return fmt.Errorf("serve: %w", err)
+		}
+		log.Info("SHADOW MODE: scheduling fully evaluated, nothing executes",
+			"observe", spec.StoreName())
+		switch spec.Kind {
+		case "journald":
+			obsSrc = scheduler.JournaldSource{}
+		case "file":
+			obsSrc = scheduler.FileSource{Path: spec.Path}
+		}
+	} else if err := st.SetShadowRuntime(metaCtx, false, ""); err != nil {
+		_ = st.Close()
+		return fmt.Errorf("serve: %w", err)
+	}
+	if cfg.Shadow && obsSrc != nil {
+		wm, _ := st.LatestShadowObservationStamp(ctx, obsSrc.Name())
+		stamp := wm
+		go func() {
+			// The ticker comes from the daemon's clock, like every other
+			// loop: time must never be taken directly inside the daemon.
+			tick := clk.NewTicker(scheduler.ObserveInterval)
+			defer tick.Stop()
+			for ctx.Err() == nil {
+				select {
+				case <-ctx.Done():
+					return
+				case <-tick.C:
+				}
+				n, err := scheduler.Sweep(ctx, st, obsSrc, stamp, clk.Now().UTC())
+				if err != nil {
+					log.Warn("shadow observation sweep failed", "err", err.Error())
+					continue
+				}
+				if n > 0 {
+					log.Info("recorded observed cron starts", "count", n, "source", obsSrc.Name())
+				}
+				if fresh, err := st.LatestShadowObservationStamp(ctx, obsSrc.Name()); err == nil {
+					stamp = fresh
+				}
+			}
+		}()
 	}
 
 	// The executors answer to their own context, not to the group's: a stop

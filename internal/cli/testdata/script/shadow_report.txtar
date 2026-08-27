@@ -1,0 +1,121 @@
+# shadow report / shadow status goldens (#32): the migrator's diff between
+# what Pulseq would have done and what cron actually did. Presentation is
+# isolated by planting rows through the store API on a frozen clock; the
+# --json documents are the stability contract.
+
+exec paceq init
+
+env PULSEQ_FAKE_CLOCK=2027-01-11T09:00:00Z
+plantschedule sync-files five '*/5 * * * *'
+plantschedule reports hourly '0 * * * *'
+plantschedule weekly jan '0 9 * * 1'
+plantschedule legacy cron '45 14 * * *'
+
+# three clean would-runs, each seen from cron two seconds late: agreement
+plantshadow sync-files five TRIGGERED 3
+plantobs journald sync-files -89m59s /usr/local/bin/sync-files
+plantobs journald sync-files -84m59s /usr/local/bin/sync-files
+plantobs journald sync-files -79m59s /usr/local/bin/sync-files
+
+# hourly with observed starts an hour later every time: the drift signature
+plantshadow reports hourly TRIGGERED 2
+plantobs journald reports -30m0s /usr/bin/build-report
+plantobs journald reports -25m0s /usr/bin/build-report
+
+# seven fires cron started where overlap protection would stand down
+plantshadow weekly jan OVERLAP 7
+plantobs journald weekly -85m0s /usr/sbin/janitor --weekly
+plantobs journald weekly -70m0s /usr/sbin/janitor --weekly
+
+wantexit 0 report.json report_err.txt shadow report --since 48h --json
+maskfile report.json
+cmpjson report.json shadow_report_golden.json
+
+# The text form repeats the one sentence nobody may miss.
+wantexit 0 report.txt report_txt_err.txt shadow report --since 48h -o text
+grep 'SHADOW MODE' report.txt
+grep 'Comparison source: journald' report.txt
+grep 'steady' report.txt
+
+-- shadow_report_golden.json --
+{
+  "evidence": {
+    "first_evidence": "2027-01-11T09:00:00Z",
+    "last_evidence": "2027-01-11T09:00:00Z",
+    "ticks": 5
+  },
+  "report": {
+    "comparison": "journald",
+    "enough_data": true,
+    "jobs": [
+      {
+        "cron_only": 0,
+        "deviation_kinds": {
+          "offset": 2
+        },
+        "job": "reports",
+        "matches": 0,
+        "observed": 2,
+        "offset_ms": 3600000,
+        "offset_pairs": 2,
+        "pulseq_only": 0,
+        "repeats": 2,
+        "skipped_concurrency": 0,
+        "skipped_other": 0,
+        "skipped_overlap": 0,
+        "sources": [
+          "reports/hourly"
+        ],
+        "suggestion": "cron and Pulseq disagree by a steady +1 h - the schedule has no working timezone → set timezone: Europe/Oslo on the schedule",
+        "would_run": 2
+      },
+      {
+        "cron_only": 0,
+        "job": "sync-files",
+        "matches": 3,
+        "observed": 3,
+        "pulseq_only": 0,
+        "repeats": 3,
+        "skipped_concurrency": 0,
+        "skipped_other": 0,
+        "skipped_overlap": 0,
+        "sources": [
+          "sync-files/five"
+        ],
+        "would_run": 3
+      },
+      {
+        "cron_only": 2,
+        "deviation_kinds": {
+          "cron_only": 2
+        },
+        "job": "weekly",
+        "matches": 0,
+        "observed": 2,
+        "pulseq_only": 0,
+        "repeats": 0,
+        "skipped_concurrency": 0,
+        "skipped_other": 0,
+        "skipped_overlap": 7,
+        "sources": [
+          "weekly/jan"
+        ],
+        "suggestion": "2 cron starts sit where overlap protection would have stood down; `paceq explain` shows each one",
+        "would_run": 0
+      }
+    ],
+    "schema_version": 1,
+    "since": "2027-01-09T09:00:00Z",
+    "sources": [
+      "journald"
+    ],
+    "tick_total": 6,
+    "until": "2027-01-11T09:00:00Z",
+    "would_run_total": 5
+  },
+  "runtime": {
+    "running": false
+  },
+  "schema_version": 1,
+  "shadow_report": true
+}

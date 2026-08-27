@@ -83,6 +83,13 @@ type Config struct {
 	// single decision, which is how tests script a mid-pass takeover;
 	// production keeps the role-lease default.
 	Renew time.Duration
+
+	// Shadow turns the whole instance into a recorder (#32): every due
+	// evaluation still plans, claims its fire-time and advances its cursor,
+	// but nothing ever creates a run or starts a process. Per-schedule
+	// shadow flags (schedules.shadow) shadow individual schedules instead;
+	// the global switch dominates the row flag.
+	Shadow bool
 }
 
 // Source implements daemon.ScheduleSource. Construct it with New.
@@ -91,6 +98,11 @@ type Source struct {
 	clk    clock.Clock
 	log    *slog.Logger
 	holder string
+
+	// shadow records the instance-wide switch: fills every would-trigger's
+	// input here, is otherwise never consulted again below this point -
+	// all real behaviour lives behind store.MaterializeTick (#32).
+	shadow bool
 
 	// confirmed is the monotonic mark of the last lease answer this source
 	// has seen; leading() renews once the budget since it passes Renew.
@@ -118,7 +130,10 @@ func New(cfg Config) (*Source, error) {
 	if renew == 0 {
 		renew = DefaultRenew // negatives pass through: prove before every decision
 	}
-	return &Source{st: cfg.Store, clk: clk, log: log, holder: cfg.Holder, renew: renew}, nil
+	return &Source{
+		st: cfg.Store, clk: clk, log: log, holder: cfg.Holder,
+		renew: renew, shadow: cfg.Shadow,
+	}, nil
 }
 
 // leading reports whether this loop may keep deciding, and proves it to the
@@ -293,7 +308,9 @@ func (src *Source) planSchedule(sched store.ScheduleRow, now time.Time) []store.
 
 // attemptDecision builds one triggered evaluation with its deterministic run
 // key: <job>/<schedule>:<RFC3339>. A crash anywhere followed by a recomputed
-// window produces the same key, and run_keys deduplicates it.
+// window produces the same key, and run_keys deduplicates it. In shadow mode
+// (#32) nothing else changes here: the same key is computed, only to be
+// discarded by the store, which records a marker instead of materialising.
 func (src *Source) attemptDecision(sched store.ScheduleRow, parsed cronx.Schedule,
 	tz *time.Location, pol cronx.Policy, o cronx.Occurrence,
 ) store.TickInput {
@@ -306,6 +323,7 @@ func (src *Source) attemptDecision(sched store.ScheduleRow, parsed cronx.Schedul
 		NextTickAt:     next,
 		UpdateProgress: true,
 		Actor:          "scheduler",
+		Shadow:         src.shadow || sched.Shadow,
 	}
 }
 

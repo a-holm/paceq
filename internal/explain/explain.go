@@ -76,6 +76,21 @@ func Build(ctx context.Context, st *store.Store, res Resolved, opts Options) (*R
 // buildSummary reads the headline facts. Each read is one indexed query; the
 // five queries together still touch only rows this subject owns.
 func buildSummary(ctx context.Context, st *store.Store, res Resolved) (*Summary, error) {
+	s, err := buildShadowAwareSummary(ctx, st, res)
+	if err != nil {
+		return nil, err
+	}
+	// The instance-wide marker last: while a shadow serve runs, every
+	// subject in this state directory records instead of executing (#32).
+	if info, e := st.ShadowRuntime(ctx); e == nil && info.Running {
+		s.InstanceShadow = true
+	}
+	return s, nil
+}
+
+// buildShadowAwareSummary is the plain path; buildSummary wraps it with the
+// instance shadow marker so callers never forget it.
+func buildShadowAwareSummary(ctx context.Context, st *store.Store, res Resolved) (*Summary, error) {
 	if res.Job == "" && res.Kind == KindRun {
 		return &Summary{FreshnessState: freshnessUnknown}, nil
 	}
@@ -132,6 +147,7 @@ func buildSummary(ctx context.Context, st *store.Store, res Resolved) (*Summary,
 			return nil, err
 		}
 		summary.Paused = row.Paused
+		summary.Shadow = row.Shadow
 		next := row.NextTickAt.UTC().UnixMilli()
 		summary.NextTickAt = &next
 	case KindSensor:

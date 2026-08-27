@@ -289,6 +289,16 @@ func BuildSubject(ctx context.Context, st *store.Store, ref SubjectRef, opts Opt
 	}
 }
 
+// applyShadowFlags reads the persisted instance marker (meta) into the
+// report. Every subject kind carries it: while a shadow serve runs, nothing
+// in this state directory executes, whatever subject you asked about.
+func applyShadowFlags(ctx context.Context, st *store.Store, rep *RefReport) {
+	info, err := st.ShadowRuntime(ctx)
+	if err == nil && info.Running {
+		rep.InstanceShadow = true
+	}
+}
+
 func buildJobSubject(ctx context.Context, st *store.Store, rep *RefReport, name string, now time.Time) (*RefReport, error) {
 	view, err := st.Job(ctx, name)
 	if err != nil {
@@ -330,12 +340,17 @@ func buildScheduleSubject(ctx context.Context, st *store.Store, rep *RefReport, 
 	if err != nil {
 		return nil, err
 	}
+	applyShadowFlags(ctx, st, rep)
 	rep.Schedule = &ScheduleFacts{
 		Name:       row.Name,
 		Kind:       row.Kind,
 		Expr:       row.Expr,
 		Timezone:   row.Timezone,
 		NextTickAt: rfc3339(row.NextTickAt),
+		Shadow:     row.Shadow,
+	}
+	if row.Shadow {
+		rep.ScheduleShadow = true
 	}
 	if row.Paused {
 		rep.State = StatePaused

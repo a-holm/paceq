@@ -82,6 +82,8 @@ func TestScripts(t *testing.T) {
 			"plantscheduletick": cmdPlantScheduleTick,
 			"plantoutage":       cmdPlantOutage,
 			"plantsensorskip":   cmdPlantSensorSkip,
+			"plantshadow":       cmdPlantShadow,
+			"plantobs":          cmdPlantObs,
 			"ttyrun":            cmdTtyRun,
 		},
 		Setup:               setupScriptEnv,

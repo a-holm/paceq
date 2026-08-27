@@ -168,6 +168,11 @@ type Job struct {
 	// holds the key: defer (the default) queues the run held into the
 	// future, skip stands the trigger down with a rejected outcome.
 	OnConflict string
+
+	// Shadow puts every schedule of this job into shadow mode (#32):
+	// ticks are recorded, nothing executes. False by default and left out
+	// of the canonical document at false, so existing hashes are stable.
+	Shadow bool
 }
 
 // ConcurrencyKey is the closed grammar of a job's concurrency key. Exactly one
@@ -252,6 +257,12 @@ type Schedule struct {
 	Cron     string
 	Timezone string
 	Overlap  string
+
+	// Shadow runs this schedule without executing anything (#32): the
+	// scheduler materialises every tick with the decision it would have
+	// made, and no run follows. A job-level shadow shadows all of its
+	// schedules; this flag is per schedule.
+	Shadow bool
 }
 
 const (

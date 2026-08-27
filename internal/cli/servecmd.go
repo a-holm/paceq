@@ -13,6 +13,7 @@ import (
 
 	"github.com/a-holm/paceq/internal/buildinfo"
 	"github.com/a-holm/paceq/internal/daemon"
+	"github.com/a-holm/paceq/internal/scheduler"
 )
 
 // serveFlags are the knobs the serve command takes. They mirror the serve
@@ -25,6 +26,8 @@ type serveFlags struct {
 	workers       int
 	drainTimeout  time.Duration
 	noNotifyBus   bool
+	shadow        bool
+	observe       string
 }
 
 func newServeCmd(env Env, g *globals) *cobra.Command {
@@ -61,6 +64,10 @@ another serve, or any command that writes, is refused with exit 6.`,
 	cmd.Flags().DurationVar(&f.drainTimeout, "drain-timeout", 30*time.Second, "how long running steps may finish on a stop")
 	cmd.Flags().BoolVar(&f.noNotifyBus, "no-notify-bus", false,
 		"disable the wake-up bus and run on tickers alone (a test switch that must change nothing)")
+	cmd.Flags().BoolVar(&f.shadow, "shadow", false,
+		"shadow mode: plan and record every schedule, execute nothing (#32)")
+	cmd.Flags().StringVar(&f.observe, "observe", "none",
+		"with --shadow, where observed cron starts come from: none, journald or file=<path>")
 	return cmd
 }
 
@@ -84,6 +91,16 @@ func runServe(ctx context.Context, env Env, g *globals, f serveFlags) error {
 		}
 	}
 
+	// Shadow observation setup fails here, on the command line, rather than
+	// after migration inside the daemon: a typo in --observe must never
+	// become a mystery about why serve refused to come up.
+	if f.shadow {
+		if _, err := scheduler.ParseObserveSpec(f.observe); err != nil {
+			return usageError(fmt.Sprintf("--observe %s is not a usable source", f.observe), err.Error(),
+				"Use none, journald, or file=/path/to/log.")
+		}
+	}
+
 	// Signals reach the daemon twice: once through the process context,
 	// which starts the graceful stop, and once through this channel, which
 	// arms the hard stop for whoever insists a second time.
@@ -100,6 +117,8 @@ func runServe(ctx context.Context, env Env, g *globals, f serveFlags) error {
 		Workers:          f.workers,
 		DrainTimeout:     f.drainTimeout,
 		DisableNotifyBus: f.noNotifyBus,
+		Shadow:           f.shadow,
+		Observe:          f.observe,
 		Signals:          sigs,
 		Logger:           slog.New(slog.NewJSONHandler(env.Stderr, nil)),
 	}

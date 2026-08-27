@@ -16,10 +16,10 @@ import (
 // list a misspelling is measured against, so a field added to a struct and not
 // to its list here is a field the parser refuses.
 var (
-	jobFields      = []string{"name", "description", "env", "env_file", "inherit_env", "workdir", "timeout", "expected_within", "max_concurrent", "max_parallel", "concurrency_key", "on_conflict", "steps", "schedules", "sensors"}
+	jobFields      = []string{"name", "description", "env", "env_file", "inherit_env", "workdir", "timeout", "expected_within", "max_concurrent", "max_parallel", "concurrency_key", "on_conflict", "shadow", "steps", "schedules", "sensors"}
 	stepFields     = []string{"name", "run", "shell", "workdir", "timeout", "retry", "needs"}
 	retryFields    = []string{"max", "backoff", "initial", "max_delay", "jitter"}
-	scheduleFields = []string{"name", "cron", "timezone", "overlap"}
+	scheduleFields = []string{"name", "cron", "timezone", "overlap", "shadow"}
 	sensorFields   = []string{"name", "kind", "run", "workdir", "env", "interval", "min_interval", "timeout", "max_triggers_per_tick", "paused", "description"}
 )
 
@@ -93,6 +93,8 @@ func (d *decoder) job(node ast.Node) *Job {
 			job.ConcurrencyKey = d.concurrencyKey(value)
 		case "on_conflict":
 			job.OnConflict = d.oneOf(value, "on_conflict", OnConflictDefer, OnConflictSkip)
+		case "shadow":
+			job.Shadow = d.flag(value, "shadow")
 		case "steps":
 			job.Steps = d.steps(value)
 		case "schedules":
@@ -494,6 +496,8 @@ func (d *decoder) schedules(node ast.Node) []Schedule {
 				schedule.Timezone = d.timezone(value, where)
 			case "overlap":
 				schedule.Overlap = d.oneOf(value, where+" overlap", OverlapSkip, OverlapQueue)
+			case "shadow":
+				schedule.Shadow = d.flag(value, where+" shadow")
 			}
 		})
 		if !seen["name"] {

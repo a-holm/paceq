@@ -188,6 +188,9 @@ func canonicalJob(j *Job) canonicalObject {
 	if j.OnConflict != "" && j.OnConflict != DefaultOnConflict {
 		object = appendText(object, "on_conflict", j.OnConflict)
 	}
+	if j.Shadow {
+		object = append(object, canonicalMember{"shadow", canonicalFlag(true)})
+	}
 	object = appendText(object, "description", j.Description)
 	object = appendText(object, "env_file", j.EnvFile)
 	object = appendText(object, "workdir", j.Workdir)
@@ -278,6 +281,9 @@ func canonicalSchedules(schedules []Schedule) canonicalArray {
 		// nothing overlaps like skip, in the file and in the document.
 		if schedule.Overlap != "" && schedule.Overlap != OverlapSkip {
 			object = append(object, canonicalMember{"overlap", canonicalText(schedule.Overlap)})
+		}
+		if schedule.Shadow {
+			object = append(object, canonicalMember{"shadow", canonicalFlag(true)})
 		}
 		out = append(out, object)
 	}

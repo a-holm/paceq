@@ -148,6 +148,12 @@ type RefReport struct {
 	State  string `json:"state"`
 	Paused bool   `json:"paused,omitempty"`
 
+	// Shadow flags (M6-02): InstanceShadow is the live serve marker
+	// (meta), ScheduleShadow is this schedule's own row flag. Either one
+	// means nothing here executes.
+	InstanceShadow bool `json:"instance_shadow,omitempty"`
+	ScheduleShadow bool `json:"schedule_shadow,omitempty"`
+
 	LastRun   *LastRun       `json:"last_run,omitempty"`
 	NextRunAt string         `json:"next_run_at,omitempty"`
 	Schedule  *ScheduleFacts `json:"schedule,omitempty"`
@@ -164,6 +170,9 @@ type ScheduleFacts struct {
 	Expr       string `json:"expr"`
 	Timezone   string `json:"timezone"`
 	NextTickAt string `json:"next_tick_at,omitempty"`
+
+	// Shadow is the schedule row's own shadow flag (#32).
+	Shadow bool `json:"shadow,omitempty"`
 }
 
 // SensorFacts is one sensor as a status block reads it back: the drift state
