@@ -475,10 +475,12 @@ func (s *Store) GetNotification(ctx context.Context, id int64) (NotificationSumm
 	return got, nil
 }
 
-// RetryOutbox gives a failed row another chance: available_at moves to now,
-// attempts stay (the operator asked for a retry, not a reset of history) and
-// failed_at clears. Delivered rows refuse: history does not rewrite itself.
-func (s *Store) RetryOutbox(ctx context.Context, id int64, now time.Time) (string, error) {
+// RetryOutbox gives a failed row another chance: available_at moves to the
+// store's own now, attempts keep their count - the operator asked for a
+// retry, not a rewrite of history - and failed_at clears. A delivered row
+// refuses: it did go out, and history does not resend itself.
+func (s *Store) RetryOutbox(ctx context.Context, id int64) (string, error) {
+	now := s.clk.Now()
 	next := ""
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
 		var state string

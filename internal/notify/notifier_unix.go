@@ -7,8 +7,13 @@ import (
 	"os/exec"
 	"sync"
 	"syscall"
-	"time"
+
+	"github.com/a-holm/paceq/internal/clock"
 )
+
+// graceWindow is one polite second between SIGTERM and SIGKILL. It is a
+// constant because it bounds a signal escalation, not user behaviour.
+const graceWindow = 1e9 // nanoseconds, handed to the clock abstraction
 
 // setOwnProcessGroup puts the child at the head of its own process group.
 // This is the setting that makes every kill below a group kill, and it is not
@@ -30,9 +35,10 @@ func watchForTimeout(cmd *exec.Cmd, ctx context.Context) (stop func()) {
 		select {
 		case <-ctx.Done():
 			_ = syscall.Kill(pgid, syscall.SIGTERM)
-			// One polite second, then the hammer. The deadline already
-			// fired; nothing here may block long.
-			timer := time.NewTimer(time.Second)
+			// One polite second through the shared clock abstraction,
+			// then the hammer. The deadline already fired; nothing here
+			// may block long.
+			timer := clock.System().NewTimer(graceWindow)
 			defer timer.Stop()
 			select {
 			case <-timer.C:

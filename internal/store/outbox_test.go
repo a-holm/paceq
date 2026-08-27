@@ -311,7 +311,7 @@ func TestMaxAttemptsGivesUpForeverAndRetryUnlocks(t *testing.T) {
 		t.Fatalf("failed rows must survive forever: %d rows (%v)", len(kept), kerr)
 	}
 
-	next, rerr := s.RetryOutbox(ctx, id, now.Add(25*time.Hour))
+	next, rerr := s.RetryOutbox(ctx, id)
 	if rerr != nil || next != "failed" {
 		t.Fatalf("retry = %q (%v), want unlocking the failed row", next, rerr)
 	}
@@ -320,13 +320,13 @@ func TestMaxAttemptsGivesUpForeverAndRetryUnlocks(t *testing.T) {
 		t.Fatalf("retried row claims as %+v (%v): attempts must rise, not reset", retried, qerr)
 	}
 
-	if _, uerr := s.RetryOutbox(ctx, 999999, now); !errors.Is(uerr, ErrNotificationNotFound) {
+	if _, uerr := s.RetryOutbox(ctx, 999999); !errors.Is(uerr, ErrNotificationNotFound) {
 		t.Errorf("retrying an unknown id = %v, want NotFound", uerr)
 	}
 	if derr := s.MarkOutboxDelivered(ctx, id, now.Add(26*time.Hour)); derr != nil {
 		t.Fatalf("deliver after retry: %v", derr)
 	}
-	if _, xerr := s.RetryOutbox(ctx, id, now.Add(27*time.Hour)); xerr == nil {
+	if _, xerr := s.RetryOutbox(ctx, id); xerr == nil {
 		t.Errorf("retrying a delivered row succeeded, want refusal")
 	}
 }

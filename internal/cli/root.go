@@ -157,6 +157,7 @@ func newRoot(env Env) *cobra.Command {
 		newErrorCmd(env, &g),
 		newLogsCmd(env, &g),
 		newLsCmd(env, &g),
+		newNotificationsCmd(env, &g),
 		newInstallServiceCmd(env, &g),
 	)
 	return root

@@ -81,10 +81,7 @@ func NewNotifications(st *store.Store, clk clock.Clock, log *slog.Logger,
 		}
 		return nil, false
 	}
-	n.slaPlanner = &notify.Planner{
-		Defaults: cfg.Defaults,
-		Now:      func() time.Time { return clk.Now() },
-	}
+	n.slaPlanner = notify.NewPlanner(cfg.Defaults, func() time.Time { return clk.Now() })
 	return n
 }
 
@@ -198,6 +195,42 @@ func (n *Notifications) maxAttempts() int {
 		return n.Config.Defaults.MaxAttempts
 	}
 	return notify.DefaultMaxAttempts
+}
+
+// SendTest delivers one synthetic event through the named target without
+// touching the outbox. It is what `paceq notifications test` runs: the same
+// registry, timeout and wire envelope the dispatcher uses, so a passing test
+// proves the wiring rather than a copy of it. The payload comes back so both
+// output modes can show exactly what left the building.
+func (n *Notifications) SendTest(ctx context.Context, target string) (string, error) {
+	notifier, ok := n.lookup(target)
+	if !ok {
+		return "", fmt.Errorf("unknown notifier %q", target)
+	}
+	msg := n.SyntheticTestMessage(target)
+	cctx, cancel := context.WithTimeout(ctx, n.timeoutFor(target))
+	defer cancel()
+	err := notifier.Send(cctx, msg)
+	return msg.Payload, err
+}
+
+// SyntheticTestMessage builds the event `notifications test` sends: every
+// contract field filled with an honest "this is synthetic" value.
+func (n *Notifications) SyntheticTestMessage(target string) notify.OutboxMsg {
+	at := n.Clock.Now()
+	payload := fmt.Sprintf(`{"event":"run.failed","at":%d,"job":"example-job",`+
+		`"run_id":"01EXAMPLE00000000000000000Z","attempt":1,"state":"failed",`+
+		`"reason_code":"RUN_FAILED_STEP","reason_text":"synthetic test event",`+
+		`"step":"dump","exit_code":3,`+
+		`"explain_cmd":"paceq explain run 01EXAMPLE00000000000000000Z",`+
+		`"retry_cmd":"paceq runs retry 01EXAMPLE00000000000000000Z",`+
+		`"started_at":%d,"finished_at":%d,"duration_ms":30000,`+
+		`"error_tail":"synthetic test event","host":""}`,
+		at.UnixMilli(), at.Add(-30*time.Second).UnixMilli(), at.UnixMilli())
+	return notify.OutboxMsg{
+		ID: 0, Topic: "run.failed", Subject: "example-job",
+		Target: target, Payload: payload, Attempts: 1,
+	}
 }
 
 func (n *Notifications) timeoutFor(target string) time.Duration {

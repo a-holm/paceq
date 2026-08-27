@@ -71,14 +71,11 @@ func (f *engineFixture) aQueuedRunWithHooks(t *testing.T, tag string,
 // wireNotify turns the planner on, with defaults that name one failure
 // target, group the way the issue's sketch does, and throttle repeats.
 func (f *engineFixture) wireNotify(now time.Time) {
-	f.Engine.Notify = &notify.Planner{
-		Defaults: model.NotifyDefaults{
-			OnFailure: []string{"vakt"},
-			Throttle:  15 * time.Minute,
-			GroupBy:   []string{"job", "reason_code"},
-		},
-		Now: func() time.Time { return now },
-	}
+	f.Engine.Notify = notify.NewPlanner(model.NotifyDefaults{
+		OnFailure: []string{"vakt"},
+		Throttle:  15 * time.Minute,
+		GroupBy:   []string{"job", "reason_code"},
+	}, func() time.Time { return now })
 }
 
 // TestFailedRunLeavesExactlyOneNotification is M6's exit criterion end to

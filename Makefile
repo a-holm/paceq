@@ -48,7 +48,7 @@ export GOFLAGS += -buildvcs=false
 CROSS_TARGETS := linux/amd64 linux/arm64 darwin/arm64
 
 .PHONY: all build test property gate chaos bench fuzz fmt fmt-check vet staticcheck lint gosec govulncheck \
-	tidy-check cross release-snapshot release test-scratch sensors-examples install-script \
+	tidy-check cross release-snapshot release test-scratch sensors-examples notification-examples install-script \
 	prom-check-metrics prom-check-rules prom-rules explain-checklist docs ci fixture-change hooks clean
 
 all: build
@@ -221,6 +221,22 @@ sensors-examples:
 	@$(GO) test ./examples/sensors/ -count=1
 	@$(GO) test ./internal/store/ -run 'TestExampleSensorProductionPath' -count=1
 
+# The notification recipes (issue #29) are shell like the sensor examples,
+# plus a Go test that EXECUTES each one against a stub relay: the docs
+# examples run in CI instead of rotting in a fenced block.
+NOTIFICATION_SCRIPTS := $(wildcard examples/notifications/*.sh)
+notification-examples:
+	@for f in $(NOTIFICATION_SCRIPTS); do \
+		sh -n "$$f" || { echo "sh -n failed for $$f"; exit 1; }; \
+	done
+	@echo "notification-examples: $(words $(NOTIFICATION_SCRIPTS)) scripts parse under sh -n"
+	@if ! command -v shellcheck >/dev/null 2>&1; then \
+		echo "SKIP notification-examples/shellcheck: shellcheck not installed"; \
+	else \
+		shellcheck $(NOTIFICATION_SCRIPTS); \
+	fi
+	@$(GO) test ./test/howto/ -count=1
+
 # install.sh is shell too, so it gets the same deal as the sensor scripts
 # above: parse-check always, shellcheck when it is installed.
 install-script:
@@ -267,7 +283,7 @@ prom-rules:
 fixture-change:
 	scripts/check-fixture-change.sh origin/main HEAD
 
-ci: fmt-check vet staticcheck gosec govulncheck tidy-check test property gate fuzz build test-scratch sensors-examples install-script prom-check-metrics prom-check-rules prom-rules explain-checklist cross
+ci: fmt-check vet staticcheck gosec govulncheck tidy-check test property gate fuzz build test-scratch sensors-examples notification-examples install-script prom-check-metrics prom-check-rules prom-rules explain-checklist cross
 
 hooks:
 	git config core.hooksPath .githooks

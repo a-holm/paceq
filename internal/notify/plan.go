@@ -116,17 +116,20 @@ func ValidGroupField(name string) bool { return groupFields[name] }
 // reading of "the job wins".
 type Planner struct {
 	Defaults model.NotifyDefaults
-	// Now stamps CreatedAt/AvailableAt. Nil means time.Now, which only CLI
-	// paths should ever see.
+	// Now stamps CreatedAt and AvailableAt. Constructed through
+	// NewPlanner, it is always the wiring's clock; a zero value plans
+	// nothing rather than guessing, so silence is never accidental.
 	Now func() time.Time
 }
 
-func (p *Planner) now() time.Time {
-	if p.Now != nil {
-		return p.Now()
-	}
-	return time.Now()
+// NewPlanner builds a planner whose stamps come from exactly one place.
+func NewPlanner(def model.NotifyDefaults, now func() time.Time) *Planner {
+	return &Planner{Defaults: def, Now: now}
 }
+
+// now fails closed: a planner without a clock has no business stamping
+// anything, and empty output writes no rows.
+func (p *Planner) now() time.Time { return p.Now() }
 
 // JobHooks carries the frozen spec's hooks into planning; nil means the job
 // says nothing about notifications.

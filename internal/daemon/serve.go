@@ -146,10 +146,7 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 	notifs := NewNotifications(st, clk, log, notifyCfg, os.Stderr)
 	eng := newEngine(cfg, st, clk)
 	if notifyCfg != nil {
-		eng.Notify = &notify.Planner{
-			Defaults: notifyCfg.Defaults,
-			Now:      func() time.Time { return clk.Now() },
-		}
+		eng.Notify = notify.NewPlanner(notifyCfg.Defaults, func() time.Time { return clk.Now() })
 		eng.Host = notifs.Host
 	}
 	pool := newExecutorPool(eng, eng, log, cfg.workerCount())
