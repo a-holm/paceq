@@ -92,6 +92,9 @@ func renderSummary(out io.Writer, r *Report, style Style) {
 	line += fmt.Sprintf(" paused=%t active runs %d/%d freshness=%s",
 		s.Paused, s.ActiveRuns, s.MaxConcurrent, s.FreshnessState)
 	fmt.Fprintln(out, line)
+	if s.Shadow || s.InstanceShadow {
+		fmt.Fprintln(out, "SHADOW MODE: nothing executes - the ticks above are recorded decisions, not runs")
+	}
 	fmt.Fprintln(out, "")
 }
 

@@ -98,6 +98,12 @@ func FromIR(data []byte) (*Job, error) {
 				return fmt.Errorf("on_conflict is %q, want %q or %q", s, OnConflictDefer, OnConflictSkip)
 			}
 			j.OnConflict = s
+		case "shadow":
+			b, err := flag(val, "shadow")
+			if err != nil {
+				return err
+			}
+			j.Shadow = b
 		case "env":
 			if j.Env, err = textMap(val, "env"); err != nil {
 				return err
@@ -248,6 +254,8 @@ func irSchedules(val any) ([]Schedule, error) {
 				s.Timezone, err = text(val, where+".timezone")
 			case "overlap":
 				s.Overlap, err = irOverlap(val, where)
+			case "shadow":
+				s.Shadow, err = flag(val, where+".shadow")
 			default:
 				err = fmt.Errorf("unexpected key %q in %s", key, where)
 			}

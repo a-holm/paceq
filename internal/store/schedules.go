@@ -39,6 +39,12 @@ type ScheduleRow struct {
 	// deferred into the future with a defer_reason. Empty means skip.
 	Overlap string
 
+	// Shadow marks the schedule as running in shadow mode (#32): every
+	// evaluation materialises its tick exactly as it would normally, but no
+	// run is created and nothing executes. A global --shadow on serve
+	// shadows every schedule regardless of this flag.
+	Shadow bool
+
 	Paused     bool
 	LastTickAt *time.Time
 	NextTickAt time.Time
@@ -49,6 +55,7 @@ type ScheduleRow struct {
 	// fields by finalize.
 	nulls       scheduleNulls
 	pausedRaw   int
+	shadowRaw   int
 	nextTickRaw int64
 	createdRaw  int64
 	updatedRaw  int64
@@ -71,6 +78,10 @@ type ScheduleInput struct {
 	// Overlap is the policy for ticks that fire while the job's concurrency
 	// limit is held: "skip" (default) or "queue".
 	Overlap string
+
+	// Shadow puts the schedule into shadow mode on apply: ticks are
+	// recorded, nothing executes (#32).
+	Shadow bool
 
 	Paused     bool
 	NextTickAt time.Time
@@ -114,18 +125,18 @@ func (in ScheduleInput) normalized() ScheduleInput {
 // statement both writes and reads back.
 const upsertScheduleSQL = `INSERT INTO schedules
 (id, job_name, name, kind, expr, timezone, spring_forward, fall_back, catchup,
- catchup_limit, catchup_window_ms, paused, next_tick_at, created_at, updated_at, overlap)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ catchup_limit, catchup_window_ms, paused, next_tick_at, created_at, updated_at, overlap, shadow)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(job_name, name) DO UPDATE SET
     kind = excluded.kind, expr = excluded.expr, timezone = excluded.timezone,
     spring_forward = excluded.spring_forward, fall_back = excluded.fall_back,
     catchup = excluded.catchup, catchup_limit = excluded.catchup_limit,
     catchup_window_ms = excluded.catchup_window_ms, paused = excluded.paused,
     next_tick_at = excluded.next_tick_at, updated_at = excluded.updated_at,
-    overlap = excluded.overlap
+    overlap = excluded.overlap, shadow = excluded.shadow
 RETURNING id, job_name, name, kind, expr, timezone,
        spring_forward, fall_back, catchup, catchup_limit, catchup_window_ms,
-       overlap, paused, last_tick_at, next_tick_at, created_at, updated_at`
+       overlap, paused, last_tick_at, next_tick_at, created_at, updated_at, shadow`
 
 // UpsertSchedule inserts a schedule or replaces its definition in place,
 // keeping id and timestamps stable across re-apply.
@@ -141,12 +152,16 @@ func (s *Store) UpsertSchedule(ctx context.Context, in ScheduleInput) (ScheduleR
 	if in.Paused {
 		paused = 1
 	}
+	shadow := 0
+	if in.Shadow {
+		shadow = 1
+	}
 	var row ScheduleRow
 	err = s.w.QueryRowContext(ctx, upsertScheduleSQL,
 		rowID, in.JobName, in.Name, in.Kind, in.Expr, in.Timezone,
 		in.SpringForward, in.FallBack, in.Catchup,
 		in.CatchupLimit, in.CatchupWindowMS, paused, in.NextTickAt.UnixMilli(), at, at,
-		in.Overlap,
+		in.Overlap, shadow,
 	).Scan(row.scanTargets()...)
 	if err != nil {
 		return ScheduleRow{}, fmt.Errorf("upsert schedule %s/%s: %w", in.JobName, in.Name, err)
@@ -161,7 +176,7 @@ func (s *Store) UpsertSchedule(ctx context.Context, in ScheduleInput) (ScheduleR
 // idx_schedules_due (next_tick_at) WHERE paused = 0 serves it.
 const dueSchedulesSQL = `SELECT id, job_name, name, kind, expr, timezone,
        spring_forward, fall_back, catchup, catchup_limit, catchup_window_ms,
-       overlap, paused, last_tick_at, next_tick_at, created_at, updated_at
+       overlap, paused, last_tick_at, next_tick_at, created_at, updated_at, shadow
   FROM schedules
  WHERE paused = 0 AND next_tick_at <= ?
  ORDER BY next_tick_at
@@ -230,6 +245,12 @@ const (
 	OutcomeTriggered = "triggered"
 	OutcomeSkipped   = "skipped"
 	OutcomeError     = "error"
+
+	// OutcomeShadowTriggered records that a fire-time WOULD have started a
+	// run (#32): the decision chain ran to its triggered verdict, but shadow
+	// mode replaced materialisation with this marker. No trigger row, no run
+	// key, no run, no process ever follows it.
+	OutcomeShadowTriggered = "shadow_triggered"
 )
 
 // TickInput is one decided evaluation: the loop has already computed what
@@ -265,6 +286,17 @@ type TickInput struct {
 
 	// Actor lands on the queued run event. Empty becomes "system".
 	Actor string
+
+	// Shadow runs this evaluation under shadow mode (#32): the tick row is
+	// claimed exactly as normally - same UNIQUE gate, same pause re-read,
+	// same coalescing for skips, same cursor advance - but a would-trigger
+	// stores outcome 'shadow_triggered' instead of creating any run.
+	// Admission is still simulated against real occupancy plus the virtual
+	// occupancy earlier shadow fire-times hold while their estimated
+	// duration lasts, so overlap stand-downs are recorded with their real
+	// reason codes. This flag is read ONLY inside MaterializeTick; the loop
+	// fills it from the process-level shadow switch or the schedule row.
+	Shadow bool
 }
 
 // TickResult says what one decided evaluation became.
@@ -345,6 +377,12 @@ func (s *Store) MaterializeTick(ctx context.Context, in TickInput) (TickResult, 
 			outcome = OutcomeSkipped
 			reasonCode = reason.TICKSkippedPaused
 			out.Run = Run{}
+		} else if in.Shadow && outcome == OutcomeTriggered {
+			// Shadow mode (#32) replaces only the materialisation step: the
+			// claim below stores a marker that nothing will execute. The
+			// decision chain is identical up to this point by construction.
+			outcome = OutcomeShadowTriggered
+			reasonCode = ""
 		}
 		finalOutcome, finalReason = outcome, string(reasonCode)
 
@@ -418,6 +456,39 @@ func (s *Store) MaterializeTick(ctx context.Context, in TickInput) (TickResult, 
 			out.Run = run
 			out.Deferred = run.DeferReason != ""
 			finalOutcome, finalReason = verdict, string(code)
+		case OutcomeShadowTriggered:
+			// Simulated admission answers what WOULD have happened (#32),
+			// against real occupancy plus virtual occupancy from earlier
+			// shadow fire-times of the same job. A refused fire-time is
+			// rewritten into the same skipped stand-down with the same reason
+			// code the real path writes; nothing else diverges, and nothing -
+			// no trigger row, no run key, no run, no process - is created.
+			verdict, code, text, err := resolveShadowOutcomeTx(tx, in, at, tickID, sourceName, fireAt)
+			if err != nil {
+				return err
+			}
+			finalOutcome = verdict
+			if code != "" {
+				finalReason = string(code)
+			} else {
+				finalReason = ""
+			}
+			if text != "" && in.ReasonText == "" {
+				// The annotation rides on the committed row as prose only;
+				// the outcome stays shadow_triggered for queue-shaped refusals.
+				if _, err := tx.Exec(`UPDATE ticks SET reason_text = ? WHERE id = ?`, text, tickID); err != nil {
+					return fmt.Errorf("annotate the shadow tick for %s: %w", sourceName, err)
+				}
+			}
+			if verdict == OutcomeShadowTriggered {
+				// Nothing will ever start for this fire-time, so nobody's
+				// completion can fill the row in later: it closes here, at
+				// the decision itself.
+				if _, err := tx.Exec(`UPDATE ticks SET finished_at = ?, duration_ms = 0
+			WHERE id = ?`, at, tickID); err != nil {
+					return fmt.Errorf("close the shadow tick for %s: %w", sourceName, err)
+				}
+			}
 		default:
 			// A skip or an error closes its own evaluation: started,
 			// finished, explained. No trigger, no run.
@@ -801,6 +872,7 @@ func (r *ScheduleRow) scanTargets() []any {
 		&r.SpringForward, &r.FallBack, &r.Catchup, &r.CatchupLimit, &r.CatchupWindowMS,
 		&r.Overlap,
 		&r.pausedRaw, r.nulls.lastTick, &r.nextTickRaw, &r.createdRaw, &r.updatedRaw,
+		&r.shadowRaw,
 	}
 }
 
@@ -811,6 +883,7 @@ type scheduleNulls struct {
 // finalize moves the scanned primitives into their exported shapes.
 func (r *ScheduleRow) finalize() {
 	r.Paused = r.pausedRaw == 1
+	r.Shadow = r.shadowRaw == 1
 	if r.nulls.lastTick.Valid {
 		t := time.UnixMilli(r.nulls.lastTick.Int64).UTC()
 		r.LastTickAt = &t
@@ -825,7 +898,7 @@ func (r *ScheduleRow) finalize() {
 // missing here is a Scan error on the first row, not a zero value.
 const listAllSchedulesSQL = `SELECT id, job_name, name, kind, expr, timezone,
        spring_forward, fall_back, catchup, catchup_limit, catchup_window_ms,
-       overlap, paused, last_tick_at, next_tick_at, created_at, updated_at
+       overlap, paused, last_tick_at, next_tick_at, created_at, updated_at, shadow
   FROM schedules
  ORDER BY paused ASC, job_name ASC, name ASC`
 
@@ -857,7 +930,7 @@ func (s *Store) ListAllSchedules(ctx context.Context) ([]ScheduleRow, error) {
 // matches scanTargets exactly, overlap included.
 const getScheduleSQL = `SELECT id, job_name, name, kind, expr, timezone,
        spring_forward, fall_back, catchup, catchup_limit, catchup_window_ms,
-       overlap, paused, last_tick_at, next_tick_at, created_at, updated_at
+       overlap, paused, last_tick_at, next_tick_at, created_at, updated_at, shadow
   FROM schedules
  WHERE job_name = ? AND name = ?`
 

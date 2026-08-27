@@ -95,6 +95,12 @@ func runStatusOverview(ctx context.Context, env Env, g *globals, out *ui, f stat
 		Clock:    clkOf(env),
 		DaemonUp: daemonUp,
 	})
+	// The instance marker is read beside the report rather than inside it:
+	// #32 wants the morning view to say plainly when nothing below executes.
+	var shadowLive bool
+	if info, infoErr := ro.ShadowRuntime(ctx); infoErr == nil && info.Running {
+		shadowLive = true
+	}
 	_ = ro.Close()
 	if err != nil {
 		return internalError("could not read the status", err)
@@ -105,6 +111,9 @@ func runStatusOverview(ctx context.Context, env Env, g *globals, out *ui, f stat
 			return err
 		}
 		return statusExitError(rep.Summary.Deviations, rep.Summary.Jobs)
+	}
+	if shadowLive {
+		fmt.Fprintln(out.out, "== "+shadowBanner+" ==")
 	}
 
 	style := status.StyleASCII()
@@ -214,6 +223,10 @@ func renderRefBlock(out *ui, rep *status.RefReport) {
 	}
 	dash := style.Dash
 	fmt.Fprintf(out.out, "%s %s\n", rep.Subject.Kind, refTail(rep))
+	if rep.InstanceShadow || rep.ScheduleShadow {
+		// The line that must be impossible to miss (#32).
+		fmt.Fprintf(out.out, "SHADOW MODE: nothing executes - every tick is a recorded decision only\n")
+	}
 	fmt.Fprintf(out.out, "state: %s\n", rep.State)
 	if !rep.Daemon.Up {
 		fmt.Fprintf(out.out, "daemon: down\n")

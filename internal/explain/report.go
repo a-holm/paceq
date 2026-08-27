@@ -62,8 +62,15 @@ type Summary struct {
 	FreshnessSLAMs *int64 `json:"freshness_sla_ms,omitempty"`
 	FreshnessState string `json:"freshness_state"` // ok | breached | unknown
 	Paused         bool   `json:"paused"`
-	ActiveRuns     int    `json:"active_runs"`
-	MaxConcurrent  int    `json:"max_concurrent"`
+
+	// Shadow (M6-02): either the schedule row itself or the running
+	// instance is in shadow mode. The text form then says - twice, loudly -
+	// that nothing here executes.
+	Shadow         bool `json:"shadow,omitempty"`
+	InstanceShadow bool `json:"instance_shadow,omitempty"`
+
+	ActiveRuns    int `json:"active_runs"`
+	MaxConcurrent int `json:"max_concurrent"`
 }
 
 // Entry is one decision in the timeline. Terminal decisions - everything that

@@ -56,6 +56,7 @@ Available Commands:
   schedules       Inspect and control schedules
   sensors         Inspect and control sensors
   serve           Run the daemon: schedules, dispatch and execution in one process
+  shadow          Shadow mode reporting: what would have run, compared to cron
   status          One screen of job health: last outcome, next run, deviations first
   validate        Check job files and say exactly what is wrong with them
   version         Show the version, the build and the schema this binary carries

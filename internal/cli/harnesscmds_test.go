@@ -46,6 +46,12 @@ func maskVolatile(workDir string, in []byte) []byte {
 	if workDir != "" {
 		in = bytes.ReplaceAll(in, []byte(workDir), []byte("<WORK>"))
 	}
+	// The local zone name leaks the host's /etc/timezone into suggestions
+	// (a shadow-offset hint proposes "set timezone: <here>"). Suggestions
+	// must compare equal across machines, so the host zone is masked too.
+	if zone := localZoneName(); zone != "" {
+		in = bytes.ReplaceAll(in, []byte(zone), []byte("<LOCALZONE>"))
+	}
 	seen := map[string]string{}
 	return ulidPattern.ReplaceAllFunc(in, func(match []byte) []byte {
 		id := string(match)

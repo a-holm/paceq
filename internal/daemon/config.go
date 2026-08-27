@@ -80,6 +80,17 @@ type Config struct {
 	// group during the drain. Zero leaves the runner's own default.
 	KillGrace time.Duration
 
+	// Shadow turns the whole instance into a recorder (#32): the scheduler
+	// still plans, claims fire-times and advances cursors, but no run is
+	// ever materialised and nothing executes. The marker is persisted on
+	// startup so status and reports in other processes see it too.
+	Shadow bool
+
+	// Observe names where observed cron behaviour comes from (#32):
+	// none (default), journald or file=<path>. Only read when Shadow is
+	// set; observation capture never runs for a normal instance.
+	Observe string
+
 	// SensorMaxParallel is the global cap on concurrent sensor evaluations.
 	// Zero means four.
 	SensorMaxParallel int

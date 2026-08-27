@@ -1,0 +1,27 @@
+# shadow status (#32): uptime, tick count, enough-data verdict - and the
+# sentence that must be impossible to miss. Read-only, so it answers while
+# nothing runs at all; that is also its honest first screen.
+
+exec paceq init
+
+env PULSEQ_FAKE_CLOCK=2027-01-11T09:00:00Z
+plantschedule sync-files five '*/5 * * * *'
+
+# Before anything ran: no evidence yet, the verdict says so, and the reply
+# still opens with the shadow banner.
+wantexit 0 fresh.txt fresh_err.txt shadow status -o text
+grep 'SHADOW MODE' fresh.txt
+grep 'Recorded shadow history: none' fresh.txt
+! stdout 'SHADOW-LIES'
+
+# Three recorded evaluations and one row-level shadowed schedule.
+plantshadow sync-files five TRIGGERED 3
+
+wantexit 0 live.txt live_err.txt shadow status -o text
+grep 'Evaluations marked shadow_triggered: 3' live.txt
+grep 'Schedules carrying shadow:true' live.txt
+grep 'thin' live.txt
+
+-- fixture-note.txt --
+plantschedule keeps catchup defaults; plantshadow drives store.MaterializeTick
+so every planted row went through the same gate production uses.
