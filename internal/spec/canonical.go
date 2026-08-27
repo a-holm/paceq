@@ -212,6 +212,26 @@ func canonicalJob(j *Job) canonicalObject {
 	if len(j.Sensors) > 0 {
 		object = append(object, canonicalMember{"sensors", canonicalSensors(j.Sensors)})
 	}
+	// notify is left out when the block says nothing, the same rule as
+	// every optional member above: a job written before hooks existed keeps
+	// its hash, and silence spelled out hashes like silence omitted.
+	if !j.Notify.Empty() {
+		object = append(object, canonicalMember{"notify", canonicalNotify(j.Notify)})
+	}
+	return object
+}
+
+// canonicalNotify writes the hook block. Lists are sets: sorted, deduped,
+// because delivery order between targets carries no meaning and two spellings
+// of one set are one job.
+func canonicalNotify(n *Notify) canonicalObject {
+	object := make(canonicalObject, 0, 2)
+	if len(n.OnFailure) > 0 {
+		object = append(object, canonicalMember{"on_failure", canonicalSortedStrings(n.OnFailure)})
+	}
+	if len(n.OnSuccess) > 0 {
+		object = append(object, canonicalMember{"on_success", canonicalSortedStrings(n.OnSuccess)})
+	}
 	return object
 }
 

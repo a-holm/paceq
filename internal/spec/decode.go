@@ -16,7 +16,8 @@ import (
 // list a misspelling is measured against, so a field added to a struct and not
 // to its list here is a field the parser refuses.
 var (
-	jobFields      = []string{"name", "description", "env", "env_file", "inherit_env", "workdir", "timeout", "expected_within", "max_concurrent", "max_parallel", "concurrency_key", "on_conflict", "steps", "schedules", "sensors"}
+	jobFields      = []string{"name", "description", "env", "env_file", "inherit_env", "workdir", "timeout", "expected_within", "max_concurrent", "max_parallel", "concurrency_key", "on_conflict", "notify", "steps", "schedules", "sensors"}
+	notifyFields   = []string{"on_failure", "on_success"}
 	stepFields     = []string{"name", "run", "shell", "workdir", "timeout", "retry", "needs"}
 	retryFields    = []string{"max", "backoff", "initial", "max_delay", "jitter"}
 	scheduleFields = []string{"name", "cron", "timezone", "overlap"}
@@ -93,6 +94,8 @@ func (d *decoder) job(node ast.Node) *Job {
 			job.ConcurrencyKey = d.concurrencyKey(value)
 		case "on_conflict":
 			job.OnConflict = d.oneOf(value, "on_conflict", OnConflictDefer, OnConflictSkip)
+		case "notify":
+			job.Notify = d.notify(value)
 		case "steps":
 			job.Steps = d.steps(value)
 		case "schedules":
@@ -117,6 +120,107 @@ func (d *decoder) job(node ast.Node) *Job {
 				"        run: [\"/bin/echo\", \"hello\"]")
 	}
 	return job
+}
+
+// notify reads a job's alert hooks (#29). A mapping with on_failure and/or
+// on_success lists of notifier names; anything else is refused. The names
+// follow the global name rule (they appear in configuration, in CLI output
+// and in group keys), and each list is a set: duplicates are warned about
+// and collapsed, because delivering twice to one named target says the same
+// thing twice.
+func (d *decoder) notify(node ast.Node) *Notify {
+	mapping, ok := d.mapping(node, "notify")
+	if !ok {
+		return nil
+	}
+
+	n := &Notify{}
+	seen := d.fields(mapping, "a notify block", notifyFields, func(key string, value ast.Node) {
+		var names []string
+		switch key {
+		case "on_failure":
+			names = d.notifierNames(value, "on_failure")
+			n.OnFailure = dedupeNames(names)
+		case "on_success":
+			names = d.notifierNames(value, "on_success")
+			n.OnSuccess = dedupeNames(names)
+		}
+	})
+	_ = seen
+	if n.Empty() {
+		d.warn(CodeNotifyEmpty, position(node),
+			"the notify block lists no notifiers",
+			"An empty block is allowed, but silence is also what leaving it out does.\n"+
+				"Name at least one notifier from config.yaml:\n\n"+
+				"    notify:\n"+
+				"      on_failure: [vakt]")
+	}
+	return n
+}
+
+// notifierNames reads one hook's list of names under the shared name rule.
+func (d *decoder) notifierNames(node ast.Node, where string) []string {
+	sequence, ok := d.sequence(node, where)
+	if !ok {
+		return nil
+	}
+	names := make([]string, 0, len(sequence.Values))
+	for i, value := range sequence.Values {
+		name, ok := d.stringValue(value, fmt.Sprintf("%s[%d]", where, i))
+		if !ok {
+			continue
+		}
+		if !namePattern.MatchString(name) {
+			d.error(CodeBadName, position(value),
+				fmt.Sprintf("notifier name in %s is %q, which is not a name paceq accepts", where, name),
+				"A notifier is named with lower case letters, digits, underscores and dashes: "+
+					NamePattern+"\n\n"+
+					"The same rule as job and step names, for the same reasons: it has to survive "+
+					"a command line, a directory and a URL.")
+			continue
+		}
+		names = append(names, name)
+	}
+	for _, dup := range repeated(names) {
+		d.warn(CodeNotifyDuplicate, position(node),
+			fmt.Sprintf("%q is listed more than once in %s", dup, where),
+			"One entry per event reaches every notifier once; saying a name twice only makes the file lie.")
+	}
+	return names
+}
+
+// dedupeNames collapses a set read from YAML, keeping first-seen order - the
+// canonical encoder re-sorts anyway; this keeps in-memory order honest too.
+func dedupeNames(names []string) []string {
+	if len(names) == 0 {
+		return nil
+	}
+	out := names[:0]
+	seen := map[string]bool{}
+	for _, n := range names {
+		if seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, n)
+	}
+	return out
+}
+
+// repeated returns every value seen more than once, once per value.
+func repeated(names []string) []string {
+	count := map[string]int{}
+	for _, n := range names {
+		count[n]++
+	}
+	var dups []string
+	for _, n := range names {
+		if count[n] > 1 {
+			dups = append(dups, n)
+			count[n] = 0
+		}
+	}
+	return dups
 }
 
 // concurrencyKey reads the closed grammar of #17. A scalar is the constant
