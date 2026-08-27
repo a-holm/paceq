@@ -30,8 +30,6 @@ import (
 // The command never calls crontab(1) except through the argv arrays in
 // internal/cutover, and never writes the spool directly.
 
-const cutoverSchemaVersion = 1
-
 type cutoverFlags struct {
 	dryRun   bool
 	jobs     []string
