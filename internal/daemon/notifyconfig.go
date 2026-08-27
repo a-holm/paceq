@@ -79,7 +79,7 @@ func LoadNotificationConfig(stateDir, configDir string) (*NotificationConfig, er
 		candidates = append(candidates, filepath.Join(configDir, NotifierFileName))
 	}
 	for _, path := range candidates {
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(path) // #nosec G304 - the path is filepath.Join of paceq-computed directories with the fixed NotifierFileName constant, never job or remote input
 		if os.IsNotExist(err) {
 			continue
 		}

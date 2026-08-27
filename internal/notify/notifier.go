@@ -144,7 +144,7 @@ func (e *ExecNotifier) Send(ctx context.Context, msg OutboxMsg) error {
 		}
 		path = resolved
 	}
-	cmd := exec.CommandContext(ctx, path, argv[1:]...)
+	cmd := exec.CommandContext(ctx, path, argv[1:]...) // #nosec G204 - argv[0] comes from validated configuration (absolute path pinned at load) and LookPath resolution is what lets tests plant stubbed binaries; the event itself never joins argv
 	cmd.Env = env
 	cmd.Stdin = strings.NewReader(stdin)
 	var stderr bytes.Buffer
