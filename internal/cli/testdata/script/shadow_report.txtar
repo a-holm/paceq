@@ -66,7 +66,7 @@ grep 'steady' report.txt
         "sources": [
           "reports/hourly"
         ],
-        "suggestion": "cron and Pulseq disagree by a steady +1 h - the schedule has no working timezone → set timezone: Europe/Oslo on the schedule",
+        "suggestion": "cron and Pulseq disagree by a steady +1 h - the schedule has no working timezone → set timezone: <LOCALZONE> on the schedule",
         "would_run": 2
       },
       {
