@@ -89,6 +89,9 @@ func startHealthEndpoint(cfg Config, st *statuses, log *slog.Logger, store *stor
 		mux.HandleFunc("POST /v1/runs/{id}/replay", func(w http.ResponseWriter, r *http.Request) {
 			handleReplayRun(w, r, store)
 		})
+		mux.HandleFunc("POST /v1/notifications/{id}/retry", func(w http.ResponseWriter, r *http.Request) {
+			handleRetryNotification(w, r, store)
+		})
 		// Sensor write routes: the daemon is the single writer for pause,
 		// resume, reset, cursor set and tick, mirroring the schedule routes
 		// above (M2-08 dual-mode: the CLI dials here first, flock is the

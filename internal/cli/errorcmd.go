@@ -394,6 +394,28 @@ var catalogue = map[string]explanation{
 			"paceq validate --strict  turns this warning into a failure, for CI",
 		},
 	},
+	spec.CodeNotifyEmpty: {
+		Code:  spec.CodeNotifyEmpty,
+		Title: "the notify block names no notifiers",
+		Explanation: "A notify block is allowed to be empty, but an empty one does exactly what " +
+			"leaving it out does: nothing. The warning exists so nobody believes a hook exists " +
+			"because the block was typed, when no target was ever named.",
+		Next: []string{
+			"notify:\n  on_failure: [vakt]  names a notifier from config.yaml",
+			"delete the block instead, if deliberate silence is the choice",
+		},
+	},
+	spec.CodeNotifyDuplicate: {
+		Code:  spec.CodeNotifyDuplicate,
+		Title: "the same notifier is named twice in one hook",
+		Explanation: "The hook lists are sets: delivery happens once per event per target name. " +
+			"A repeated name changes nothing about behaviour, so it only makes the file lie " +
+			"about what will happen.",
+		Next: []string{
+			"keep each name once in on_failure and once in on_success",
+			"a notifier that should hear about both outcomes goes on both lists - that is two lists, not one list twice",
+		},
+	},
 	"PQ5001": {
 		Code:  "PQ5001",
 		Title: "the state is readable by other users",

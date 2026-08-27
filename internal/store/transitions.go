@@ -670,7 +670,11 @@ type FinishReason struct {
 // zero rows affected means the lease was taken over while this writer worked.
 // The refusal comes back as ErrLeaseLost and nothing at all is written: worst
 // case is duplicate work, never duplicate state.
-func (s *Store) FinishRun(ctx context.Context, runID string, ref LeaseRef, fr FinishReason) (string, error) {
+//
+// Any notifications ride in this same transaction (#29): state change and
+// alert row commit together or not at all, which is what makes "run failed,
+// nobody heard" unreachable.
+func (s *Store) FinishRun(ctx context.Context, runID string, ref LeaseRef, fr FinishReason, notes ...model.Notification) (string, error) {
 	if !ref.held() {
 		return "", fmt.Errorf("finish run %s: no holder was named", runID)
 	}
@@ -752,6 +756,11 @@ func (s *Store) FinishRun(ctx context.Context, runID string, ref LeaseRef, fr Fi
 			DetailJSON: mergeEpochDetail(data, ref.Epoch),
 		}); err != nil {
 			return err
+		}
+		if len(notes) > 0 {
+			if err := insertNotificationsTx(tx, notes); err != nil {
+				return fmt.Errorf("finish run %s: %w", runID, err)
+			}
 		}
 		next = string(state)
 		return nil

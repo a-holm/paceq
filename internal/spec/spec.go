@@ -149,6 +149,13 @@ type Job struct {
 	// never render as zero, because zero would alarm on every healthy job
 	// that simply said nothing.
 	ExpectedWithin time.Duration
+
+	// Notify is the job's alert hooks (#29): named notifiers told about a
+	// failed or successful run. nil means the job says nothing about
+	// notifications and inherits the daemon's defaults where they apply;
+	// an explicit empty list is the deliberate silence. The names resolve
+	// against the daemon configuration at dispatch time.
+	Notify *Notify
 	// MaxParallel is how many steps of one run may be in flight at once
 	// (M4-02). 1..MaxParallelHi, default DefaultMaxParallel. It is materialised
 	// into the default on parse so a job that leaves it out hashes identically
@@ -168,6 +175,23 @@ type Job struct {
 	// holds the key: defer (the default) queues the run held into the
 	// future, skip stands the trigger down with a rejected outcome.
 	OnConflict string
+}
+
+// Notify is a job's alert hooks (#29). The names are notifiers defined in the
+// daemon configuration; the lists are sets, so saying one name twice hashes
+// and delivers like saying it once.
+type Notify struct {
+	// OnFailure runs when the run ends failed.
+	OnFailure []string
+	// OnSuccess runs when the run ends succeeded. Empty by design: nobody
+	// gets spam by default.
+	OnSuccess []string
+}
+
+// Empty says whether the block says nothing at all, which is the condition
+// the canonical encoder leaves out of the document.
+func (n *Notify) Empty() bool {
+	return n == nil || (len(n.OnFailure) == 0 && len(n.OnSuccess) == 0)
 }
 
 // ConcurrencyKey is the closed grammar of a job's concurrency key. Exactly one

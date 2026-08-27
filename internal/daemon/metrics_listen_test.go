@@ -87,6 +87,17 @@ func (m *metricsStubSource) MetricsDBBytes(context.Context) (int64, int64, error
 }
 func (m *metricsStubSource) TakeWriteWaitMax() float64 { return 0 }
 func (m *metricsStubSource) BusyTotal() uint64         { return 0 }
+func (m *metricsStubSource) MetricsNotificationsPending(context.Context) (int64, error) {
+	return 0, nil
+}
+
+func (m *metricsStubSource) MetricsNotificationsFailedTotal(context.Context) (int64, error) {
+	return 0, nil
+}
+
+func (m *metricsStubSource) TakeDelivery() store.DeliverySnapshot {
+	return store.DeliverySnapshot{}
+}
 
 var _ obs.Source = (*metricsStubSource)(nil)
 

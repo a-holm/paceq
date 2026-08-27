@@ -52,6 +52,14 @@ func (s *scriptedStore) PruneSessionsBatch(context.Context, time.Time, int) (int
 	return 0, nil
 }
 
+func (s *scriptedStore) PruneDeliveredNotificationsBatch(context.Context, time.Time) (int64, error) {
+	return 0, nil
+}
+
+func (s *scriptedStore) PruneOrphanedWindowsBatch(context.Context) (int64, error) {
+	return 0, nil
+}
+
 func (s *scriptedStore) EstimateRetention(context.Context, store.Policies, time.Time) (store.RetentionPlan, error) {
 	return store.RetentionPlan{}, nil
 }

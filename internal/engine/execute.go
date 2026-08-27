@@ -9,9 +9,11 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/a-holm/paceq/internal/clock"
 	"github.com/a-holm/paceq/internal/faults"
 	"github.com/a-holm/paceq/internal/logsink"
 	"github.com/a-holm/paceq/internal/model"
+	"github.com/a-holm/paceq/internal/notify"
 	"github.com/a-holm/paceq/internal/reason"
 	"github.com/a-holm/paceq/internal/retry"
 	"github.com/a-holm/paceq/internal/runner"
@@ -184,11 +186,15 @@ func (d *drive) execute(ctx context.Context, e *Engine) (string, error) {
 		return "", err
 	}
 
-	finish, err := e.finishReason(ctx, d.runID, timedOut)
+	finish, detail, err := e.finishReason(ctx, d.runID, timedOut)
 	if err != nil {
 		return "", err
 	}
-	state, err := e.Store.FinishRun(ctx, d.runID, d.ref, finish)
+	var notes []model.Notification
+	if e.Notify != nil {
+		notes = e.Notify.Plan(notifyRunFacts(detail, finish, e.Clock, e.Host), hooksFromSpec(d.job))
+	}
+	state, err := e.Store.FinishRun(ctx, d.runID, d.ref, finish, notes...)
 	if errors.Is(err, store.ErrLeaseLost) {
 		return lostLease("verdict refused")
 	}
@@ -196,6 +202,69 @@ func (d *drive) execute(ctx context.Context, e *Engine) (string, error) {
 		return "", err
 	}
 	return state, nil
+}
+
+// notifyRunFacts picks the payload facts for one finished run out of its
+// detail: the failing step's identity, exit code and log tail ride along on
+// failures; successes carry the verdict alone. Only success and failure have
+// hooks (#29); cancelled or poisoned runs plan nothing.
+func notifyRunFacts(detail store.RunDetail, finish store.FinishReason, clk clock.Clock, host string) notify.RunFacts {
+	switch finish.Code {
+	case reason.RUNSucceeded, reason.RUNFailedStep, reason.RUNTimedOut:
+	default:
+		return notify.RunFacts{}
+	}
+	topic := model.TopicRunSucceeded
+	state := "succeeded"
+	if finish.Code != reason.RUNSucceeded {
+		topic = model.TopicRunFailed
+		state = "failed"
+	}
+	finishedAt := detail.FinishedAt
+	if finishedAt.IsZero() {
+		// The verdict is being decided right now: the row's finished_at is
+		// this same instant, written a few lines later in one transaction.
+		finishedAt = clk.Now()
+	}
+	facts := notify.RunFacts{
+		Topic:      topic,
+		JobName:    detail.JobName,
+		RunID:      detail.ID,
+		Attempt:    detail.Attempt,
+		State:      state,
+		ReasonCode: string(finish.Code),
+		StartedAt:  detail.StartedAt,
+		FinishedAt: finishedAt,
+	}
+	facts.Host = host
+	if topic == model.TopicRunFailed {
+		for _, s := range detail.Steps {
+			if model.StepState(s.State) != model.StepFailed {
+				continue
+			}
+			if facts.Step == "" {
+				facts.Step = s.Name
+			}
+			if facts.ErrorTail == "" && s.ErrorTail != "" {
+				facts.ErrorTail = s.ErrorTail
+			}
+			if !facts.HasExitCode && s.HasExitCode {
+				facts.HasExitCode = true
+				facts.ExitCode = s.ExitCode
+			}
+			break
+		}
+	}
+	return facts
+}
+
+// hooksFromSpec translates the frozen job's hook block into planner input;
+// nil means the job inherited daemon defaults instead of naming its own.
+func hooksFromSpec(job *spec.Job) *notify.JobHooks {
+	if job == nil || job.Notify == nil {
+		return nil
+	}
+	return &notify.JobHooks{OnFailure: job.Notify.OnFailure, OnSuccess: job.Notify.OnSuccess}
 }
 
 // observeCancel closes a run whose cancellation somebody requested: the
@@ -535,14 +604,16 @@ func stepIndexOf(steps []store.Step, name string) int {
 // finishReason decides why the run ended. A step failure fails the run and
 // names the step; a spent run budget ends it as TIMED_OUT; a cancelled step
 // means the run was cancelled; otherwise the run succeeded, a skip counting
-// as success.
-func (e *Engine) finishReason(ctx context.Context, runID string, timedOut bool) (store.FinishReason, error) {
+// as success. The detail comes back too: notification planning (#29) reads
+// the same rows the verdict did, so the alert can never disagree with the
+// state change it is written in.
+func (e *Engine) finishReason(ctx context.Context, runID string, timedOut bool) (store.FinishReason, store.RunDetail, error) {
 	detail, err := e.Store.GetRun(ctx, runID)
 	if err != nil {
-		return store.FinishReason{}, fmt.Errorf("finish run %s: %w", runID, err)
+		return store.FinishReason{}, store.RunDetail{}, fmt.Errorf("finish run %s: %w", runID, err)
 	}
 	if timedOut {
-		return store.FinishReason{Code: reason.RUNTimedOut}, nil
+		return store.FinishReason{Code: reason.RUNTimedOut}, detail, nil
 	}
 	for _, s := range detail.Steps {
 		switch model.StepState(s.State) {
@@ -550,12 +621,12 @@ func (e *Engine) finishReason(ctx context.Context, runID string, timedOut bool) 
 			return store.FinishReason{
 				Code: reason.RUNFailedStep,
 				Data: detailJSON(map[string]any{"step": s.Name}),
-			}, nil
+			}, detail, nil
 		case model.StepCancelled:
-			return store.FinishReason{Code: reason.RUNCancelledManual}, nil
+			return store.FinishReason{Code: reason.RUNCancelledManual}, detail, nil
 		}
 	}
-	return store.FinishReason{Code: reason.RUNSucceeded}, nil
+	return store.FinishReason{Code: reason.RUNSucceeded}, detail, nil
 }
 
 // verdictFor translates what the runner observed into the step machine's

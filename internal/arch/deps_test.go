@@ -20,17 +20,21 @@ const (
 // runner even though cli imports engine and may not import runner itself.
 // A package absent from this table carries no direction rule yet.
 var allowedImports = map[string][]string{
-	"model":     {},
-	"id":        {},
-	"clock":     {},
-	"diag":      {},
-	"faults":    {},
-	"spec":      {"diag"},
-	"retry":     {},
-	"runner":    {"clock"},
-	"sensor":    {"runner", "clock", "reason"},
-	"logsink":   {"clock"},
-	"notify":    {},
+	"model":   {},
+	"id":      {},
+	"clock":   {},
+	"diag":    {},
+	"faults":  {},
+	"spec":    {"diag"},
+	"retry":   {},
+	"runner":  {"clock"},
+	"sensor":  {"runner", "clock", "reason"},
+	"logsink": {"clock"},
+	// notify stays a value-only leaf EXCEPT for two deliberate exceptions
+	// (#29): the notification value type lives in pure-data model, and the
+	// process-group escalation takes its one-second grace from the shared
+	// clock abstraction so no wall-clock shortcut exists anywhere else.
+	"notify":    {"model", "clock"},
 	"cronx":     {},
 	"store":     {"model", "spec", "clock", "id", "reason", "faults"},
 	"scheduler": {"store", "clock", "cronx", "reason"},

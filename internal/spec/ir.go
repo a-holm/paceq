@@ -118,6 +118,11 @@ func FromIR(data []byte) (*Job, error) {
 			if j.Sensors, err = irSensors(val); err != nil {
 				return err
 			}
+		case "notify":
+			j.Notify, err = irNotify(val)
+			if err != nil {
+				return err
+			}
 		default:
 			return fmt.Errorf("unexpected key %q: the document is not a paceq.job.v1 encoding", key)
 		}
@@ -361,6 +366,45 @@ func irSensorRun(val any, where string) ([]string, error) {
 		}
 	}
 	return items, nil
+}
+
+// irNotify reads the canonical notify block back. The encoder emits a member
+// only when its list is non-empty, and a name rule violation here means the
+// bytes were not written by Canonical, which is always a refusal.
+func irNotify(val any) (*Notify, error) {
+	const where = "notify"
+	object, ok := val.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("%s is %T, want an object", where, val)
+	}
+	n := &Notify{}
+	err := eachMember(object, func(key string, v any) error {
+		switch key {
+		case "on_failure", "on_success":
+			list, err := textList(v, where+"."+key)
+			if err != nil {
+				return err
+			}
+			for _, name := range list {
+				if !namePattern.MatchString(name) {
+					return fmt.Errorf("%s.%s carries %q, which is not a name paceq accepts: %s",
+						where, key, name, NamePattern)
+				}
+			}
+			if key == "on_failure" {
+				n.OnFailure = list
+			} else {
+				n.OnSuccess = list
+			}
+		default:
+			return fmt.Errorf("unexpected key %q in %s", key, where)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return n, nil
 }
 
 // irConcurrencyKey reads the key back. The closed grammar the file decoder

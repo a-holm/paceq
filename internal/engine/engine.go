@@ -9,6 +9,7 @@ import (
 
 	"github.com/a-holm/paceq/internal/clock"
 	"github.com/a-holm/paceq/internal/logsink"
+	"github.com/a-holm/paceq/internal/notify"
 	"github.com/a-holm/paceq/internal/store"
 )
 
@@ -73,6 +74,16 @@ type Engine struct {
 	// this many executors fails on the next reap instead of requeueing.
 	// Zero means the store's default of five.
 	MaxCrashCount int
+
+	// Notify plans the outbox rows written with every finish transaction
+	// (#29). Nil means the engine stays silent, which is the zero value:
+	// notification configuration is a daemon (or explicit CLI) concern,
+	// never a side effect of existing wiring.
+	Notify *notify.Planner
+
+	// Host is the machine identity stamped into notification payloads (#29).
+	// Empty stays empty in the payload rather than guessing.
+	Host string
 
 	// Rnd is the source full-jitter draws from. Nil means one seeded
 	// from system entropy on first use. Tests inject a seeded source so

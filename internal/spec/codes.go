@@ -91,6 +91,14 @@ const (
 	// parameter runs with no key at all, which means unlimited.
 	CodeConcurrencyParamUnresolved = "W1003"
 
+	// CodeNotifyEmpty is the warning that a notify block names no
+	// notifiers: legal, but indistinguishable from leaving it out.
+	CodeNotifyEmpty = "W1004"
+	// CodeNotifyDuplicate is the warning that one hook lists the same
+	// notifier name twice. The list is a set; the duplicate only makes the
+	// file lie.
+	CodeNotifyDuplicate = "W1005"
+
 	// CodeSensorBadName is a sensor name that is missing or does not match
 	// NamePattern.
 	CodeSensorBadName = "PQ4101"
@@ -154,6 +162,8 @@ func Codes() []string {
 		CodeShell,
 		CodeInheritEnv,
 		CodeConcurrencyParamUnresolved,
+		CodeNotifyEmpty,
+		CodeNotifyDuplicate,
 		CodeSensorBadName,
 		CodeSensorNameTaken,
 		CodeSensorKind,

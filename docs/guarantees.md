@@ -6,7 +6,7 @@ The non-guarantees carry the same weight as the guarantees. A promise we deliber
 
 ## Guarantees
 
-Numbered G1 to G10 (plans: 02 §4.1).
+Numbered G1 to G11 (plans: 02 §4.1).
 
 | Id | Guarantee |
 |---|---|
@@ -20,12 +20,14 @@ Numbered G1 to G10 (plans: 02 §4.1).
 | G8 | **Cancellation is monotone.** A cancellation request can be set and never cleared. A cancelled run never starts a new attempt. |
 | G9 | **Deterministic scheduling.** The set of `scheduled_for` instants for a given expression, timezone and interval does not depend on when the scheduler actually ran. Two daemons with the same configuration and different uptime produce identical tick sets. |
 | G10 | **Complete audit trail.** Every state transition has exactly one `run_events` row, committed in the same transaction as the transition. Every terminal state carries a `reason_code`, and that is enforced in CI. |
+| G11 | **At-least-once notification, atomically recorded (#29).** A state change that triggers an alert writes the alert row (`outbox`) inside the SAME transaction as the change: there is no committed failure without its notification row, and no delivered claim about something that rolled back. Delivery to the configured notifier is attempted repeatedly with backoff; after `max_attempts` the row is marked `failed` and kept for ever rather than deleted. A crash between starting one send and committing "delivered" can repeat that send - at-least-once, like G3. |
 
 ## Non-guarantees
 
 These are promises paceq does not make (plans: 02 §4.2, 00 §4.11).
 
 - **No exactly-once side effects.** paceq guarantees that a step starts at least once. It cannot guarantee that the effects of a step happen exactly once, because it does not control those effects. Make your step idempotent. Every step receives a stable idempotency key that survives retries and duplicate deliveries, so a step that needs deduplication has a key to deduplicate on (plans: 11 §5.4). exactly-once is never promised anywhere else in this project, and a feature request asking for it is refused with a link to this line.
+- **No exactly-once notifications either (G11 is at-least-once).** The same crash window that can run a step twice can send an alert twice: the notifier ran, then the daemon died before `delivered_at` was committed, and on restart the row is handed out again. The count of repeats per crash stays inside one plus the number of crashes; it never disappears silently and every attempt is visible as history.
 - **No real-time precision.** The guarantee is "not before `scheduled_for`". There is a best-effort tick lag metric, and no upper bound on delay under load.
 - **No at-least-once completion.** A run interrupted by a crash is requeued or terminated with a reason; it is not silently restarted from the beginning as if nothing happened. At-least-once applies to starting a step, not to finishing one.
 - **No global ordering** between independent jobs. Order exists inside a run through step dependencies, and nowhere else.

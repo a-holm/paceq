@@ -55,6 +55,13 @@ type Policies struct {
 	// Key: retention.daemon_sessions_keep_min. Default 50.
 	SessionsKeepMin int
 
+	// OutboxDeliveredDays deletes DELIVERED notification rows older than
+	// this (#29). Delivered rows are history until then, and failed rows
+	// are kept for ever regardless. Key: retention.outbox_delivered_days.
+	// Default 30 (06 section 9.4 via the issue's design note; 07's seven
+	// day sketch was superseded by the owner's decision).
+	OutboxDeliveredDays int
+
 	// BackupRetain is how many verified backup generations are kept.
 	// Key: backup.retain. Default 14.
 	BackupRetain int
@@ -65,16 +72,17 @@ type Policies struct {
 // every installation that never set the key.
 func DefaultPolicies() Policies {
 	return Policies{
-		LogShardDays:     14,
-		RunsDays:         90,
-		RunsKeepMin:      50,
-		TicksSkippedDays: 7,
-		TicksDays:        90,
-		TicksKeepMin:     200,
-		RunKeysDays:      365,
-		SessionsDays:     90,
-		SessionsKeepMin:  50,
-		BackupRetain:     14,
+		LogShardDays:        14,
+		RunsDays:            90,
+		RunsKeepMin:         50,
+		TicksSkippedDays:    7,
+		TicksDays:           90,
+		TicksKeepMin:        200,
+		RunKeysDays:         365,
+		SessionsDays:        90,
+		SessionsKeepMin:     50,
+		OutboxDeliveredDays: 30,
+		BackupRetain:        14,
 	}
 }
 
@@ -112,6 +120,9 @@ func (p Policies) WithDefaults() Policies {
 	if p.SessionsKeepMin <= 0 {
 		p.SessionsKeepMin = d.SessionsKeepMin
 	}
+	if p.OutboxDeliveredDays <= 0 {
+		p.OutboxDeliveredDays = d.OutboxDeliveredDays
+	}
 	if p.BackupRetain <= 0 {
 		p.BackupRetain = d.BackupRetain
 	}
@@ -128,6 +139,10 @@ func skippedTicksCutoff(now time.Time, p Policies) time.Time {
 }
 
 func ticksCutoff(now time.Time, p Policies) time.Time { return now.AddDate(0, 0, -p.TicksDays) }
+
+func outboxCutoff(now time.Time, p Policies) time.Time {
+	return now.AddDate(0, 0, -p.OutboxDeliveredDays)
+}
 
 func runKeysCutoff(now time.Time, p Policies) time.Time { return now.AddDate(0, 0, -p.RunKeysDays) }
 

@@ -34,6 +34,14 @@ type Source interface {
 	MetricsMetaValues(ctx context.Context) (map[string]string, error)
 	MetricsDBBytes(ctx context.Context) (int64, int64, error)
 
+	// Notification health (#29): the pending gauge reads row state at
+	// scrape time through the pending index; the failed total rides the
+	// permanent rows. Delivery durations are kept in memory by the store
+	// because they measure sends that never touched its tables.
+	MetricsNotificationsPending(ctx context.Context) (int64, error)
+	MetricsNotificationsFailedTotal(ctx context.Context) (int64, error)
+	TakeDelivery() store.DeliverySnapshot
+
 	// The writer-health pair lives in memory inside the store, not in its
 	// database: the max is taken (reset) by the scrape, the busy total is
 	// a plain load.
@@ -109,6 +117,7 @@ func (c *Collector) Scrape(ctx context.Context) []byte {
 		w.Metric("pulseq_outage_seconds_total", nil, seconds)
 	}
 	c.writeMetaFamilies(ctx, w, &dbErr)
+	dbErr = c.writeNotificationFamilies(ctx, w) || dbErr
 	if bytes, ok := logDirBytes(c.logDir); ok {
 		w.Help("pulseq_log_dir_bytes", "Bytes of run logs currently kept on disk.", "gauge")
 		w.Metric("pulseq_log_dir_bytes", nil, float64(bytes))
@@ -374,6 +383,50 @@ func (c *Collector) writeMetaFamilies(ctx context.Context, w *Writer, dbErr *boo
 
 // srcKey is one instigator series identity.
 type srcKey struct{ kind, name string }
+
+// writeNotificationFamilies writes the alerting half of the document (#29):
+// how many notifications are owed, how many were given up on for ever, and
+// how long sends took. The histogram's buckets are fixed - delivery time is
+// a latency budget, not a quantity to bucket cleverly. Returns true on a
+// read failure, the house convention that feeds pulseq_metrics_db_error.
+func (c *Collector) writeNotificationFamilies(ctx context.Context, w *Writer) bool {
+	pending, err := c.src.MetricsNotificationsPending(ctx)
+	if err != nil {
+		return true
+	}
+	w.Help("pulseq_notifications_pending", "Outbox rows not yet delivered or given up on.", "gauge")
+	w.Metric("pulseq_notifications_pending", nil, float64(pending))
+
+	failed, err := c.src.MetricsNotificationsFailedTotal(ctx)
+	if err != nil {
+		return true
+	}
+	w.Help("pulseq_notifications_failed_total", "Notifications given up on permanently after max_attempts.", "counter")
+	w.Metric("pulseq_notifications_failed_total", nil, float64(failed))
+
+	snap := c.src.TakeDelivery()
+	buckets := store.DeliveryBuckets()
+	w.Help("pulseq_notification_delivery_seconds", "Wall time of one notifier send attempt, success or failure alike.", "histogram")
+	for i, edge := range buckets {
+		if uint64(i) >= uint64(len(snap.BucketCounts)) {
+			break
+		}
+		w.Metric("pulseq_notification_delivery_seconds", []L{Label("le", formatEdge(edge))}, float64(snap.BucketCounts[i]))
+	}
+	w.Metric("pulseq_notification_delivery_seconds", []L{Label("le", "+Inf")}, float64(snap.TotalCount))
+	w.Metric("pulseq_notification_delivery_seconds_sum", nil, snap.SumSeconds)
+	w.Metric("pulseq_notification_delivery_seconds_count", nil, float64(snap.TotalCount))
+	return false
+}
+
+// formatEdge prints a le label in Prometheus textformat style: whole seconds
+// as integers, fractions with a dot.
+func formatEdge(v float64) string {
+	if v == float64(int64(v)) {
+		return strconv.FormatInt(int64(v), 10)
+	}
+	return strconv.FormatFloat(v, 'f', -1, 64)
+}
 
 func schedLabels(name string) []L {
 	return []L{Label("instigator", "schedule"), Label("name", name)}
