@@ -172,6 +172,11 @@ func msToTime(ms int64) time.Time {
 // silence the spool was built to end (02 R2). The run must exist — the event
 // hangs off it; a file naming no known run is archived with only the log for
 // company.
+//
+// The event is run level, the step's name riding in the detail: the
+// event-chain invariant (I15) reads each step's partition as one transition
+// story, and an annotation about a rejected file is not a step transition.
+// The orphan-kill event is run level for the same reason.
 func (s *Store) RecordSpoolArchive(ctx context.Context, runID, step, file, why string) error {
 	now := s.clk.Now().UTC()
 	detail, err := json.Marshal(map[string]string{"step": step, "file": file, "why": why})
@@ -185,7 +190,6 @@ func (s *Store) RecordSpoolArchive(ctx context.Context, runID, step, file, why s
 		}
 		return appendRunEvent(tx, RunEvent{
 			RunID:      runID,
-			StepName:   step,
 			At:         now,
 			Kind:       "run.spool_archived",
 			FromState:  state,
