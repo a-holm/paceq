@@ -84,6 +84,28 @@ func runRow(t *testing.T, sc Scenario) {
 		skippedEffectKeys(sc, finalRunID), readEffects(t, ws.EffectFile))
 	requireEventStory(t, ctx, s, sc, finalRunID)
 
+	// A spool row's whole point: the verdict on the row says where it came
+	// from (issue #39). The W8 family must read 'spool', proving recovery
+	// committed what the dead attempt's shim wrote.
+	if sc.ExpectSpoolCommit {
+		detail, err := s.GetRun(ctx, finalRunID)
+		if err != nil {
+			t.Fatalf("read run %s for the outcome source: %v", finalRunID, err)
+		}
+		found := false
+		for _, st := range detail.Steps {
+			if st.OutcomeSource != "spool" {
+				t.Errorf("%s: step %s carries outcome_source %q, want spool",
+					sc.describe(), st.Name, st.OutcomeSource)
+			} else {
+				found = true
+			}
+		}
+		if !found && len(detail.Steps) > 0 {
+			t.Errorf("%s: no step carries outcome_source 'spool'", sc.describe())
+		}
+	}
+
 	// A retry reopens failed and skipped steps only. The first step of a
 	// reopen row succeeded before the crash, so it must still carry its
 	// single first attempt: the positive proof that the retry spared the
@@ -201,7 +223,7 @@ func converge(t *testing.T, ctx context.Context, s *store.Store, ws *workspace,
 ) (string, string) {
 	t.Helper()
 
-	eng := restartEngine(s, ws)
+	eng := restartEngine(t, sc, s, ws)
 	finalRunID := runID
 
 	switch sc.Kind {
@@ -563,6 +585,17 @@ func TestChildProcess(t *testing.T) {
 		Owner:        "exec-child",
 		PollInterval: pollInterval,
 		LeaseTTL:     ttl,
+	}
+	if sc.Shim {
+		// The shim rows run the step through the real exec chain
+		// (issue #39): this binary as the daemon, the built paceq as
+		// the shim, the workspace's spool directory for results.
+		bin := os.Getenv(envPaceqBin)
+		if bin == "" {
+			t.Fatal("a shim row needs the built paceq binary in the environment")
+		}
+		eng.Executable = bin
+		eng.SpoolDir = filepath.Join(ws.Dir, "spool", "attempts")
 	}
 
 	if rec := os.Getenv(envRecoverRun); rec != "" {
@@ -953,7 +986,7 @@ func seedRun(t *testing.T, execute bool) (*store.Store, func()) {
 		t.Fatalf("materialise: %v", err)
 	}
 	if execute {
-		eng := restartEngine(s, ws)
+		eng := restartEngine(t, sc, s, ws)
 		if _, err := eng.ExecuteRun(ctx, res.Run.ID); err != nil {
 			t.Fatalf("execute: %v", err)
 		}

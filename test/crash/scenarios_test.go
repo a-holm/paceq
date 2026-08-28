@@ -101,6 +101,18 @@ type Scenario struct {
 	// cancellation, so the request commits under a live step that has
 	// done all the work the row says must exist.
 	CancelWhenStep string
+
+	// Shim runs the row's step through the exec shim (issue #39): the
+	// crashing child launches its own image as `paceq exec` with the
+	// workspace's result spool, and the restart engine is wired the same
+	// way. The M6 rows are the W5-W8 windows of the reliability plan,
+	// driven through the real process chain.
+	Shim bool
+
+	// ExpectSpoolCommit says the row's step verdict must carry
+	// outcome_source='spool' after convergence: the crash left a result
+	// file behind and recovery committed it instead of assuming.
+	ExpectSpoolCommit bool
 }
 
 // dagStep is one step of a DAG row's frozen spec: its name, the steps it
@@ -159,6 +171,14 @@ const (
 	cancelObserveUpdate   = "M1:transition:after_update:observe_cancel"
 	reopenAfterRunUpdate  = "M4:reopen:after_run_update"
 	reopenAfterCommit     = "M4:reopen:after_commit"
+
+	// The shim-era windows (issue #39, W5-W8 of the reliability plan).
+	// The child arms them the same way it arms the M1 points; the
+	// difference is the process chain: the step runs through the real
+	// `paceq exec` shim, so a result file is on disk when W8 kills.
+	afterStartAttempt = "M6:step:after_start"
+	afterSpawnShim    = "M6:step:after_spawn"
+	afterChildExit    = "M6:step:after_child_exit"
 )
 
 func succeeded() []string { return []string{"succeeded"} }
@@ -325,6 +345,61 @@ var scenarios = append([]Scenario{
 		RetryMax:   1,
 		MinEffects: 2, MaxEffects: 2,
 		ExpectRequeue: true, ExpectExecutorLost: true,
+	},
+
+	// The shim rows (issue #39): the step runs through the real
+	// `paceq exec` chain, so the crashed executor's knowledge of what
+	// happened survives in the result spool.
+	//
+	// W5, after the attempt start committed, before the fork: nothing
+	// ran, nothing was spooled, and recovery closes the attempt as
+	// executor-lost — the same story the direct path tells, told through
+	// the shim.
+	{
+		Name: "shim_w5_after_start", KillAt: afterStartAttempt, Kind: "execute",
+		RetryMax:   1,
+		MinEffects: 1, MaxEffects: 1,
+		ExpectRequeue: true, ExpectExecutorLost: true,
+		Shim: true,
+	},
+	// W6, after the fork but before the baseline landed: the daemon dies
+	// under a live shim, whose watchdog kills the job and spools what
+	// really happened. Recovery commits that verdict (the killed attempt
+	// goes back to the step's own budget) and the retry runs the job once
+	// more. The final count is one or two: the first attempt may have
+	// landed its effect in the microseconds before the kill reached it.
+	{
+		Name: "shim_w6_after_spawn", KillAt: afterSpawnShim, Kind: "execute",
+		RetryMax:   1,
+		MinEffects: 1, MaxEffects: 2,
+		ExpectRequeue: true, ExpectExecutorLost: false,
+		WaitsForOrphan: true,
+		Shim:           true,
+	},
+	// W7, under execution: the kill lands while the job is alive and has
+	// already written its effect. Same shape as W6 with the effect on
+	// file from the first attempt; the retry's second attempt is the
+	// bounded duplication the write model promises.
+	{
+		Name: "shim_w7_under_exec", KillAt: underExec, Kind: "execute",
+		RetryMax:   1,
+		MinEffects: 2, MaxEffects: 2,
+		ExpectRequeue: true, ExpectExecutorLost: false,
+		WaitsForOrphan: true,
+		Shim:           true,
+	},
+	// W8, after the child exited but before the verdict committed: the
+	// window the shim exists to close. The result file says succeeded;
+	// recovery commits it with outcome_source='spool', the run converges,
+	// and the job ran exactly once — the effect count that the direct
+	// path cannot promise in this window.
+	{
+		Name: "shim_w8_after_child_exit", KillAt: afterChildExit, Kind: "execute",
+		RetryMax:   1,
+		MinEffects: 1, MaxEffects: 1,
+		ExpectRequeue: true, ExpectExecutorLost: false,
+		ExpectSpoolCommit: true,
+		Shim:              true,
 	},
 
 	// The fan-out rows (#20): one diamond, extract → transform →

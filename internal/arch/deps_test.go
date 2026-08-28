@@ -52,7 +52,7 @@ var allowedImports = map[string][]string{
 	"doctor":           {"store", "clock", "obs", "reconcile"},
 	"explain":          {"store", "reason", "clock", "id", "cronx"},
 	"status":           {"store", "clock"},
-	"cli":              {"engine", "daemon", "store", "doctor", "explain", "status", "spec", "diag", "obs", "model", "clock", "id", "reason", "logsink", "cronx", "sensor", "buildinfo", "importer/crontab", "janitor", "scheduler", "cutover", "runner"},
+	"cli":              {"engine", "daemon", "store", "doctor", "explain", "status", "spec", "diag", "obs", "model", "clock", "id", "reason", "logsink", "cronx", "sensor", "buildinfo", "importer/crontab", "janitor", "scheduler", "cutover", "runner", "reconcile"},
 	"importer/crontab": {"spec", "cronx"},
 	"testutil":         {"model", "clock", "id", "store"},
 }
