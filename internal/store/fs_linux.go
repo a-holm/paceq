@@ -54,3 +54,25 @@ func classifyFSMagic(dir string, magic uint64) error {
 	}
 	return nil
 }
+
+// FSMagic reports the filesystem magic of the directory, for tools that
+// report rather than refuse. The classification is the open path's rule,
+// shared so doctor and the daemon can never disagree about what is network.
+func FSMagic(dir string) (uint64, error) {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(dir, &st); err != nil {
+		return 0, fmt.Errorf("statfs %s: %w", dir, err)
+	}
+	return magicOf(st), nil
+}
+
+// IsNetworkFSMagic reports whether the magic names a filesystem where SQLite
+// locking is undefined.
+func IsNetworkFSMagic(magic uint64) bool {
+	switch magic {
+	case magicNFS, magicSMB, magicCIFS, magicSMB2, magicFUSE,
+		magic9P, magicCeph, magicGFS2, magicOCFS2, magicAFS, magicKAFS, magicLustre:
+		return true
+	}
+	return false
+}

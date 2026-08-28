@@ -2,8 +2,13 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"runtime"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -14,23 +19,33 @@ import (
 )
 
 func newDoctorCmd(env Env, g *globals) *cobra.Command {
-	return &cobra.Command{
+	var forceJSON bool
+	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check the installation and say what to do about what is wrong",
 		Long: `Check the installation: the state directory, its permissions, the database,
-the write lock, free disk against the disk-guard's thresholds, the log
-directory against its byte cap, the write ahead log against its alarm
-levels, and the time zone database.
+its pragma discipline, the write lock, free disk against the disk-guard's
+thresholds, the log directory against its byte cap, the write ahead log
+against its alarm levels, the clock, the time zone database, the result
+spool, leftover job processes, jobs that monitoring cannot alarm on, the
+filesystem the state sits on, the running daemon's version, and the
+database's critical invariants.
 
-doctor never changes anything. It exits 0 when nothing failed, so it can stand
-in a login script, and 1 when something is broken. Warnings do not fail: another
-paceq holding the state is normal, and a machine that has never run paceq init
-is not broken.`,
+Every finding carries its own next step. doctor never changes anything. It
+exits 0 when nothing failed, so it can stand in a login script, and 1 when
+something is broken. Warnings do not fail: another paceq holding the state is
+normal, and a machine that has never run paceq init is not broken.`,
 		Args: noArgs,
 		RunE: runE(env, g, func(ctx context.Context, out *ui) error {
+			if forceJSON {
+				out.mode = modeJSON
+			}
 			return runDoctor(ctx, env, g, out)
 		}),
 	}
+	cmd.Flags().BoolVar(&forceJSON, "json", false,
+		"emit the JSON contract, the same document -o json pins")
+	return cmd
 }
 
 // findingJSON is one finding as a script reads it. The level is a word rather
@@ -66,6 +81,7 @@ func runDoctor(ctx context.Context, env Env, g *globals, out *ui) error {
 		limits = cfg.Limits
 	}
 	report.Findings = append(report.Findings, doctor.Run(ctx, stateDir, doctor.Options{Status: env.Status, Limits: limits}).Findings...)
+	report.Findings = append(report.Findings, checkDaemonVersion(ctx, stateDir, buildinfo.Get().Version))
 	for _, finding := range report.Findings {
 		out.note(2, "%s: %s", finding.Title, finding.Level)
 	}
@@ -131,4 +147,69 @@ func writeDoctorReport(out *ui, report doctor.Report) error {
 		}
 	}
 	return nil
+}
+
+// checkDaemonVersion asks the running daemon for its version and compares.
+// A CLI that predates its daemon (or the reverse) answers questions from a
+// schema the other side may not share, so a mismatch is worth naming before
+// it becomes a confusing answer. No socket at all is the healthy case for a
+// machine that runs only the CLI side.
+func checkDaemonVersion(ctx context.Context, stateDir, cliVersion string) doctor.Finding {
+	const title = "daemon version"
+	socketPath := daemonSocket(stateDir)
+	if socketPath == "" {
+		return doctor.Finding{Level: doctor.OK, Title: title, Detail: "no daemon is running"}
+	}
+	version, err := daemonVersion(ctx, socketPath)
+	if err != nil {
+		return doctor.Finding{
+			Level:  doctor.Warn,
+			Title:  title,
+			Detail: fmt.Sprintf("the daemon did not answer: %v", err),
+			Next: []string{
+				"if it is mid-restart, wait a moment and run paceq doctor again",
+				"otherwise remove a stale socket: rm " + socketPath,
+			},
+		}
+	}
+	if version == cliVersion {
+		return doctor.Finding{Level: doctor.OK, Title: title, Detail: "daemon " + version + ", matches this CLI"}
+	}
+	return doctor.Finding{
+		Level: doctor.Warn,
+		Title: title,
+		Detail: fmt.Sprintf("this CLI is %s, the daemon is %s: answers may come from a schema "+
+			"the other side does not share", cliVersion, version),
+		Next: []string{"restart the service so both sides are the same build: systemctl restart paceq"},
+	}
+}
+
+func daemonVersion(ctx context.Context, socketPath string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://unix/readyz", nil)
+	if err != nil {
+		return "", err
+	}
+	client := &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return net.Dial("unix", socketPath)
+			},
+		},
+		Timeout: 2 * time.Second,
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var doc struct {
+		Version string `json:"version"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
+		return "", err
+	}
+	if doc.Version == "" {
+		return "", errors.New("the health answer carried no version")
+	}
+	return doc.Version, nil
 }

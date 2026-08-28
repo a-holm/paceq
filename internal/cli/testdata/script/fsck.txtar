@@ -1,7 +1,9 @@
 # fsck is the invariant sweep: a clean project passes with nothing to
-# report, and a state whose event chain does not add up fails by name.
-# The planted break here is the one the public API can write: two events
-# that tell different stories about the same run, which is invariant I15.
+# report, and a state whose event chain does not add up is reported by
+# name. The planted break here is the one the public API can write: two
+# events that tell different stories about the same run, which is
+# invariant I15. Its grade is warning: the exit code contract is graded
+# (M6-06), so a historic finding is listed and still exits 0.
 
 exec paceq init
 cp nightly.yaml jobs/nightly.yaml
@@ -14,10 +16,10 @@ stdout '"count":0'
 
 # Two events claim the run went queued to running and queued to failed.
 plantrun nightly
-wantexit 1 fk.json fk_err.txt fsck
+wantexit 0 fk.json - fsck
 grep '"check":"I15"' fk.json
+grep '"severity":"warning"' fk.json
 grep 'event chain breaks' fk.json
-grep 'listed above' fk_err.txt
 
 -- nightly.yaml --
 name: nightly

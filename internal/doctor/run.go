@@ -22,8 +22,13 @@ type DB interface {
 	Path() string
 	SchemaVersion(ctx context.Context) (int, error)
 	JournalMode(ctx context.Context) (string, error)
+	SynchronousMode(ctx context.Context) (string, error)
+	ForeignKeys(ctx context.Context) (bool, error)
 	AutoVacuum(ctx context.Context) (store.AutoVacuumMode, error)
 	BackupStatus(ctx context.Context) (store.BackupInfo, error)
+	QuickFsck(ctx context.Context) ([]store.Violation, error)
+	ActiveAttempts(ctx context.Context) ([]store.AttemptProcess, error)
+	JobsWithoutFreshnessSLA(ctx context.Context) ([]string, error)
 	Close() error
 }
 
@@ -58,6 +63,19 @@ type Options struct {
 	// Clock answers what time it is. Nil means clock.System(). Backup age is
 	// measured against it, so a test can pin a report to a moment.
 	Clock clock.Clock
+	// NTP reads the machine's clock discipline. Nil reads timedatectl.
+	NTP NTPReader
+	// ZonesVersion reads the system zone database's version. Nil reads
+	// /usr/share/zoneinfo. Embedded names the version this binary carries,
+	// empty when the build does not stamp one; the drift check compares.
+	ZonesVersion TzVersionReader
+	// EmbeddedTzdata is the zone database version built into this binary.
+	EmbeddedTzdata string
+	// Procs lists the live job processes. Nil skips the check on platforms
+	// with no /proc to walk.
+	Procs ProcLister
+	// Magic probes a directory's filesystem. Nil means unknown.
+	Magic MagicProber
 }
 
 // Report is one doctor run.
@@ -111,6 +129,10 @@ func Run(ctx context.Context, dir string, opt Options) Report {
 	r.add(checkWAL(dbPath, opt.Limits))
 
 	r.add(CheckSandbox(opt.Status))
+	r.add(CheckNTP(opt.NTP))
+	r.add(CheckTzdataVersion(opt.ZonesVersion, opt.EmbeddedTzdata))
+	r.add(CheckSpoolBacklog(dir, opt.clock()))
+	r.add(CheckFilesystem(nearestExisting(dir), opt.Magic))
 
 	switch dirState {
 	case stateMissing:
@@ -125,7 +147,7 @@ func Run(ctx context.Context, dir string, opt Options) Report {
 		dbFinding, dbUsable := checkDatabaseFile(dbPath)
 		r.add(dbFinding)
 		if dbUsable {
-			r.Findings = append(r.Findings, inspect(ctx, dir, opt.Open, opt.clock())...)
+			r.Findings = append(r.Findings, inspect(ctx, dir, opt)...)
 		} else if len(dbFinding.Next) > 0 {
 			r.add(skipped("the database was not read", dbFinding.Next))
 		}
@@ -159,6 +181,18 @@ func (o Options) withDefaults() Options {
 	}
 	if o.Clock == nil {
 		o.Clock = clock.System()
+	}
+	if o.NTP == nil {
+		o.NTP = readNTP
+	}
+	if o.ZonesVersion == nil {
+		o.ZonesVersion = readSystemTzdataVersion
+	}
+	if o.Procs == nil {
+		o.Procs = scanProcs
+	}
+	if o.Magic == nil {
+		o.Magic = probeMagic
 	}
 	return o
 }
@@ -284,7 +318,8 @@ func skipped(reason string, next []string) Finding {
 // inspect opens the database and asks it the questions only it can answer. The
 // state lock decides whether that is possible at all, so the answer to "who
 // holds the lock" comes out of the same attempt.
-func inspect(ctx context.Context, dir string, open Opener, clk clock.Clock) []Finding {
+func inspect(ctx context.Context, dir string, opt Options) []Finding {
+	open, clk := opt.Open, opt.clock()
 	db, err := open(ctx, dir)
 	if err != nil {
 		var locked *store.LockedError
@@ -316,13 +351,20 @@ func inspect(ctx context.Context, dir string, open Opener, clk clock.Clock) []Fi
 	}
 	defer func() { _ = db.Close() }()
 
-	return []Finding{
+	out := []Finding{
 		{Level: OK, Title: "write lock", Detail: "free"},
 		checkJournalMode(ctx, db),
 		checkSchemaVersion(ctx, db),
+	}
+	out = append(out, CheckPragmas(ctx, db)...)
+	out = append(out,
 		CheckAutoVacuum(ctx, db),
 		CheckBackup(ctx, db, clk),
-	}
+		CheckFreshnessSLA(ctx, db),
+		CheckOrphanedProcesses(ctx, db, opt.Procs),
+		CheckCriticalInvariants(ctx, db),
+	)
+	return out
 }
 
 // lockHeld is a warning, never a failure: another paceq running is the normal

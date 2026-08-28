@@ -41,6 +41,13 @@ func TestEveryErrorCarriesAllThreeParts(t *testing.T) {
 			"restore it with:  paceq cutover --rollback --from .paceq/crontab.backup.2027-01-12T09-14-03"),
 		"pathError": pathError("jobs/nightly.yaml", fs.ErrNotExist),
 
+		"repairConfirmError": repairConfirmError(&store.RepairConfirmError{Critical: []store.Violation{
+			{
+				Check: "I3", Severity: store.Critical, Subject: "job x run_key k",
+				Detail: "the run key names more than one run",
+			},
+		}}, Env{}, "/tmp/x/.paceq"),
+
 		"classify": classify(ctx, errors.New("something nobody classified")),
 	}
 
