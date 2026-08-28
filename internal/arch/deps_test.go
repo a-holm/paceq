@@ -22,6 +22,7 @@ const (
 var allowedImports = map[string][]string{
 	"model":   {},
 	"id":      {},
+	"cutover": {},
 	"clock":   {},
 	"diag":    {},
 	"faults":  {},
@@ -49,7 +50,7 @@ var allowedImports = map[string][]string{
 	"doctor":           {"store", "clock"},
 	"explain":          {"store", "reason", "clock", "id", "cronx"},
 	"status":           {"store", "clock"},
-	"cli":              {"engine", "daemon", "store", "doctor", "explain", "status", "spec", "diag", "obs", "model", "clock", "id", "reason", "logsink", "cronx", "sensor", "buildinfo", "importer/crontab", "janitor", "scheduler"},
+	"cli":              {"engine", "daemon", "store", "doctor", "explain", "status", "spec", "diag", "obs", "model", "clock", "id", "reason", "logsink", "cronx", "sensor", "buildinfo", "importer/crontab", "janitor", "scheduler", "cutover"},
 	"importer/crontab": {"spec", "cronx"},
 	"testutil":         {"model", "clock", "id", "store"},
 }

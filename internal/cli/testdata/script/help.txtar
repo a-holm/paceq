@@ -37,6 +37,7 @@ Usage:
 
 Available Commands:
   apply           Load job files into the database as immutable versions
+  cutover         Comment imported jobs out of the crontab, with a way back
   db              Direct database maintenance
   doctor          Check the installation and say what to do about what is wrong
   error           Explain an error or reason code
