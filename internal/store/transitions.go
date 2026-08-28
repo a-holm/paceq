@@ -691,6 +691,9 @@ func repairCancelRunningStepTx(tx *sql.Tx, runID, name string, now time.Time) (b
 	if err != nil || state != model.StepCancelled {
 		return false, err
 	}
+	// nolint:fencing: the repair predicate re-checks the step's running
+	// state in this same transaction, and steps carry no token of their own;
+	// the run's terminal state is what the lease would guard.
 	if err := finishTransition(tx, "repair_cancel_running", func() error {
 		_, err := tx.Exec(`UPDATE steps SET
 			state = 'cancelled', reason_code = ?, reason_data = '{}',
@@ -719,6 +722,9 @@ func repairSkipPendingStepTx(tx *sql.Tx, runID, name string, now time.Time) (boo
 	if err != nil || state != model.StepSkipped {
 		return false, err
 	}
+	// nolint:fencing: the repair predicate re-checks the step's pending
+	// state in this same transaction, and steps carry no token of their own;
+	// the run's terminal state is what the lease would guard.
 	if err := finishTransition(tx, "repair_skip_pending", func() error {
 		_, err := tx.Exec(`UPDATE steps SET
 			state = 'skipped', reason_code = ?, reason_data = '{}', finished_at = ?
@@ -740,6 +746,9 @@ func repairSkipPendingStepTx(tx *sql.Tx, runID, name string, now time.Time) (boo
 // unknown reason" and writes a state-preserving event, so the repair shows in
 // the history the way every other repair does.
 func repairStampDeferTx(tx *sql.Tx, runID string, now time.Time) (bool, error) {
+	// nolint:fencing: a queued run holds no lease to check, and the stamp
+	// changes nothing the lease guards; the predicate re-checks the row's
+	// state in this same transaction.
 	res, err := tx.Exec(`UPDATE runs SET defer_reason = ?, updated_at = ?
 		WHERE id = ? AND state = 'queued' AND (defer_reason IS NULL OR defer_reason = '')`,
 		model.DeferReasonUnspecified, now.UnixMilli(), runID)
@@ -764,6 +773,9 @@ func repairStampDeferTx(tx *sql.Tx, runID string, now time.Time) (bool, error) {
 // repairStampRunReasonTx stamps the legacy code over an unusable reason value
 // on a terminal run.
 func repairStampRunReasonTx(tx *sql.Tx, runID, state string, now time.Time) (bool, error) {
+	// nolint:fencing: a terminal run holds no lease, and the stamp changes
+	// only display metadata; the predicate re-checks the row's state in this
+	// same transaction.
 	res, err := tx.Exec(`UPDATE runs SET reason_code = ?, updated_at = ?
 		WHERE id = ? AND state = ?
 			AND (reason_code IS NULL OR reason_code = '' OR reason_code = 'UNKNOWN')`,
@@ -787,6 +799,9 @@ func repairStampRunReasonTx(tx *sql.Tx, runID, state string, now time.Time) (boo
 
 // repairStampStepReasonTx stamps the legacy code on a terminal step.
 func repairStampStepReasonTx(tx *sql.Tx, runID, name, state string, now time.Time) (bool, error) {
+	// nolint:fencing: a terminal step holds no lease, and the stamp changes
+	// only display metadata; the predicate re-checks the row in this same
+	// transaction.
 	res, err := tx.Exec(`UPDATE steps SET reason_code = ?
 		WHERE run_id = ? AND name = ?
 			AND (reason_code IS NULL OR reason_code = '' OR reason_code = 'UNKNOWN')`,
