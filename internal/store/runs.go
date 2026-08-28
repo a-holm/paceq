@@ -192,6 +192,13 @@ type Step struct {
 	LogTruncated bool
 	ErrorTail    string
 
+	// OutcomeSource names where the verdict came from (#39): 'direct' when
+	// the executor waited on the process itself, 'spool' when it was read
+	// from the attempt's result spool after a crash, 'reconciled' when
+	// recovery had no source and had to assume. Empty means the row was
+	// written before the column existed, which reads as the direct era.
+	OutcomeSource string
+
 	// NextAttemptAt is when a pending step that failed with attempts left
 	// becomes runnable again. M1 computes no retries, so nothing sets it
 	// yet; the claim gate reads it all the same, because M1-09 will fill
@@ -629,7 +636,7 @@ func scanRuns(rows *sql.Rows) ([]Run, error) {
 func readSteps(ctx context.Context, r reader, runID string) ([]Step, error) {
 	rows, err := r.QueryContext(ctx, `SELECT name, idx, state, attempt, max_attempts, exit_code,
 signal, started_at, finished_at, duration_ms, reason_code, reason_text, reason_data, error,
-log_path, log_bytes, log_truncated, error_tail, next_attempt_at
+log_path, log_bytes, log_truncated, error_tail, next_attempt_at, outcome_source
 FROM steps WHERE run_id = ? ORDER BY idx`, runID)
 	if err != nil {
 		return nil, fmt.Errorf("read the steps of run %s: %w", runID, err)
@@ -647,18 +654,21 @@ func scanSteps(rows *sql.Rows) ([]Step, error) {
 	var out []Step
 	for rows.Next() {
 		var (
-			step                                          Step
-			exitCode                                      sql.NullInt64
-			signal, reasonCode, reasonText, failure, logs sql.NullString
-			reasonData                                    sql.NullString
-			startedAt, finishedAt, durationMS             sql.NullInt64
-			nextAttemptAt                                 sql.NullInt64
+			step                      Step
+			exitCode                  sql.NullInt64
+			signal, reasonCode        sql.NullString
+			reasonText                sql.NullString
+			failure, logs, outcomeSrc sql.NullString
+			reasonData                sql.NullString
+			startedAt, finishedAt     sql.NullInt64
+			durationMS                sql.NullInt64
+			nextAttemptAt             sql.NullInt64
 		)
 		errorTail := sql.NullString{}
 		if err := rows.Scan(&step.Name, &step.Index, &step.State, &step.Attempt, &step.MaxAttempts,
 			&exitCode, &signal, &startedAt, &finishedAt, &durationMS, &reasonCode, &reasonText,
 			&reasonData, &failure, &logs, &step.LogBytes, &step.LogTruncated, &errorTail,
-			&nextAttemptAt); err != nil {
+			&nextAttemptAt, &outcomeSrc); err != nil {
 			return nil, fmt.Errorf("scan a step: %w", err)
 		}
 		step.ExitCode = int(exitCode.Int64)
@@ -674,6 +684,7 @@ func scanSteps(rows *sql.Rows) ([]Step, error) {
 		step.LogPath = logs.String
 		step.ErrorTail = errorTail.String
 		step.NextAttemptAt = timeOrZero(nextAttemptAt)
+		step.OutcomeSource = outcomeSrc.String
 		out = append(out, step)
 	}
 	if err := rows.Err(); err != nil {

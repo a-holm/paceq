@@ -280,6 +280,12 @@ type StepOutcome struct {
 	// only when the machine lands the step on succeeded: a failed step
 	// publishes nothing.
 	Artifacts []Artifact
+
+	// OutcomeSource names where this verdict's facts came from (#39):
+	// 'direct' from the executor's own wait, 'spool' from the attempt's
+	// result file, 'reconciled' from recovery's honest guess. Empty keeps
+	// the column NULL, the pre-shim era's shape.
+	OutcomeSource string
 }
 
 // RecordStepOutcome applies one event to one step. The machine decides
@@ -308,105 +314,121 @@ func (s *Store) RecordStepOutcome(ctx context.Context, runID, name string, out S
 		if err := checkLeaseTx(tx, runID, ref, now); err != nil {
 			return fmt.Errorf("record %s on step %s of run %s: %w", out.Event, name, runID, err)
 		}
-		step, err := readStepTx(tx, runID, name)
-		if err != nil {
-			return err
-		}
-		cur, err := model.ParseStepState(step.State)
-		if err != nil {
-			return err
-		}
+		return applyStepOutcomeTx(tx, runID, name, out, finishedAt, detail)
+	})
+}
 
-		guards := model.Guards{
-			ReasonCode:   string(out.ReasonCode),
-			AttemptsLeft: step.Attempt < step.MaxAttempts,
-		}
-		state, effects, err := model.NextStepState(cur, model.Event(out.Event), guards)
-		if err != nil {
-			return fmt.Errorf("record %s on step %s of run %s: %w", out.Event, name, runID, err)
-		}
+// applyStepOutcomeTx is the verdict write that RecordStepOutcome and the
+// spool committer (#39) share: the machine's judgment, the row, the event,
+// the skip closure of a final failure and a succeeded step's artifacts, all
+// inside the caller's transaction. It assumes the caller has already decided
+// who may write and fenced against it.
+func applyStepOutcomeTx(tx *sql.Tx, runID, name string, out StepOutcome, finishedAt time.Time, detail string) error {
+	step, err := readStepTx(tx, runID, name)
+	if err != nil {
+		return err
+	}
+	cur, err := model.ParseStepState(step.State)
+	if err != nil {
+		return err
+	}
 
-		var exitCode any
-		if out.ExitCode != nil {
-			exitCode = *out.ExitCode
+	guards := model.Guards{
+		ReasonCode:   string(out.ReasonCode),
+		AttemptsLeft: step.Attempt < step.MaxAttempts,
+	}
+	state, effects, err := model.NextStepState(cur, model.Event(out.Event), guards)
+	if err != nil {
+		return fmt.Errorf("record %s on step %s of run %s: %w", out.Event, name, runID, err)
+	}
+
+	var exitCode any
+	if out.ExitCode != nil {
+		exitCode = *out.ExitCode
+	}
+	var signal any
+	if out.Signal != "" {
+		signal = out.Signal
+	}
+	var nextAttempt any
+	rowReason := out.ReasonCode
+	rowDetail := detail
+	if state == model.StepPending {
+		// The retry transition: back to pending, runnable when the
+		// plan says, or at once without one.
+		if out.Retry != nil && !out.Retry.NextAttemptAt.IsZero() {
+			nextAttempt = out.Retry.NextAttemptAt.UTC().UnixMilli()
+		} else {
+			nextAttempt = finishedAt.UnixMilli()
 		}
-		var signal any
-		if out.Signal != "" {
-			signal = out.Signal
-		}
-		var nextAttempt any
-		rowReason := out.ReasonCode
-		rowDetail := detail
-		if state == model.StepPending {
-			// The retry transition: back to pending, runnable when the
-			// plan says, or at once without one.
-			if out.Retry != nil && !out.Retry.NextAttemptAt.IsZero() {
-				nextAttempt = out.Retry.NextAttemptAt.UTC().UnixMilli()
-			} else {
-				nextAttempt = finishedAt.UnixMilli()
+		if out.Retry != nil {
+			if out.Retry.ReasonCode != "" {
+				rowReason = out.Retry.ReasonCode
 			}
-			if out.Retry != nil {
-				if out.Retry.ReasonCode != "" {
-					rowReason = out.Retry.ReasonCode
-				}
-				if out.Retry.DetailJSON != "" {
-					rowDetail = out.Retry.DetailJSON
-				}
+			if out.Retry.DetailJSON != "" {
+				rowDetail = out.Retry.DetailJSON
 			}
 		}
-		truncated := 0
-		if out.LogMeta.Truncated {
-			truncated = 1
-		}
+	}
+	truncated := 0
+	if out.LogMeta.Truncated {
+		truncated = 1
+	}
 
-		if err := finishTransition(tx, "record_outcome", func() error {
-			_, err := tx.Exec(`UPDATE steps SET state = ?, reason_code = ?, reason_data = ?,
+	if err := finishTransition(tx, "record_outcome", func() error {
+		// nolint:fencing: this is the shared verdict write of
+		// RecordStepOutcome and the spool committer (#39); both
+		// callers have already proven their right to write inside
+		// this same transaction (the holder's token, or the spool's
+		// epoch plus dead-lease checks), and re-proving it here
+		// would mean threading a second opinion through every
+		// fence shape.
+		_, err := tx.Exec(`UPDATE steps SET state = ?, reason_code = ?, reason_data = ?,
 				exit_code = ?, signal = ?,
 				finished_at = CASE WHEN ? THEN ? ELSE finished_at END,
 				duration_ms = CASE WHEN started_at IS NULL OR NOT ? THEN NULL
 					ELSE ? - started_at END,
 				log_path = ?, log_bytes = ?, log_truncated = ?, error_tail = ?,
-				next_attempt_at = ?
+				next_attempt_at = ?, outcome_source = ?
 				WHERE run_id = ? AND name = ? AND state = ?`,
-				string(state), nullIfEmpty(string(rowReason)), rowDetail,
-				exitCode, signal,
-				state != model.StepPending, finishedAt.UnixMilli(),
-				state != model.StepPending,
-				finishedAt.UnixMilli(),
-				nullIfEmpty(out.LogMeta.RelPath), out.LogMeta.Bytes, truncated,
-				nullIfEmpty(out.LogMeta.ErrorTail),
-				nextAttempt,
-				runID, name, string(cur))
-			return err
-		}, tx, RunEvent{
-			RunID: runID, StepName: name, At: finishedAt, Kind: emitKind(effects),
-			FromState: string(cur), ToState: string(state),
-			ReasonCode: string(rowReason),
-			DetailJSON: rowDetail,
-		}); err != nil {
-			return err
+			string(state), nullIfEmpty(string(rowReason)), rowDetail,
+			exitCode, signal,
+			state != model.StepPending, finishedAt.UnixMilli(),
+			state != model.StepPending,
+			finishedAt.UnixMilli(),
+			nullIfEmpty(out.LogMeta.RelPath), out.LogMeta.Bytes, truncated,
+			nullIfEmpty(out.LogMeta.ErrorTail),
+			nextAttempt, nullIfEmpty(out.OutcomeSource),
+			runID, name, string(cur))
+		return err
+	}, tx, RunEvent{
+		RunID: runID, StepName: name, At: finishedAt, Kind: emitKind(effects),
+		FromState: string(cur), ToState: string(state),
+		ReasonCode: string(rowReason),
+		DetailJSON: rowDetail,
+	}); err != nil {
+		return err
+	}
+	// M4-03: a step that just failed with retry exhausted closes the
+	// whole graph that depended on it. The skip is part of THIS
+	// transaction, committed atomically with the failure, so no
+	// observer ever sees the failed step with its dependants still
+	// pending.
+	if state == model.StepFailed {
+		if err := propagateSkipTx(tx, runID, name, step.Attempt, finishedAt); err != nil {
+			return fmt.Errorf("propagate the failure of %s of run %s: %w", name, runID, err)
 		}
-		// M4-03: a step that just failed with retry exhausted closes the
-		// whole graph that depended on it. The skip is part of THIS
-		// transaction, committed atomically with the failure, so no
-		// observer ever sees the failed step with its dependants still
-		// pending.
-		if state == model.StepFailed {
-			if err := propagateSkipTx(tx, runID, name, step.Attempt, finishedAt); err != nil {
-				return fmt.Errorf("propagate the failure of %s of run %s: %w", name, runID, err)
-			}
+	}
+	// Publication (#13): a succeeded step's references commit with
+	// its verdict, in this same transaction. A failed, skipped or
+	// cancelled verdict carries no rows, so no crash can strand an
+	// artifact beside a step that never finished.
+	if state == model.StepSucceeded && len(out.Artifacts) > 0 {
+		if err := insertArtifactsTx(tx, runID, name, finishedAt, out.Artifacts); err != nil {
+			return fmt.Errorf("publish the artifacts of %s in run %s: %w", name, runID, err)
 		}
-		// Publication (#13): a succeeded step's references commit with
-		// its verdict, in this same transaction. A failed, skipped or
-		// cancelled verdict carries no rows, so no crash can strand an
-		// artifact beside a step that never finished.
-		if state == model.StepSucceeded && len(out.Artifacts) > 0 {
-			if err := insertArtifactsTx(tx, runID, name, finishedAt, out.Artifacts); err != nil {
-				return fmt.Errorf("publish the artifacts of %s in run %s: %w", name, runID, err)
-			}
-		}
-		return nil
-	})
+	}
+	return nil
 }
 
 // propagateSkipTx settles every pending step that transitively needs the
@@ -1124,7 +1146,7 @@ func (s *Store) PendingSteps(ctx context.Context, runID string) ([]Step, error) 
 	err := s.withRead(ctx, func(ctx context.Context, r reader) error {
 		rows, err := r.QueryContext(ctx, `SELECT name, idx, state, attempt, max_attempts, exit_code,
 signal, started_at, finished_at, duration_ms, reason_code, reason_text, reason_data, error,
-log_path, log_bytes, log_truncated, error_tail, next_attempt_at
+log_path, log_bytes, log_truncated, error_tail, next_attempt_at, outcome_source
 FROM steps WHERE run_id = ? AND state = 'pending' ORDER BY idx`, runID)
 		if err != nil {
 			return fmt.Errorf("read the pending steps of run %s: %w", runID, err)
@@ -1291,15 +1313,16 @@ func readStepTx(tx *sql.Tx, runID, name string) (Step, error) {
 		finishedAt    sql.NullInt64
 		durationMS    sql.NullInt64
 		nextAttemptAt sql.NullInt64
+		outcomeSource sql.NullString
 	)
 	err := tx.QueryRow(`SELECT name, idx, state, attempt, max_attempts, exit_code, signal,
 started_at, finished_at, duration_ms, reason_code, reason_text, reason_data, error,
-log_path, log_bytes, log_truncated, error_tail, next_attempt_at
+log_path, log_bytes, log_truncated, error_tail, next_attempt_at, outcome_source
 FROM steps WHERE run_id = ? AND name = ?`, runID, name).Scan(
 		&step.Name, &step.Index, &step.State, &step.Attempt, &step.MaxAttempts,
 		&exitCode, &signal, &startedAt, &finishedAt, &durationMS, &reasonCode, &reasonText,
 		&reasonData, &failure, &logs, &step.LogBytes, &step.LogTruncated, &errorTail,
-		&nextAttemptAt)
+		&nextAttemptAt, &outcomeSource)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Step{}, fmt.Errorf("look up step %s of run %s: %w", name, runID, ErrRunNotFound)
 	}
@@ -1319,6 +1342,7 @@ FROM steps WHERE run_id = ? AND name = ?`, runID, name).Scan(
 	step.LogPath = logs.String
 	step.ErrorTail = errorTail.String
 	step.NextAttemptAt = timeOrZero(nextAttemptAt)
+	step.OutcomeSource = outcomeSource.String
 	return step, nil
 }
 
@@ -1327,7 +1351,7 @@ FROM steps WHERE run_id = ? AND name = ?`, runID, name).Scan(
 func readStepsTx(tx *sql.Tx, runID string) ([]Step, error) {
 	rows, err := tx.Query(`SELECT name, idx, state, attempt, max_attempts, exit_code, signal,
 started_at, finished_at, duration_ms, reason_code, reason_text, reason_data, error,
-log_path, log_bytes, log_truncated, error_tail, next_attempt_at
+log_path, log_bytes, log_truncated, error_tail, next_attempt_at, outcome_source
 FROM steps WHERE run_id = ? ORDER BY idx`, runID)
 	if err != nil {
 		return nil, fmt.Errorf("read the steps of run %s: %w", runID, err)
