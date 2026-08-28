@@ -65,6 +65,7 @@ var (
 	RUNQueuedConcurrency      = runCode("QUEUED_CONCURRENCY")
 	RUNReopenedOperator       = runCode("REOPENED_OPERATOR")
 	RUNDeferredConcurrencyKey = runCode("DEFERRED_CONCURRENCY_KEY")
+	RUNRejectedDiskLow        = runCode("REJECTED_DISK_LOW")
 	RUNCancelledSuperseded    = runCode("CANCELLED_SUPERSEDED") // reserved (#17), no policy behind it in 1.0
 	RUNCancelledManual        = runCode("CANCELLED_MANUAL")
 	RUNCancelledShutdown      = runCode("CANCELLED_SHUTDOWN")
@@ -480,6 +481,25 @@ func newCatalog() map[Code]Entry {
 				"reason_data names the run that blocked this one, if you need to know who",
 			},
 			DataKeys: []string{"blocking_run_id", "concurrency_key"},
+		},
+		{
+			Code:  RUNRejectedDiskLow,
+			Level: LevelRun,
+			Short: "new runs are rejected: the disk is under its free-space floor",
+			Explanation: "The disk-guard measured the filesystem that holds the state directory " +
+				"under its free-space floor (10 percent free, or the absolute floor, whichever " +
+				"binds), and the daemon has gone degraded: new runs are refused so the writes " +
+				"already in flight can finish and the database's WAL never runs out of room to " +
+				"checkpoint. The evaluation itself is still recorded as this stand-down, so the " +
+				"gap in history has a cause beside it. Runs that were already running are not " +
+				"touched, and ticks keep being decided.",
+			Remedy: []string{
+				"free space on that filesystem: paceq prune removes expired log shards and old runs",
+				"or raise the floor: limits.disk_min_free_bytes and limits.disk_min_free_percent in config.yaml",
+				"the daemon leaves degraded mode on its own once two checks in a row measure above one and a half times the floor",
+			},
+			DataKeys: []string{"free_bytes", "total_bytes", "min_free_bytes"},
+			Terminal: true,
 		},
 		{
 			Code:  RUNCancelledManual,

@@ -100,6 +100,31 @@ WHERE j.name = ?`, in.JobName).Scan(&versionID, &specJSON)
 			return fmt.Errorf("read the frozen spec of job %s (version %s): %w", in.JobName, versionID, err)
 		}
 
+		// The disk floor holds manual runs too (#44): a person typing the
+		// command has decided, but the filesystem gets a vote, and a run
+		// that fails half-way through a full disk is a worse answer than a
+		// refusal that says why. The decision is recorded, not silent: the
+		// tick stands down and the trigger is stored rejected with the
+		// hold's code, so explain answers for the run that never happened.
+		if hold, held := s.heldRun(); held {
+			if _, err := tx.Exec(`INSERT INTO ticks
+(id, source_kind, source_name, started_at, last_started_at, outcome, trigger_count)
+VALUES (?, 'manual', ?, ?, ?, 'triggered', 1)`, tickID, in.JobName, at, at); err != nil {
+				return fmt.Errorf("record the manual tick for job %s: %w", in.JobName, err)
+			}
+			if _, err := tx.Exec(`INSERT INTO triggers
+(id, tick_id, job_name, params_json, created_at, outcome, reason_code, reason_text)
+VALUES (?, ?, ?, ?, ?, 'rejected', ?, ?)`,
+				triggerID, tickID, in.JobName, params, at,
+				string(hold.Code), hold.Text); err != nil {
+				return fmt.Errorf("record the refused trigger for job %s: %w", in.JobName, err)
+			}
+			if err := s.standDownTickTx(tx, tickID, at, hold); err != nil {
+				return err
+			}
+			return &HeldError{Hold: hold}
+		}
+
 		// One tick per decision. Manual ticks leave scheduled_for NULL,
 		// which the unique index treats as always distinct, so nobody is
 		// ever refused their turn at the keyboard.

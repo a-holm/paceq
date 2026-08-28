@@ -111,6 +111,10 @@ func runRun(ctx context.Context, env Env, g *globals, out *ui, jobName string, f
 		if errors.Is(err, store.ErrNotFound) {
 			return unknownJobError(execCtx, s, jobName)
 		}
+		var held *store.HeldError
+		if errors.As(err, &held) {
+			return diskHoldError(held)
+		}
 		return internalError("could not queue the run", err)
 	}
 
@@ -250,6 +254,19 @@ func unknownJobError(ctx context.Context, s *store.Store, name string) error {
 	}
 	return notFoundError(fmt.Sprintf("no job is named %q", name),
 		"the jobs recorded by paceq apply", next...)
+}
+
+// diskHoldError is the daemon's degraded state, answered to the one command
+// that tried to start work during it (#44). The remedies are the catalogue's,
+// so the refusal and explain always say the same thing about the same code.
+func diskHoldError(held *store.HeldError) error {
+	next := []string{
+		"paceq doctor  shows how much space is free and what is using it",
+	}
+	if entry, ok := reason.Lookup(held.Hold.Code); ok {
+		next = append(next, entry.Remedy...)
+	}
+	return validationError(held.Hold.Text, store.ErrRunsHeld, next...)
 }
 
 // stepRecord is one step of the machine readable result.

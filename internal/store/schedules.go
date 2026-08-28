@@ -542,6 +542,17 @@ WHERE id = ?`, at, tickID); err != nil {
 func (s *Store) admitTickRun(tx *sql.Tx, in TickInput, now time.Time, at int64,
 	tickID, sourceName string, fireAt time.Time, actor string,
 ) (Run, string, reason.Code, error) {
+	// The disk floor is admission's cheapest and strongest condition (#44):
+	// one atomic load inside the transaction that already owns the tick. A
+	// held evaluation stands down here, in the same IMMEDIATE transaction
+	// that claimed it, so the decision and its record cannot disagree, and
+	// no run row is ever born for a fire-time the disk cannot afford.
+	if hold, held := s.heldRun(); held {
+		if err := s.standDownTickTx(tx, tickID, at, hold); err != nil {
+			return Run{}, "", "", err
+		}
+		return Run{}, OutcomeSkipped, hold.Code, nil
+	}
 	// The version is chosen inside the transaction, so an apply racing the
 	// loop still freezes one whole version rather than a mix of two.
 	var versionID, specJSON string
