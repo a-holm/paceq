@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/a-holm/paceq/internal/clock"
-	"github.com/a-holm/paceq/internal/model"
 	"github.com/a-holm/paceq/internal/reason"
 	"github.com/a-holm/paceq/internal/store"
 )
@@ -43,7 +42,9 @@ func TestThePrunedLogStillExplainsItself(t *testing.T) {
 		t.Fatalf("start the step: %v", err)
 	}
 	if err := st.RecordStepOutcome(ctx, queued.Run.ID, "build", store.StepOutcome{
-		Event:      string(model.EvStepFailed),
+		// The event name model.EvStepFailed spells as a plain string here:
+		// this package's arch row forbids a model import, even in tests.
+		Event:      "step_failed",
 		ReasonCode: reason.STEPFailedNonzeroExit,
 		FinishedAt: frozenNow,
 		LogMeta: store.LogMeta{
