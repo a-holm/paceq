@@ -28,7 +28,9 @@ var allowedImports = map[string][]string{
 	"faults":  {},
 	"spec":    {"diag"},
 	"retry":   {},
-	"runner":  {"clock"},
+	"procfs":  {},
+	"spool":   {"model", "reason"},
+	"runner":  {"clock", "faults", "procfs", "spool"},
 	"sensor":  {"runner", "clock", "reason"},
 	"logsink": {"clock"},
 	// notify stays a value-only leaf EXCEPT for two deliberate exceptions
@@ -37,20 +39,20 @@ var allowedImports = map[string][]string{
 	// clock abstraction so no wall-clock shortcut exists anywhere else.
 	"notify":    {"model", "clock"},
 	"cronx":     {},
-	"store":     {"model", "spec", "clock", "id", "reason", "faults"},
+	"store":     {"model", "spec", "clock", "id", "reason", "faults", "procfs", "spool"},
 	"scheduler": {"store", "clock", "cronx", "reason"},
 	"leases":    {"store", "clock", "reason"},
 	"janitor":   {"store", "clock"},
-	"engine":    {"model", "spec", "store", "runner", "clock", "id", "notify", "logsink", "reason", "retry", "faults"},
+	"engine":    {"model", "spec", "store", "runner", "clock", "id", "notify", "logsink", "reason", "retry", "faults", "spool"},
 	// daemon composes the /metrics surface (#40): it wires the store's
 	// counters into the obs collector and stamps it with the build
 	// identity, so both imports are deliberate, not drift.
 	"daemon":           {"model", "store", "runner", "clock", "notify", "logsink", "reason", "faults", "engine", "leases", "scheduler", "sensor", "reconcile", "obs/sdnotify", "obs", "buildinfo", "janitor"},
-	"reconcile":        {"store", "clock", "cronx", "reason", "faults"},
+	"reconcile":        {"store", "clock", "cronx", "reason", "faults", "spool"},
 	"doctor":           {"store", "clock", "obs", "reconcile"},
 	"explain":          {"store", "reason", "clock", "id", "cronx"},
 	"status":           {"store", "clock"},
-	"cli":              {"engine", "daemon", "store", "doctor", "explain", "status", "spec", "diag", "obs", "model", "clock", "id", "reason", "logsink", "cronx", "sensor", "buildinfo", "importer/crontab", "janitor", "scheduler", "cutover"},
+	"cli":              {"engine", "daemon", "store", "doctor", "explain", "status", "spec", "diag", "obs", "model", "clock", "id", "reason", "logsink", "cronx", "sensor", "buildinfo", "importer/crontab", "janitor", "scheduler", "cutover", "runner"},
 	"importer/crontab": {"spec", "cronx"},
 	"testutil":         {"model", "clock", "id", "store"},
 }
