@@ -42,6 +42,12 @@ type Source interface {
 	MetricsNotificationsFailedTotal(ctx context.Context) (int64, error)
 	TakeDelivery() store.DeliverySnapshot
 
+	// Integrity health (M6-06): what the newest fsck sweep recorded. The
+	// gauge reads the event log, never the sweep itself, so a scrape stays
+	// a reader of facts rather than a second checker.
+	MetricsIntegrityViolations(ctx context.Context) ([]store.MetricsIntegrityViolation, error)
+	MetricsFsckLastRun(ctx context.Context) (time.Time, bool, error)
+
 	// The writer-health pair lives in memory inside the store, not in its
 	// database: the max is taken (reset) by the scrape, the busy total is
 	// a plain load.
@@ -132,6 +138,7 @@ func (c *Collector) Scrape(ctx context.Context) []byte {
 	}
 	c.writeMetaFamilies(ctx, w, &dbErr)
 	dbErr = c.writeNotificationFamilies(ctx, w) || dbErr
+	dbErr = c.writeIntegrityFamilies(ctx, w) || dbErr
 	if bytes, ok := logDirBytes(c.logDir); ok {
 		w.Help("pulseq_log_dir_bytes", "Bytes of run logs currently kept on disk.", "gauge")
 		w.Metric("pulseq_log_dir_bytes", nil, float64(bytes))
@@ -438,6 +445,34 @@ func (c *Collector) writeNotificationFamilies(ctx context.Context, w *Writer) bo
 	w.Metric("pulseq_notification_delivery_seconds", []L{Label("le", "+Inf")}, float64(snap.TotalCount))
 	w.Metric("pulseq_notification_delivery_seconds_sum", nil, snap.SumSeconds)
 	w.Metric("pulseq_notification_delivery_seconds_count", nil, float64(snap.TotalCount))
+	return false
+}
+
+// writeIntegrityFamilies emits what the newest fsck sweep recorded (M6-06).
+// The gauge carries one series per invariant that had findings, labelled with
+// the grade, and the timestamp family says when that sweep ran. A store with
+// no recorded sweep emits neither: no series without truth.
+func (c *Collector) writeIntegrityFamilies(ctx context.Context, w *Writer) bool {
+	findings, err := c.src.MetricsIntegrityViolations(ctx)
+	if err != nil {
+		return true
+	}
+	if len(findings) > 0 {
+		w.Help("pulseq_integrity_violations", "Rows the newest fsck sweep found breaking one invariant, labelled with the invariant's severity.", "gauge")
+		for _, f := range findings {
+			w.Metric("pulseq_integrity_violations",
+				[]L{Label("invariant", f.Invariant), Label("severity", f.Severity)},
+				float64(f.Violations))
+		}
+	}
+	last, ok, err := c.src.MetricsFsckLastRun(ctx)
+	if err != nil {
+		return true
+	}
+	if ok {
+		w.Help("pulseq_fsck_last_run_timestamp_seconds", "Unix time of the newest recorded fsck sweep.", "gauge")
+		w.Metric("pulseq_fsck_last_run_timestamp_seconds", nil, float64(last.Unix()))
+	}
 	return false
 }
 

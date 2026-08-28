@@ -46,6 +46,14 @@ func TestValidateMetricsListen(t *testing.T) {
 // TCP tests care about transport, not content breadth.
 type metricsStubSource struct{}
 
+func (m *metricsStubSource) MetricsIntegrityViolations(context.Context) ([]store.MetricsIntegrityViolation, error) {
+	return nil, nil
+}
+
+func (m *metricsStubSource) MetricsFsckLastRun(context.Context) (time.Time, bool, error) {
+	return time.Time{}, false, nil
+}
+
 func (m *metricsStubSource) MetricsRunsByStates(context.Context) ([]store.MetricsJobStateCount, error) {
 	return nil, nil
 }

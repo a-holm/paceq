@@ -110,7 +110,7 @@ WHERE at = (SELECT MAX(at) FROM integrity_events)`)
 // return is false while no sweep has ever written, and the gauge family stays
 // absent: no series without truth.
 func (s *Store) MetricsFsckLastRun(ctx context.Context) (time.Time, bool, error) {
-	var milli int64
+	var milli sql.NullInt64
 	err := s.withRead(ctx, func(ctx context.Context, r reader) error {
 		rows, err := r.QueryContext(ctx, `SELECT MAX(at) FROM integrity_events`)
 		if err != nil {
@@ -125,8 +125,8 @@ func (s *Store) MetricsFsckLastRun(ctx context.Context) (time.Time, bool, error)
 		}
 		return rows.Err()
 	})
-	if err != nil || milli == 0 {
+	if err != nil || !milli.Valid {
 		return time.Time{}, false, err
 	}
-	return time.UnixMilli(milli), true, nil
+	return time.UnixMilli(milli.Int64), true, nil
 }

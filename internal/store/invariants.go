@@ -175,3 +175,10 @@ func severityOf(id string) Severity {
 	}
 	return Serious
 }
+
+// SeverityOf looks a check's severity up in the catalogue for callers outside
+// the package, so the daemon's hourly sweep grades findings with the same
+// table the fsck command uses.
+func SeverityOf(id string) Severity {
+	return severityOf(id)
+}
