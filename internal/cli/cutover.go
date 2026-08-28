@@ -567,7 +567,9 @@ func runCutoverApply(ctx context.Context, env Env, g *globals, out *ui, f cutove
 				"; report this as a bug with the output of paceq version")
 	}
 
-	renderCutoverReport(out, src, backupPath, changes, skips, forcedNames(changes))
+	if err := renderCutoverReport(out, src, backupPath, changes, skips, forcedNames(changes)); err != nil {
+		return err
+	}
 	return nil
 }
 

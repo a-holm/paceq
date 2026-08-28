@@ -176,8 +176,8 @@ func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 	if err := os.Rename(tmpName, path); err != nil {
 		return fmt.Errorf("could not put the backup in place: %w", err)
 	}
-	tmpName = "" // renamed: the deferred remove must not eat it
-	if d, err := os.Open(dir); err == nil {
+	tmpName = ""                            // renamed: the deferred remove must not eat it
+	if d, err := os.Open(dir); err == nil { // #nosec G304 - dir is paceq's own state directory, never user input
 		_ = d.Sync()
 		_ = d.Close()
 	}
