@@ -36,8 +36,8 @@ func floorOf(total uint64, limits obs.DiskLimits) uint64 {
 	if total > 0 {
 		byPct = uint64(float64(total) * limits.MinFreePercent / 100)
 	}
-	if uint64(limits.MinFreeBytes) > byPct {
-		return uint64(limits.MinFreeBytes)
+	if obs.UBytes(limits.MinFreeBytes) > byPct {
+		return obs.UBytes(limits.MinFreeBytes)
 	}
 	return byPct
 }
@@ -61,8 +61,8 @@ func checkDiskFloor(dir string, disk DiskFunc, free FreeSpace, limits obs.DiskLi
 			}
 		}
 		floor := uint64(lowDisk)
-		if uint64(limits.MinFreeBytes) > floor {
-			floor = uint64(limits.MinFreeBytes)
+		if obs.UBytes(limits.MinFreeBytes) > floor {
+			floor = obs.UBytes(limits.MinFreeBytes)
 		}
 		if bytes < floor {
 			return Finding{
@@ -159,7 +159,7 @@ func checkLogQuota(root string, limits obs.DiskLimits) Finding {
 	}
 
 	detail := fmt.Sprintf("%s of run logs across %d date shards", byteText(total), len(shards))
-	if uint64(limits.LogMaxBytes) > 0 && total > uint64(limits.LogMaxBytes) {
+	if obs.UBytes(limits.LogMaxBytes) > 0 && total > obs.UBytes(limits.LogMaxBytes) {
 		oldest := ""
 		if len(shards) > 0 {
 			oldest = ", oldest shard " + shards[0]
@@ -168,7 +168,7 @@ func checkLogQuota(root string, limits obs.DiskLimits) Finding {
 			Level: Warn,
 			Title: title,
 			Detail: fmt.Sprintf("%s, over the %s cap%s", detail,
-				byteText(uint64(limits.LogMaxBytes)), oldest),
+				byteText(obs.UBytes(limits.LogMaxBytes)), oldest),
 			Next: []string{
 				"paceq prune  removes expired shards; the daemon also prunes on its own once the cap is passed",
 				"or lower limits.log_max_bytes in config.yaml to prune more aggressively",
@@ -197,7 +197,7 @@ func checkWAL(dbPath string, limits obs.DiskLimits) Finding {
 		}
 	}
 
-	warn := uint64(limits.WalWarnBytes)
+	warn := obs.UBytes(limits.WalWarnBytes)
 	switch {
 	case size > warn*4:
 		return Finding{

@@ -3,6 +3,7 @@ package obs
 import (
 	"context"
 	"log/slog"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -228,7 +229,7 @@ func (g *Guard) FactsForHold() map[string]any {
 	if !g.stateUsed.Load() {
 		return nil
 	}
-	floor := diskFloorBytes(uint64(g.total.Load()), g.cfg.Limits)
+	floor := diskFloorBytes(UBytes(g.total.Load()), g.cfg.Limits)
 	return map[string]any{
 		"free_bytes":     g.free.Load(),
 		"total_bytes":    g.total.Load(),
@@ -290,7 +291,7 @@ func (g *Guard) Step(ctx context.Context) error {
 	freed := int64(0)
 	if over := logBytes - g.cfg.Limits.LogMaxBytes; over > 0 {
 		freed = g.pruneOldestShards(ctx, over)
-		free = addClamped(free, uint64(freed))
+		free = addClamped(free, UBytes(freed))
 		logBytes -= freed
 		if logBytes < 0 {
 			logBytes = 0
@@ -318,7 +319,7 @@ func (g *Guard) transition(ctx context.Context, next DiskState, free, total uint
 
 	prev := DiskState(g.state.Load())
 	floor := diskFloorBytes(total, g.cfg.Limits)
-	clears := free >= uint64(floor)*3/2
+	clears := free >= UBytes(floor)*3/2
 
 	if prev == DiskDegraded && next != DiskDegraded {
 		// A reading above the exit bar starts counting; anything else
@@ -336,8 +337,8 @@ func (g *Guard) transition(ctx context.Context, next DiskState, free, total uint
 		g.clearStreak = 0
 	}
 
-	g.free.Store(int64(free))
-	g.total.Store(int64(total))
+	g.free.Store(Bytes64(free))
+	g.total.Store(Bytes64(total))
 	g.logBytes.Store(logBytes)
 	g.state.Store(int32(next))
 	g.stateUsed.Store(true)
@@ -379,8 +380,8 @@ func (g *Guard) emitLocked(ctx context.Context, state DiskState, free, total uin
 		Event:      "disk.low",
 		Level:      level,
 		State:      state,
-		FreeBytes:  int64(free),
-		TotalBytes: int64(total),
+		FreeBytes:  Bytes64(free),
+		TotalBytes: Bytes64(total),
 		FloorBytes: floor,
 		LogBytes:   logBytes,
 		Since:      g.since,
@@ -408,7 +409,7 @@ func classifyDisk(free, total uint64, l DiskLimits) DiskState {
 	}
 	pct := float64(free) / float64(total) * 100
 	switch {
-	case pct < l.MinFreePercent || free < uint64(l.MinFreeBytes):
+	case pct < l.MinFreePercent || free < UBytes(l.MinFreeBytes):
 		return DiskDegraded
 	case pct < l.MinFreePercent*2:
 		return DiskWarning
@@ -505,6 +506,27 @@ func (g *Guard) pruneOldestShards(ctx context.Context, need int64) int64 {
 		}
 	}
 	return freed
+}
+
+// Bytes64 narrows a statfs byte count to the signed type the metrics and
+// reason_data carry. Every capacity a kernel reports fits: int64 tops out at
+// 8 EiB, an order of magnitude beyond any filesystem that exists. The clamp
+// keeps the impossible honest instead of letting it go negative.
+func Bytes64(u uint64) int64 {
+	if u > uint64(math.MaxInt64) {
+		return math.MaxInt64
+	}
+	return int64(u) // #nosec G115 - clamped to MaxInt64 immediately above
+}
+
+// UBytes widens a configured or measured byte count for threshold math.
+// Limits are validated non-negative when config.yaml is parsed and
+// measurements are non-negative by construction, so nothing wraps.
+func UBytes(n int64) uint64 {
+	if n < 0 {
+		return 0
+	}
+	return uint64(n) // #nosec G115 - negative values clamped to zero above
 }
 
 func addClamped(a, b uint64) uint64 {
