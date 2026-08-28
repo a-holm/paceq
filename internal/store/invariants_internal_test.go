@@ -204,6 +204,7 @@ func TestEveryInvariantQueryPlansWithoutScanningRuns(t *testing.T) {
 		{check: "I9 dangling", sql: fsckI9DanglingSQL, uses: []string{"step_deps"}},
 		{check: "I9 edges", sql: fsckI9EdgesSQL},
 		{check: "I12", sql: activeLimitSQL, uses: []string{"SEARCH r"}},
+		{check: "I12 keys", sql: activeKeysSQL, uses: []string{"ux_runs_conc_key"}},
 	}
 
 	for _, tc := range cases {

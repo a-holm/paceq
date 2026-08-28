@@ -124,18 +124,18 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 	// the start with the same anatomy the boot gate uses, because a state
 	// the code cannot reason about must not be served, however it got there.
 	_ = sdnotify.Status("checking invariants")
-	if violations, err := st.Fsck(ctx); err != nil {
+	sweepViolations, err := st.Fsck(ctx)
+	if err != nil {
 		_ = st.Close()
 		return fmt.Errorf("serve: the invariant sweep failed: %w", err)
-	} else {
-		if critical := firstCriticalSummary(violations); critical != "" {
-			_ = st.Close()
-			return startupRefusal(critical)
-		}
-		if err := recordStartupFindings(ctx, st, clk, log, violations); err != nil {
-			_ = st.Close()
-			return fmt.Errorf("serve: %w", err)
-		}
+	}
+	if critical := firstCriticalSummary(sweepViolations); critical != "" {
+		_ = st.Close()
+		return startupRefusal(critical)
+	}
+	if err := recordStartupFindings(ctx, st, clk, log, sweepViolations); err != nil {
+		_ = st.Close()
+		return fmt.Errorf("serve: %w", err)
 	}
 
 	heart := NewHeart(clk)
