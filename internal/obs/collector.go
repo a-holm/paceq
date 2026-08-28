@@ -69,6 +69,20 @@ type Collector struct {
 	startedAt time.Time
 	identity  Identity
 	logDir    string
+
+	// DiskWatch is the disk-guard's published readings (#44). Nil - the
+	// zero for every process that runs no guard - leaves the disk families
+	// honestly absent rather than reporting stale zeros.
+	DiskWatch DiskWatch
+}
+
+// DiskWatch is what the collector needs from a disk-guard: its newest
+// readings, with ok false when it has not measured yet.
+type DiskWatch interface {
+	FreeBytes() (int64, bool)
+	TotalBytes() (int64, bool)
+	LogDirBytes() (int64, bool)
+	DegradedGauge() float64
 }
 
 // NewCollector builds the scraper. logDir is walked for
@@ -121,6 +135,14 @@ func (c *Collector) Scrape(ctx context.Context) []byte {
 	if bytes, ok := logDirBytes(c.logDir); ok {
 		w.Help("pulseq_log_dir_bytes", "Bytes of run logs currently kept on disk.", "gauge")
 		w.Metric("pulseq_log_dir_bytes", nil, float64(bytes))
+	}
+	if c.DiskWatch != nil {
+		if free, ok := c.DiskWatch.FreeBytes(); ok {
+			w.Help("pulseq_log_disk_free_bytes", "Free bytes on the filesystem holding the state directory, as the disk-guard last measured it.", "gauge")
+			w.Metric("pulseq_log_disk_free_bytes", nil, float64(free))
+		}
+		w.Help("pulseq_degraded", "1 while the disk-guard refuses new runs because the disk is under its floor.", "gauge")
+		w.Metric("pulseq_degraded", nil, c.DiskWatch.DegradedGauge())
 	}
 
 	if dbErr {

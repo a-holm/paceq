@@ -82,3 +82,27 @@ tests:
             exp_annotations:
               summary: "Sensor flaky feiler gjentatt — breaker nærmer seg"
               runbook: "pulseq explain sensor flaky"
+
+  # The disk-guard speaks for itself (#44): one while degraded, zero while
+  # healthy, and the alert fires only after the daemon has stayed degraded
+  # through its own for-duration.
+  - interval: 1m
+    input_series:
+      - series: 'pulseq_degraded'
+        values: "0+0x9 1+0x31"
+
+    alert_rule_test:
+      # Degraded from t=10m; pending through the for-duration, so quiet at 12m.
+      - eval_time: 12m
+        alertname: PulseqLogDiskLow
+        exp_alerts: []
+      # Five quiet minutes later it speaks, and it speaks critically: new
+      # runs are being refused right now.
+      - eval_time: 16m
+        alertname: PulseqLogDiskLow
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "Diskvakten har gått i degradert modus — nye runs avvises"
+              runbook: "pulseq doctor; pulseq prune"

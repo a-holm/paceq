@@ -660,6 +660,34 @@ type FinishReason struct {
 	Data string
 }
 
+// MarkLogShardPruned clears every step's log_path that points into a removed
+// date shard (#44). steps.log_path must never name a file that does not
+// exist; log_bytes, log_truncated and error_tail survive the clearing, so
+// explain can still show what an attempt printed after the file itself is
+// gone. shard is the directory's name under the log root ("2026-01-02").
+//
+// It lives in the transition layer, not beside the gate: it rewrites step
+// rows, and the module's rule is that step-row writes belong to this file.
+func (s *Store) MarkLogShardPruned(ctx context.Context, shard string) (int64, error) {
+	var n int64
+	err := s.withTx(ctx, func(tx *sql.Tx) error {
+		// nolint:fencing: no state moves here - the row's state, verdict
+		// and evidence survive; only the file pointer is dropped, and a
+		// shard removal is not a lease event any token could fence.
+		res, err := tx.Exec(`UPDATE steps SET log_path = NULL WHERE log_path LIKE ?`,
+			shard+"/%")
+		if err != nil {
+			return fmt.Errorf("clear log paths under shard %s: %w", shard, err)
+		}
+		n, err = res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("count the cleared log paths under shard %s: %w", shard, err)
+		}
+		return nil
+	})
+	return n, err
+}
+
 // FinishRun closes a run whose steps are all terminal. The aggregate comes
 // from the machine's guards, which read the step rows inside the same
 // transaction, so the verdict can never disagree with the steps it describes:

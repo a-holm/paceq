@@ -66,6 +66,7 @@ Codes stored on the runs table, one row per run.
 | `RUN_ORPHANED_RECONCILED` | found running with no process, reconciled | yes | - |
 | `RUN_POISONED` | crashed more often than allowed | yes | `crash_count`, `max_crash_count` |
 | `RUN_QUEUED_CONCURRENCY` | held back by a concurrency limit | no | `limit`, `scope` |
+| `RUN_REJECTED_DISK_LOW` | new runs are rejected: the disk is under its free-space floor | yes | `free_bytes`, `total_bytes`, `min_free_bytes` |
 | `RUN_REOPENED_OPERATOR` | reopened by an operator | yes | `only_step`, `forced` |
 | `RUN_SUCCEEDED` | every step succeeded | yes | - |
 | `RUN_TIMED_OUT` | over the run deadline | yes | `timeout_ms` |
@@ -516,6 +517,25 @@ What to do next:
 - a limit held by rows that should be finished means the reaper is not running
 
 Promised reason_data keys: limit, scope.
+
+### RUN_REJECTED_DISK_LOW
+
+new runs are rejected: the disk is under its free-space floor. [run level, ends the object]
+
+The disk-guard measured the filesystem that holds the state directory under
+its free-space floor (10 percent free, or the absolute floor, whichever
+binds), and the daemon has gone degraded: new runs are refused so the writes
+already in flight can finish and the database's WAL never runs out of room
+to checkpoint. The evaluation itself is still recorded as this stand-down,
+so the gap in history has a cause beside it. Runs that were already running
+are not touched, and ticks keep being decided.
+
+What to do next:
+- free space on that filesystem: paceq prune removes expired log shards and old runs
+- or raise the floor: limits.disk_min_free_bytes and limits.disk_min_free_percent in config.yaml
+- the daemon leaves degraded mode on its own once two checks in a row measure above one and a half times the floor
+
+Promised reason_data keys: free_bytes, total_bytes, min_free_bytes.
 
 ### RUN_REOPENED_OPERATOR
 

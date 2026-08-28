@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/a-holm/paceq/internal/clock"
+	"github.com/a-holm/paceq/internal/obs"
 	"github.com/a-holm/paceq/internal/store"
 )
 
@@ -42,10 +43,16 @@ type Options struct {
 	Open  Opener
 	Zones ZoneLoader
 	Free  FreeSpace
+	// Disk is the statfs pair the disk-guard's thresholds need (#44). Nil
+	// falls back to the free-only Free reading.
+	Disk DiskFunc
 	// Status reads the process sandbox. Nil reads /proc/self/status.
 	// A test plants a status so doctor answers independently of the machine it
 	// runs on.
 	Status StatusReader
+	// Limits carries the disk-guard's four configuration keys (#44). Zero
+	// fields mean the shipped defaults.
+	Limits obs.DiskLimits
 	// Local is the time zone name to report. Empty means the process one.
 	Local string
 	// Clock answers what time it is. Nil means clock.System(). Backup age is
@@ -99,7 +106,9 @@ func Run(ctx context.Context, dir string, opt Options) Report {
 	var r Report
 	dirFinding, dirState := checkStateDir(dir)
 	r.add(dirFinding)
-	r.add(checkDiskSpace(nearestExisting(dir), opt.Free))
+	r.add(checkDiskFloor(nearestExisting(dir), opt.Disk, opt.Free, opt.Limits))
+	r.add(checkLogQuota(filepath.Join(nearestExisting(dir), logDirName), opt.Limits))
+	r.add(checkWAL(dbPath, opt.Limits))
 
 	r.add(CheckSandbox(opt.Status))
 
@@ -133,9 +142,15 @@ func (o Options) withDefaults() Options {
 	if o.Zones == nil {
 		o.Zones = time.LoadLocation
 	}
+	if o.Free == nil && o.Disk == nil {
+		// A planted Free (the older seam) means the caller wants the
+		// free-only path; only an untouched set gets the real pair.
+		o.Disk = diskUsage
+	}
 	if o.Free == nil {
 		o.Free = freeSpace
 	}
+	o.Limits = o.Limits.WithDefaults()
 	if o.Status == nil {
 		o.Status = ReadProcessStatus
 	}
@@ -404,32 +419,9 @@ func checkSchemaVersion(ctx context.Context, db DB) Finding {
 	}
 }
 
-func checkDiskSpace(dir string, free FreeSpace) Finding {
-	const title = "disk space"
-
-	bytes, err := free(dir)
-	if err != nil {
-		return Finding{
-			Level:  Warn,
-			Title:  title,
-			Detail: fmt.Sprintf("could not read the free space on %s: %v", dir, err),
-			Next:   []string{fmt.Sprintf("check that the path is on a mounted filesystem: df -h %s", dir)},
-		}
-	}
-	if bytes < lowDisk {
-		return Finding{
-			Level: Warn,
-			Title: title,
-			Detail: fmt.Sprintf("%s free on %s: the database, its write ahead log and the job logs "+
-				"share this filesystem", byteText(bytes), dir),
-			Next: []string{
-				fmt.Sprintf("free space on that filesystem: df -h %s", dir),
-				"or keep the state somewhere bigger: paceq --db /other/path/state.db",
-			},
-		}
-	}
-	return Finding{Level: OK, Title: title, Detail: fmt.Sprintf("%s free on %s", byteText(bytes), dir)}
-}
+// checkDiskSpace's free-only behaviour lives on inside checkDiskFloor; the
+// standalone version is gone, and with it the second place that knew what a
+// warning threshold was.
 
 // checkTimeZone proves the zone database is reachable, not merely that the
 // process has a local zone. A schedule carries a named zone, and a binary that

@@ -252,6 +252,9 @@ func renderRunReport(out io.Writer, r *Report, style Style) {
 		for _, hint := range step.Hints {
 			fmt.Fprintf(out, "    %s %s\n", style.Arrow, hint)
 		}
+		if pruned, ok := step.ReasonData["log_pruned"].(bool); ok && pruned {
+			fmt.Fprintln(out, "    the log file was pruned away; what it printed last survives here")
+		}
 		if tail, ok := step.ReasonData["error_tail"].(string); ok && tail != "" {
 			fmt.Fprintln(out, "    last lines of output (from the database):")
 			for _, line := range strings.Split(strings.TrimRight(tail, "\n"), "\n") {

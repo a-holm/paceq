@@ -386,6 +386,30 @@ var scenarios = []scenario{
 	},
 
 	{
+		name:       "disk_low_holds_new_runs",
+		subjectJob: "diskheld",
+		code:       reason.RUNRejectedDiskLow,
+		level:      reason.LevelTick,
+		setup: func(w *world) {
+			w.seedJob("diskheld", 1, "", stepSpec("go", "/bin/true", nil, -1))
+			sch := w.seedSchedule("diskheld", "nightly", nil)
+			// The disk-guard's hold, installed exactly as the daemon installs
+			// it: the admission gate reads it inside the tick transaction and
+			// converts the fire into a stand-down. The code is a run-level
+			// label because it names the refused run; the row it lives on is
+			// the evaluation that refused it.
+			w.st.SetRunHold(func() *store.RunHold {
+				return &store.RunHold{
+					Code: reason.RUNRejectedDiskLow,
+					Text: "the filesystem holding the state is under its free-space floor",
+				}
+			})
+			w.fireTick(sch, frozenNow.Add(-time.Hour), store.OutcomeTriggered, "", "", "disk-1", false)
+		},
+		wantIn: []string{"paceq prune"},
+	},
+
+	{
 		name:       "tick_config_error",
 		subjectJob: "misconfigured",
 		code:       reason.TICKErrorConfig,

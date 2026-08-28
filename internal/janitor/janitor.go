@@ -62,6 +62,11 @@ type Store interface {
 
 	EstimateRetention(ctx context.Context, p store.Policies, now time.Time) (store.RetentionPlan, error)
 
+	// Log-path clearing (#44): a removed shard must not leave steps naming
+	// files that are gone. The janitor calls it once per removed shard,
+	// right after the directory is gone.
+	MarkLogShardPruned(ctx context.Context, shard string) (int64, error)
+
 	IncrementalVacuum(ctx context.Context, maxPages int) error
 	WalCheckpointTruncate(ctx context.Context) error
 	ActiveRunsExist(ctx context.Context) (bool, error)
@@ -363,6 +368,13 @@ func (j *Janitor) pruneLogShards(ctx context.Context, now time.Time) ([]string, 
 		}
 		if err := os.RemoveAll(filepath.Join(j.root, name)); err != nil {
 			return stale, fmt.Errorf("remove log shard %s: %w", name, err)
+		}
+		// The files are gone; the database must stop naming them (#44).
+		// log_bytes and error_tail survive, so explain still says what the
+		// attempt printed. A failed clearing is loud but not fatal: the
+		// shard is already removed, and the next cycle retries nothing.
+		if _, err := j.st.MarkLogShardPruned(ctx, name); err != nil {
+			j.log.Warn("could not clear log paths of removed shard", "shard", name, "err", err.Error())
 		}
 		j.log.Info("removed an expired log shard", "shard", name)
 	}

@@ -113,6 +113,11 @@ type Store struct {
 	// counters (#40). Nil in every process nobody scrapes.
 	metrics MetricsHook
 
+	// runHold is the disk-guard's admission gate (#44): a function the
+	// admission transaction consults with one pointer load. Nil means runs
+	// are admitted as usual; SetRunHold swaps it atomically.
+	runHold atomic.Pointer[RunHoldFunc]
+
 	// writeWaitMaxNanos holds the wall time of the slowest write transaction
 	// since a reader last took it, and busyTotal counts the SQLITE_BUSY
 	// family outcomes the write pool has seen. Both are the store's own view

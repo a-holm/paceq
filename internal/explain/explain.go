@@ -526,6 +526,14 @@ func stepEntry(s store.Step) Entry {
 	if s.LogTruncated {
 		data["log_truncated"] = true
 	}
+	// The log files are the truth and the database only points at them
+	// (#44); when the pointer is gone but the evidence columns remain, the
+	// shard the file lived in was pruned. The error tail below survives
+	// that, and the report says so instead of letting the absence read as
+	// "nothing was ever logged".
+	if s.LogPath == "" && (s.LogBytes > 0 || s.LogTruncated) {
+		data["log_pruned"] = true
+	}
 	if tail := strings.TrimSpace(s.ErrorTail); tail != "" {
 		data["error_tail"] = tail
 	}

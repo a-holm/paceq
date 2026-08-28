@@ -63,6 +63,10 @@ func (s *scriptedStore) PruneOrphanedWindowsBatch(context.Context) (int64, error
 func (s *scriptedStore) EstimateRetention(context.Context, store.Policies, time.Time) (store.RetentionPlan, error) {
 	return store.RetentionPlan{}, nil
 }
+
+func (s *scriptedStore) MarkLogShardPruned(context.Context, string) (int64, error) {
+	return 0, nil
+}
 func (s *scriptedStore) IncrementalVacuum(context.Context, int) error { return s.vacuumErr }
 func (s *scriptedStore) WalCheckpointTruncate(context.Context) error {
 	s.checkpointR = true

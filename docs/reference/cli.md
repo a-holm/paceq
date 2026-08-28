@@ -204,7 +204,9 @@ Inherited flags:
 Check the installation and say what to do about what is wrong
 
 Check the installation: the state directory, its permissions, the database,
-the write lock, free disk and the time zone database.
+the write lock, free disk against the disk-guard's thresholds, the log
+directory against its byte cap, the write ahead log against its alarm
+levels, and the time zone database.
 
 doctor never changes anything. It exits 0 when nothing failed, so it can stand
 in a login script, and 1 when something is broken. Warnings do not fail: another
@@ -1525,6 +1527,21 @@ process group at once and exits 130.
 
 While the daemon runs, no second paceq may write to the same state:
 another serve, or any command that writes, is refused with exit 6.
+
+The disk-guard watches the filesystem that holds the state every thirty
+seconds. Under limits.disk_min_free_percent (default 10) or
+limits.disk_min_free_bytes (default 1GiB), whichever binds first, the
+daemon goes degraded: new runs are refused with reason code
+RUN_REJECTED_DISK_LOW, running ones finish, ticks keep being decided, and
+/readyz answers 503 until the disk recovers. Leaving degraded needs two
+healthy checks in a row, so a burst of freed space cannot flap the daemon.
+The log directory is capped at limits.log_max_bytes (default 10GiB): once
+it is passed, the oldest date shards are removed first, and today's and
+yesterday's are always kept. The database's write ahead log is watched at
+limits.wal_warn_bytes (default 64MiB; four times that is the error level).
+The four keys live in the limits section of config.yaml, the same file
+that names the notifiers; the disk.low and wal.growth alerts go to the
+notify_defaults on_failure targets.
 
 Examples:
 
