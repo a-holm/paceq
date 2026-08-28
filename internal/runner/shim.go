@@ -417,24 +417,38 @@ type ShimTarget struct {
 	ClaimEpoch int64
 }
 
-// childBaseline is the received side of the baseline pipe, plus the cleanup
-// duty the daemon owes a child whose shim died before finishing the story.
+// childBaseline is the received side of the baseline pipe, plus the group
+// registration the daemon owes the attempt: the job's group stays registered
+// for as long as the attempt runs, so a hard stop reaches it, and the
+// registration is lifted when SpawnViaShim is done with the attempt — not
+// when the goroutine that read the pipe happens to return.
 type childBaseline struct {
-	mu    sync.Mutex
-	pid   int
-	ticks int64
+	mu      sync.Mutex
+	pid     int
+	ticks   int64
+	release func()
 }
 
-func (c *childBaseline) set(pid int, ticks int64) {
+func (c *childBaseline) set(pid int, ticks int64, release func()) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.pid, c.ticks = pid, ticks
+	c.pid, c.ticks, c.release = pid, ticks, release
 }
 
 func (c *childBaseline) get() (int, int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.pid, c.ticks
+}
+
+// releaseRegistered lifts the group registration, if one is outstanding.
+func (c *childBaseline) releaseRegistered() {
+	c.mu.Lock()
+	release := c.release
+	c.mu.Unlock()
+	if release != nil {
+		release()
+	}
 }
 
 // SpawnViaShim is the daemon side of the process chain: instead of running
@@ -497,14 +511,11 @@ func SpawnViaShim(ctx context.Context, s Spec, t ShimTarget) (Result, error) {
 		return spawnFailure(err, "baseline pipe")
 	}
 	defer func() {
-		// Closing the write end is a no-op for a live attempt (the shim
-		// has already exited by the time this defer runs) and is the
-		// kill order for one that somehow lingered. A failed close on
-		// the way out names nothing an operator could act on.
+		// Closing the write end is the kill order for a shim that
+		// somehow lingered, and it happens whether Wait returned or
+		// not. The read ends are already shut above.
 		_ = watchW.Close()
-		_ = watchR.Close()
 		_ = baseR.Close()
-		_ = baseW.Close()
 	}()
 
 	shimArgs := []string{
@@ -544,6 +555,7 @@ func SpawnViaShim(ctx context.Context, s Spec, t ShimTarget) (Result, error) {
 	defer timer.Stop()
 
 	releaseCoreLimit := zeroCoreLimit()
+	startedAt := clk.Now().UnixMilli()
 
 	if err := cmd.Start(); err != nil {
 		releaseCoreLimit()
@@ -552,18 +564,24 @@ func SpawnViaShim(ctx context.Context, s Spec, t ShimTarget) (Result, error) {
 	shimPID := cmd.Process.Pid
 	esc.setGroup(shimPID)
 	releaseShimGroup := registerGroup(shimPID)
+	// The shim holds its own copies of both pipe ends; this process must
+	// not hold the write end of the baseline pipe a moment longer than it
+	// writes nothing into it. A shim that dies without sending a baseline
+	// would otherwise never give the reader an EOF, and the attempt would
+	// deadlock on its own bookkeeping.
+	_ = watchR.Close()
+	_ = baseW.Close()
 	faults.Point("M6:step:after_spawn")
 
 	// The child's baseline arrives on the pipe the moment the shim has it.
 	// It is recorded through the same OnStart seam the direct path uses, so
 	// the orphan sweep's evidence keeps its shape, and the child's group is
-	// registered so a hard stop reaches it directly.
+	// registered so a hard stop reaches it directly. The registration is
+	// lifted when this attempt is over, never when this goroutine returns.
 	var child childBaseline
 	baselineDone := make(chan struct{})
 	go func() {
 		defer close(baselineDone)
-		releaseChild := func() {}
-		defer func() { releaseChild() }()
 		sc := bufio.NewScanner(baseR)
 		sc.Buffer(make([]byte, 0, 256), 4096)
 		if !sc.Scan() {
@@ -573,8 +591,7 @@ func SpawnViaShim(ctx context.Context, s Spec, t ShimTarget) (Result, error) {
 		if err := json.Unmarshal(sc.Bytes(), &b); err != nil || b.PID <= 0 {
 			return
 		}
-		child.set(b.PID, b.StartTicks)
-		releaseChild = registerGroup(b.PID)
+		child.set(b.PID, b.StartTicks, registerGroup(b.PID))
 		if s.OnStart != nil {
 			s.OnStart(b.PID)
 		}
@@ -598,10 +615,18 @@ func SpawnViaShim(ctx context.Context, s Spec, t ShimTarget) (Result, error) {
 	esc.stop()
 	<-watcherDone
 	<-baselineDone
+	child.releaseRegistered()
 	_ = waitErr // the spool, or the fallback below, carries the verdict
 
 	if r, err := spool.ReadResult(filepath.Join(t.SpoolDir, spool.FileName(s.Ctx.RunID, s.Ctx.Step, s.Ctx.Attempt))); err == nil {
 		res := resultFromSpool(r, shimPID)
+		// The stamps on the verdict are this process's transaction clock,
+		// the same clock that wrote started_at — a verdict's duration is
+		// only honest when both ends come from one clock, which is what
+		// the direct path's classifier does too. The shim's own stamps
+		// stay in the spool file, where recovery reads them.
+		res.StartedAt = startedAt
+		res.FinishedAt = finishedAt
 		if res.Outcome == Signalled && ctx.Err() != nil {
 			// The kill was this process answering a cancellation or a
 			// lost lease; the verdict says so, exactly as the direct

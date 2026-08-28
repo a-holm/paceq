@@ -11,6 +11,7 @@ import (
 	"github.com/rogpeppe/go-internal/testscript"
 
 	"github.com/a-holm/paceq/internal/clock"
+	"github.com/a-holm/paceq/internal/runner"
 )
 
 // updateGoldens regenerates the golden expectations embedded in the scripts
@@ -30,6 +31,14 @@ var updateGoldens = flag.Bool("update", false,
 // the shipped binary never freezes time because an environment variable told
 // it to; only this harness can.
 func TestMain(m *testing.M) {
+	// The daemon launches this binary as the exec shim (issue #39) with
+	// `exec` as the subcommand. A suite's own image must answer the same
+	// way the shipped binary does, so the scripts drive the real chain —
+	// on the harness's frozen clock, so the shim's stamps agree with the
+	// daemon's.
+	if len(os.Args) > 1 && os.Args[1] == "exec" {
+		os.Exit(runner.ExecMain(os.Args[1:], harnessClock()))
+	}
 	testscript.Main(m, map[string]func(){
 		"paceq": func() {
 			os.Exit(MainEnv(context.Background(), Env{
