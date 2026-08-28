@@ -23,6 +23,10 @@ type Error struct {
 	where string
 	next  []string
 	err   error
+	// silent marks a pure exit-code passthrough: nothing to say, a number
+	// to return. The exec shim (#39) uses it for a child's own exit code,
+	// which is a fact the daemon reads, not an error to print.
+	silent bool
 }
 
 func (e *Error) Error() string {
@@ -148,6 +152,9 @@ func classify(ctx context.Context, err error) *Error {
 // with it. Errors never touch stdout: a script that pipes stdout has to be able
 // to trust that what arrives there is data.
 func renderError(env Env, err *Error) int {
+	if err.silent {
+		return err.code
+	}
 	sym := symbols(unicodeOutput(env))
 	fmt.Fprintf(env.Stderr, "paceq: %s\n", err.what)
 	if err.where != "" {

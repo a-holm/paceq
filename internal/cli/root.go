@@ -156,6 +156,7 @@ func newRoot(env Env) *cobra.Command {
 		newDbCmd(env, &g),
 		newExportCmd(env, &g),
 		newErrorCmd(env, &g),
+		newExecCmd(env, &g),
 		newLogsCmd(env, &g),
 		newLsCmd(env, &g),
 		newNotificationsCmd(env, &g),

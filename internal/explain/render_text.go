@@ -255,6 +255,15 @@ func renderRunReport(out io.Writer, r *Report, style Style) {
 		if pruned, ok := step.ReasonData["log_pruned"].(bool); ok && pruned {
 			fmt.Fprintln(out, "    the log file was pruned away; what it printed last survives here")
 		}
+		// Where the verdict came from (#39). Both non-direct sources
+		// answer "why was this not run again?" with a stored fact rather
+		// than a guess (00-SYNTESE 4.7).
+		switch src, _ := step.ReasonData["outcome_source"].(string); src {
+		case "spool":
+			fmt.Fprintln(out, "    committed from the attempt's result file: the step's own process reported, the executor died before it could")
+		case "reconciled":
+			fmt.Fprintln(out, "    assumed without a source: the executor died before any result existed")
+		}
 		if tail, ok := step.ReasonData["error_tail"].(string); ok && tail != "" {
 			fmt.Fprintln(out, "    last lines of output (from the database):")
 			for _, line := range strings.Split(strings.TrimRight(tail, "\n"), "\n") {

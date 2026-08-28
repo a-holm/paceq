@@ -534,6 +534,13 @@ func stepEntry(s store.Step) Entry {
 	if s.LogPath == "" && (s.LogBytes > 0 || s.LogTruncated) {
 		data["log_pruned"] = true
 	}
+	// Where the verdict came from (#39), named only when it is worth a
+	// sentence: the direct era's rows carry nothing here, and "the executor
+	// waited on the process" needs no explanation.
+	switch s.OutcomeSource {
+	case "spool", "reconciled":
+		data["outcome_source"] = s.OutcomeSource
+	}
 	if tail := strings.TrimSpace(s.ErrorTail); tail != "" {
 		data["error_tail"] = tail
 	}
