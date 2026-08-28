@@ -98,6 +98,12 @@ type Options struct {
 	SelfPID  int
 	SelfPGID int
 
+	// SpoolDir is the attempts directory of the result spool (#39). Empty
+	// skips the spool pass entirely: an installation whose executor never
+	// shims has nothing here, and the lease-based handback below stays the
+	// whole recovery story.
+	SpoolDir string
+
 	// Test seams. ScanProcs replaces the platform /proc scan; Signals
 	// replaces real signalling. Both nil in production.
 	ScanProcs func() ([]Process, error)
@@ -188,9 +194,19 @@ func OnStartup(ctx context.Context, st *store.Store, opts Options) error {
 		log.Info("process sweep skipped: the machine restarted, so no child process can have survived")
 	}
 
-	// R2: hand back every run whose executor is provably gone. An expired
-	// lease past the skew is proof enough on an unchanged boot; a changed
-	// boot proves every holder dead at once, so the expiry stops mattering.
+	// R2, first half: consume what the dead attempts' shims wrote. The
+	// result spool turns a crash between a child's exit and its verdict's
+	// commit from "assume the worst and rerun" into "commit what really
+	// happened" (issue #39, window W8). This pass runs BEFORE the run
+	// handback, while the lease epoch on the row is still the one the
+	// results were written under — after the reaper bumps it, a valid
+	// result would read as stale.
+	consumeSpool(ctx, st, &opts)
+
+	// R2, second half: hand back every run whose executor is provably gone.
+	// An expired lease past the skew is proof enough on an unchanged boot; a
+	// changed boot proves every holder dead at once, so the expiry stops
+	// mattering.
 	reaped, err := st.ReapExpiredRuns(ctx, store.ReapOptions{IgnoreLease: boot})
 	if err != nil {
 		return fmt.Errorf("startup reconciliation could not hand back the runs left running: %w", err)
@@ -262,6 +278,13 @@ func Periodic(ctx context.Context, st *store.Store, opts Options) error {
 	for _, r := range reaped {
 		log.Info("reaped an expired run", "run", r.ID, "state", r.State, "epoch", r.LeaseEpoch)
 	}
+
+	// The continuous half of the spool consumer (#39): results whose
+	// executor died after startup, or whose lease outlived this process's
+	// first pass, get committed here. Results still owned by a live lease
+	// are skipped inside the store, so this can never race the executor
+	// that is about to read its own file.
+	consumeSpool(ctx, st, &opts)
 
 	if err := st.ReconcileRunStates(ctx); err != nil {
 		return fmt.Errorf("periodic reconciliation could not converge the run states: %w", err)

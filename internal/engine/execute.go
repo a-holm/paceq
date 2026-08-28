@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"time"
 
 	"github.com/a-holm/paceq/internal/clock"
@@ -18,6 +19,7 @@ import (
 	"github.com/a-holm/paceq/internal/retry"
 	"github.com/a-holm/paceq/internal/runner"
 	"github.com/a-holm/paceq/internal/spec"
+	"github.com/a-holm/paceq/internal/spool"
 	"github.com/a-holm/paceq/internal/store"
 )
 
@@ -347,6 +349,11 @@ func (e *Engine) runStep(ctx context.Context, d *drive, name string, h *heldRun)
 	}
 	attempt := before.Attempt + 1
 
+	// W5 (02 section 6): the attempt's start is committed, the process
+	// does not exist yet. A kill here leaves a running step whose command
+	// never ran — recovery reruns it, and no effect can have happened.
+	faults.Point("M6:step:after_start")
+
 	sink, err := logsink.Open(e.LogRoot, run.ID, name, attempt,
 		logsink.Options{Clock: e.Clock})
 	if err != nil {
@@ -437,46 +444,32 @@ func (e *Engine) runStep(ctx context.Context, d *drive, name string, h *heldRun)
 		}
 	}()
 
-	result, runErr := runner.Run(watchCtx, runner.Spec{
-		Argv:       d.stepsByName[name].Run,
-		Shell:      d.stepsByName[name].Shell,
-		Workdir:    d.stepsByName[name].Workdir,
-		Env:        d.job.Env,
-		InheritEnv: d.job.InheritEnv,
-		Timeout:    timeout,
-		Clock:      e.Clock,
-		OutputPath: outputPath,
-		InputsJSON: inputsJSON,
-		InputsFile: inputsFile,
-		Stdout:     crashOnFirstWrite(sink.Writer(logsink.StreamStdout), "M1:step:under_exec"),
-		Stderr:     sink.Writer(logsink.StreamStderr),
-		// The process baseline is the orphan sweep's evidence (issue #62):
-		// pid plus /proc start ticks on file the moment the spawn succeeds.
-		// It must survive this call's own cancellation, so it writes under a
-		// context that outlives watchCtx, and it never fails the step: an
-		// unrecorded pid only makes the sweep refuse to touch that process.
-		OnStart: func(pid int) {
-			ticks, ok := store.ReadProcessStartTicks(pid)
-			if !ok {
-				slog.Warn("could not read the start ticks of a spawned step; the orphan sweep will not be able to verify it",
-					"run", run.ID, "step", name, "pid", pid)
-				return
-			}
-			if err := e.Store.RecordAttemptProcess(context.WithoutCancel(watchCtx), run.ID, name, d.ref, pid, ticks); err != nil {
-				slog.Warn("could not record the process baseline of a spawned step",
-					"run", run.ID, "step", name, "pid", pid, "error", err)
-			}
-		},
-		Ctx: runner.RunContext{
-			RunID:   run.ID,
-			Job:     run.JobName,
-			Step:    name,
-			Attempt: attempt,
-			RunKey:  run.RunKey,
-			Params:  paramsMap(run.ParamsJSON),
-		},
-	})
+	// The shim path (issue #39): when the engine knows its own image, the
+	// step runs through `paceq exec`, which owns the process group, the
+	// watchdog and the durable result file. Without it, the direct spawn
+	// below stays the whole story — which is every caller that has not
+	// been wired for the shim yet, the v0.1 daemon among them.
+	var result runner.Result
+	var runErr error
+	if e.Executable != "" && e.SpoolDir != "" {
+		result, runErr = runner.SpawnViaShim(watchCtx, e.stepSpec(d, name, timeout, outputPath, inputsJSON, inputsFile, sink, attempt, watchCtx),
+			runner.ShimTarget{
+				Executable: e.Executable,
+				SpoolDir:   e.SpoolDir,
+				ClaimEpoch: d.ref.Epoch,
+			})
+	} else {
+		result, runErr = runner.Run(watchCtx, e.stepSpec(d, name, timeout, outputPath, inputsJSON, inputsFile, sink, attempt, watchCtx))
+	}
 	cancelWatch()
+
+	// W8 (02 section 6), the window the shim exists to close: the step's
+	// process has ended and, on the shim path, its result is already
+	// durable in the spool. Everything between here and the verdict's
+	// transaction is exactly what a crash used to lose. Recovery reads the
+	// spool file and commits what the child really did instead of assuming
+	// the worst.
+	faults.Point("M6:step:after_child_exit")
 	select {
 	case <-abandoned:
 		// The lease died while the process ran. The process group is
@@ -499,6 +492,9 @@ func (e *Engine) runStep(ctx context.Context, d *drive, name string, h *heldRun)
 	}
 
 	outcome := verdictFor(result, tail, bytes, truncated)
+	// The live executor just watched the process itself; whatever happens
+	// later, this row's answer to "how do you know?" is direct.
+	outcome.OutcomeSource = "direct"
 	outcome.LogMeta.RelPath = sink.RelPath()
 	switch {
 	case outcome.Event == string(model.EvCancelObserved):
@@ -584,11 +580,78 @@ func (e *Engine) runStep(ctx context.Context, d *drive, name string, h *heldRun)
 	if err := e.Store.RecordStepOutcome(ctx, run.ID, name, outcome, d.ref); err != nil {
 		return fail(fmt.Errorf("record the verdict: %w", err))
 	}
+	// The verdict is committed; the spool file's work is done. Removing it
+	// here — and only here — is what keeps the crash window closed: a kill
+	// before this line leaves the file for recovery, a kill after it
+	// leaves a committed verdict that needs no file.
+	if e.Executable != "" && e.SpoolDir != "" {
+		if err := spool.Remove(filepath.Join(e.SpoolDir,
+			spool.FileName(run.ID, name, attempt))); err != nil {
+			slog.Warn("could not remove a consumed result file",
+				"run", run.ID, "step", name, "error", err)
+		}
+	}
 	// The crash window between a committed verdict and the next claim.
 	// Nothing was lost and nothing needs closing: the restart simply
 	// continues with whatever step comes next (#20).
 	faults.Point("M4:outcome:after_commit")
 	return runDeadlineHit && result.Outcome == runner.TimedOut, nil
+}
+
+// stepSpec builds the runner Spec one step runs under. Both spawn paths —
+// the direct runner.Run and the exec shim (#39) — take the same contract:
+// the frozen argv, the deny-by-default environment, the log pipes the daemon
+// owns, and the OnStart hook that records the attempt's process baseline for
+// the orphan sweep (#62).
+func (e *Engine) stepSpec(d *drive, name string, timeout time.Duration, outputPath, inputsJSON, inputsFile string, sink *logsink.Sink, attempt int, watchCtx context.Context) runner.Spec {
+	run := d.run
+	return runner.Spec{
+		Argv:       d.stepsByName[name].Run,
+		Shell:      d.stepsByName[name].Shell,
+		Workdir:    d.stepsByName[name].Workdir,
+		Env:        d.job.Env,
+		InheritEnv: d.job.InheritEnv,
+		Timeout:    timeout,
+		Clock:      e.Clock,
+		OutputPath: outputPath,
+		InputsJSON: inputsJSON,
+		InputsFile: inputsFile,
+		Stdout:     crashOnFirstWrite(sink.Writer(logsink.StreamStdout), "M1:step:under_exec"),
+		Stderr:     sink.Writer(logsink.StreamStderr),
+		// The baseline hook fires the moment a spawn succeeds: the child's
+		// own pid on the direct path, the child reported over the baseline
+		// pipe on the shim path. Either way the evidence is on file before
+		// any verdict could exist, and it never fails the step: an
+		// unrecorded pid only makes the sweep refuse to touch that process.
+		OnStart: func(pid int) {
+			e.recordAttemptBaseline(context.WithoutCancel(watchCtx), run, name, d.ref, pid)
+		},
+		Ctx: runner.RunContext{
+			RunID:   run.ID,
+			Job:     run.JobName,
+			Step:    name,
+			Attempt: attempt,
+			RunKey:  run.RunKey,
+			Params:  paramsMap(run.ParamsJSON),
+		},
+	}
+}
+
+// recordAttemptBaseline persists the process identity of a running attempt:
+// its pid and /proc start ticks. It is best effort by design, and it runs
+// under a context that outlives the step's watch context so a cancellation
+// racing the spawn cannot erase the evidence.
+func (e *Engine) recordAttemptBaseline(ctx context.Context, run store.Run, name string, ref store.LeaseRef, pid int) {
+	ticks, ok := store.ReadProcessStartTicks(pid)
+	if !ok {
+		slog.Warn("could not read the start ticks of a spawned step; the orphan sweep will not be able to verify it",
+			"run", run.ID, "step", name, "pid", pid)
+		return
+	}
+	if err := e.Store.RecordAttemptProcess(ctx, run.ID, name, ref, pid, ticks); err != nil {
+		slog.Warn("could not record the process baseline of a spawned step",
+			"run", run.ID, "step", name, "pid", pid, "error", err)
+	}
 }
 
 // stepIndexOf finds a step's position in the spec order.
