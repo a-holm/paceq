@@ -249,6 +249,14 @@ func TestFsckSweepsAProductionSizedDatabaseInsideItsBudget(t *testing.T) {
 	if testing.Short() {
 		t.Skip("the production-sized sweep needs its full dataset: skipped by -short")
 	}
+	if raceEnabled {
+		// The five second budget is a production budget, measured where the
+		// acceptance measures it. The detector multiplies every row the
+		// driver walks, so a million-row sweep under -race measures the
+		// detector, not the plan; the same convention the throughput gate
+		// runs under.
+		t.Skip("the five second sweep budget is measured in the plain build, not under -race")
+	}
 	ctx := context.Background()
 	s := internalStore(t)
 
