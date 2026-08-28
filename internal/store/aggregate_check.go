@@ -27,8 +27,7 @@ type AggregateMismatch struct {
 // exception belongs to the recovery windows and lives beside the aggregate
 // function itself.
 func (s *Store) RunAggregateMismatches(ctx context.Context) ([]AggregateMismatch, error) {
-	rows, err := s.r.QueryContext(ctx, `SELECT r.id, r.state, COALESCE(s.state, '')
-FROM runs r LEFT JOIN steps s ON s.run_id = r.id ORDER BY r.id`)
+	rows, err := s.r.QueryContext(ctx, fsckI10SQL)
 	if err != nil {
 		return nil, fmt.Errorf("sweep for aggregate mismatches: %w", err)
 	}
