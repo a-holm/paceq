@@ -133,11 +133,6 @@ func (s *Store) FsckRepair(ctx context.Context, only []string, confirm bool) ([]
 	return out, nil
 }
 
-// repairScope is every invariant --repair knows how to touch. The CLI's
-// --only validates against it plus the catalogue, so a typo fails loudly
-// instead of repairing nothing quietly.
-var repairScope = []string{"I1", "I2", "I14", "reason"}
-
 func validRepairScope(only []string) error {
 	for _, name := range only {
 		if _, ok := invariantByID(name); !ok {
