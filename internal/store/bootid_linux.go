@@ -4,8 +4,8 @@ package store
 
 import (
 	"fmt"
-	"os"
-	"strings"
+
+	"github.com/a-holm/paceq/internal/procfs"
 )
 
 // bootIDPath is the kernel's identifier for the current boot. It is regenerated
@@ -14,13 +14,9 @@ import (
 const bootIDPath = "/proc/sys/kernel/random/boot_id"
 
 func readBootID() (string, error) {
-	raw, err := os.ReadFile(bootIDPath)
-	if err != nil {
-		return "", fmt.Errorf("read %s: %w", bootIDPath, err)
-	}
-	value := strings.TrimSpace(string(raw))
+	value := procfs.BootID()
 	if value == "" {
-		return "", fmt.Errorf("%s is empty", bootIDPath)
+		return "", fmt.Errorf("%s is empty or unreadable", bootIDPath)
 	}
 	return value, nil
 }

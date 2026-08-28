@@ -1,0 +1,37 @@
+# The exec shim (issue #39) is hidden on purpose: it is an implementation
+# detail between two versions of the same binary, so the operator-facing help
+# must not list it, while the command itself must be there for the daemon to
+# launch. What is contract is the spool file it leaves behind: one JSON
+# result per attempt, written before the shim exits, whatever the outcome.
+
+exec paceq --help
+cp stdout root_help.txt
+! grep 'paceq exec' root_help.txt
+
+# A shim without a timeout is refused before any process exists. A step
+# without a deadline is a hang one daemon death away from being forever.
+! exec paceq exec --run-id 01J0TEST --step dump --attempt 1 --claim-epoch 1 --spool-dir spool -- /bin/true
+stderr 'timeout'
+
+# A clean child: exit code passes through, and the result file says
+# succeeded with the identity the daemon stamped on the command line.
+exec paceq exec --run-id 01J0TEST --step dump --attempt 1 --claim-epoch 7 --spool-dir spool --timeout 30s -- /bin/sh -c 'exit 0'
+exec cat spool/01J0TEST-dump-1.json
+cp stdout result1.json
+grep '"outcome":"succeeded"' result1.json
+grep '"claim_epoch":7' result1.json
+
+# A failing child: the shim exits with the child's code and says nothing on
+# stderr, because a failed job is a fact for the daemon to read, not a
+# complaint to print. The result file carries the code and the outcome.
+! exec paceq exec --run-id 01J0TEST --step dump --attempt 2 --claim-epoch 7 --spool-dir spool --timeout 30s -- /bin/sh -c 'exit 5'
+exec cat spool/01J0TEST-dump-2.json
+cp stdout result2.json
+grep '"outcome":"failed"' result2.json
+grep '"exit_code":5' result2.json
+
+# A refused spawn is also a known outcome: exit 127, spawn_failed on file.
+! exec paceq exec --run-id 01J0TEST --step dump --attempt 3 --claim-epoch 7 --spool-dir spool --timeout 30s -- /nonexistent/binary-9d2f
+exec cat spool/01J0TEST-dump-3.json
+cp stdout result3.json
+grep '"outcome":"spawn_failed"' result3.json

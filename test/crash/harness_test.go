@@ -28,6 +28,12 @@ const (
 	envRecoverRun = "PACEQ_CRASH_RECOVER_RUN"
 	envReopenRun  = "PACEQ_CRASH_REOPEN_RUN"
 
+	// envPaceqBin hands the child the built paceq binary the shim rows
+	// (issue #39) launch as `paceq exec`: the daemon side of the exec
+	// chain needs its own image, and the child's image is the harness's
+	// test binary, not paceq.
+	envPaceqBin = "PACEQ_CRASH_PACEQ_BIN"
+
 	// armEnv is the variable internal/faults reads in a pulseq_faults
 	// build. Naming it here is what makes an unarmed child harmless.
 	armEnv = "PULSEQ_CRASH_AT"
@@ -208,6 +214,9 @@ func runChild(t *testing.T, ws *workspace, sc Scenario, arm string, extra map[st
 		envScenario+"="+sc.Name,
 		envDir+"="+ws.Dir,
 		envAppend+"="+appendFixture(t))
+	if sc.Shim {
+		cmd.Env = append(cmd.Env, envPaceqBin+"="+paceqFixture(t))
+	}
 	for k, v := range extra {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
@@ -307,8 +316,15 @@ func requireNoOrphansForRun(t *testing.T, sc Scenario, runID string) {
 // executor a restart would start. It claims with the long lease, because it
 // intends to finish what it starts; the wait for the DEAD owner's lease is
 // governed by whatever expiry that owner wrote, not by this value.
-func restartEngine(s *store.Store, ws *workspace) *engine.Engine {
-	return &engine.Engine{
+//
+// A shim row restarts with the same exec chain it crashed with (issue #39):
+// the built paceq binary as the shim and the workspace's spool directory,
+// so the restart commits what the dead attempt's shim wrote instead of
+// re-running its step.
+func restartEngine(t *testing.T, sc Scenario, s *store.Store, ws *workspace) *engine.Engine {
+	t.Helper()
+
+	eng := &engine.Engine{
 		Store:        s,
 		LogRoot:      logsink.NewRoot(ws.StateDir),
 		Clock:        clock.System(),
@@ -316,6 +332,44 @@ func restartEngine(s *store.Store, ws *workspace) *engine.Engine {
 		PollInterval: pollInterval,
 		LeaseTTL:     execLeaseTTL,
 	}
+	if sc.Shim {
+		eng.Executable = paceqFixture(t)
+		eng.SpoolDir = filepath.Join(ws.Dir, "spool", "attempts")
+	}
+	return eng
+}
+
+var (
+	paceqMu   sync.Mutex
+	paceqPath string
+)
+
+// paceqFixture builds cmd/paceq once per run of the package. It is the
+// binary the shim rows launch as `paceq exec`; the directory is deliberately
+// not a subtest tempdir, so a once-built fixture outlives the row that
+// built it.
+func paceqFixture(t *testing.T) string {
+	t.Helper()
+	paceqMu.Lock()
+	defer paceqMu.Unlock()
+	if paceqPath != "" {
+		if _, err := os.Stat(paceqPath); err == nil {
+			return paceqPath
+		}
+	}
+	durable, err := os.MkdirTemp("", "paceq-crash-paceq")
+	if err != nil {
+		t.Fatalf("tempdir for the paceq fixture: %v", err)
+	}
+	path := filepath.Join(durable, "paceq")
+	build := exec.Command("go", "build", "-o", path, "./cmd/paceq")
+	build.Dir = moduleRoot(t)
+	build.Env = append(os.Environ(), "CGO_ENABLED=0", "GOFLAGS=-buildvcs=false")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build the paceq fixture: %v\n%s", err, out)
+	}
+	paceqPath = path
+	return paceqPath
 }
 
 // effect is one parsed line of the effect file.

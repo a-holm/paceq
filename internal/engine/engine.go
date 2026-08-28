@@ -81,6 +81,20 @@ type Engine struct {
 	// never a side effect of existing wiring.
 	Notify *notify.Planner
 
+	// Executable is the binary the engine launches as the exec shim
+	// (issue #39): its own image, running `paceq exec` beside the step's
+	// process group. Set together with SpoolDir, it moves the three
+	// facts a daemon can lose in a crash — the process group, the
+	// watchdog and the durable result — down into the child side of the
+	// chain. Empty keeps the direct in-process spawn, which is the whole
+	// story an engine without a shim tells.
+	Executable string
+
+	// SpoolDir is where the shim writes its result files
+	// (<state>/spool/attempts), and where recovery reads them back.
+	// Empty disables the spool half: recovery can then only assume.
+	SpoolDir string
+
 	// Host is the machine identity stamped into notification payloads (#29).
 	// Empty stays empty in the payload rather than guessing.
 	Host string

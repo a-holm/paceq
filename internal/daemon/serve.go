@@ -109,6 +109,7 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 		Log:              log,
 		SessionID:        sess.ID,
 		SessionStartedAt: sess.StartedAt,
+		SpoolDir:         reconcile.SpoolDirUnder(cfg.StateDir),
 		GapFrom:          gapFrom,
 		PrevSessionID:    prevSession,
 		Wake:             func() { bus.Notify(notify.TopicRunQueued) },
@@ -492,7 +493,22 @@ func newEngine(cfg Config, st *store.Store, clk clock.Clock) *engine.Engine {
 		Clock:    clk,
 		Owner:    cfg.owner(),
 		LeaseTTL: cfg.leaseTTL(),
+		// The exec shim (issue #39): steps run through this binary's own
+		// `paceq exec`, with results spooled for the restart story.
+		Executable: shimExecutableFor(),
+		SpoolDir:   reconcile.SpoolDirUnder(cfg.StateDir),
 	}
+}
+
+// shimExecutableFor locates the image the daemon's executors launch as the
+// shim. An unlocatable binary degrades to the direct spawn rather than
+// refusing to serve; the fallback lives in the engine's spawn seam.
+func shimExecutableFor() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	return exe
 }
 
 // stopCause picks what the stop reports. A loop's own failure is a failure;

@@ -271,6 +271,24 @@ Inherited flags:
 | `--quiet` | `-q` | only report what needs attention |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
+### `paceq exec`
+
+Run one step command as the daemon's shim (implementation detail)
+
+Usage:
+
+    paceq exec -- <command> [args...]
+
+Inherited flags:
+
+| Flag | | Meaning |
+|---|---|---|
+| `--db` | `- ` | state database to use (default: ./.paceq/state.db) |
+| `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
+| `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
+| `--quiet` | `-q` | only report what needs attention |
+| `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
+
 ### `paceq explain`
 
 Explain what a job, schedule, sensor or run did, and why nothing happened

@@ -20,6 +20,7 @@ import (
 	"github.com/a-holm/paceq/internal/logsink"
 	"github.com/a-holm/paceq/internal/model"
 	"github.com/a-holm/paceq/internal/reason"
+	"github.com/a-holm/paceq/internal/reconcile"
 	"github.com/a-holm/paceq/internal/spec"
 	"github.com/a-holm/paceq/internal/store"
 )
@@ -147,6 +148,10 @@ func runRun(ctx context.Context, env Env, g *globals, out *ui, jobName string, f
 		LogRoot:  logsink.NewRoot(stateDir),
 		Clock:    clkOf(env),
 		Owner:    actor,
+		// The exec shim (issue #39): steps run through this binary's own
+		// `paceq exec`, with results spooled for the restart story.
+		Executable: shimExecutable(),
+		SpoolDir:   reconcile.SpoolDirUnder(stateDir),
 	}
 	// A foreground run renews its lease from its own goroutine: a long step
 	// must never cost the executor its claim just because the renewal could

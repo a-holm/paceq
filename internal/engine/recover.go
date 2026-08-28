@@ -2,11 +2,15 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/a-holm/paceq/internal/model"
 	"github.com/a-holm/paceq/internal/reason"
+	"github.com/a-holm/paceq/internal/runner"
+	"github.com/a-holm/paceq/internal/spool"
 	"github.com/a-holm/paceq/internal/store"
 )
 
@@ -22,17 +26,22 @@ const recoverPoll = 10 * time.Millisecond
 // (#75) proves: a run interrupted by SIGKILL converges on restart, without an
 // invariant violation and without inventing a verdict.
 //
-// Three steps, in this order:
+// Four steps, in this order:
 //
 //  1. Wait for the abandoned lease to expire. A lease that still lives may
 //     belong to a process that is only slow, and two executors on one run is
 //     the one outcome fencing exists to prevent.
-//  2. Close every step the dead attempt left running. Each goes through the
-//     machine as a failed attempt with STEP_FAILED_EXECUTOR_LOST: the verdict
-//     was lost with the executor, so recovery records exactly that instead of
-//     guessing. A step with attempts left comes back pending for its next
+//  2. Settle what the dead attempts' shims wrote: a result file in the
+//     spool (issue #39) is what really happened, and it is committed with
+//     outcome_source='spool' — the difference between rerunning a
+//     data-warehouse load and not (crash window W8).
+//  3. Close every step the dead attempt left running without a result. Each
+//     goes through the machine as a failed attempt with
+//     STEP_FAILED_EXECUTOR_LOST and outcome_source='reconciled': the verdict
+//     was lost with the executor, so recovery records exactly that instead
+//     of guessing. A step with attempts left comes back pending for its next
 //     attempt; otherwise it fails and the run will follow.
-//  3. Requeue the run through the store's lease_expired transition, which
+//  4. Requeue the run through the store's lease_expired transition, which
 //     bumps the epoch, counts the crash and writes defer_reason.
 //
 // A run that is not running needs nothing and is returned untouched, so a
@@ -53,6 +62,19 @@ func (e *Engine) Recover(ctx context.Context, runID string) (string, error) {
 	now := e.Clock.Now().UTC()
 	for _, step := range detail.Steps {
 		if model.StepState(step.State) != model.StepRunning {
+			continue
+		}
+		// What the shim wrote wins over what recovery would assume. A
+		// file that cannot be committed here — stale epoch, unknown
+		// attempt, a lease that somehow came back to life — is left for
+		// the reconciler's own pass, which archives it with an event;
+		// this loop then treats the attempt as sourceless, which is the
+		// honest reading of "the file did not say".
+		settled, err := e.settleFromSpool(ctx, runID, step)
+		if err != nil {
+			return "", fmt.Errorf("recover step %s of run %s: %w", step.Name, runID, err)
+		}
+		if settled {
 			continue
 		}
 		outcome := storeStepOutcomeLost(now, e.Owner)
@@ -97,12 +119,76 @@ func (e *Engine) waitForDeadLease(ctx context.Context, runID string) error {
 // storeStepOutcomeLost builds the verdict recovery writes over a dead
 // attempt. The event is a failure because the machine retries failures and
 // never retries cancellations; the code says plainly why no exit code, signal
-// or log tail accompanies it.
+// or log tail accompanies it, and the outcome source names the verdict for
+// what it is: assumed, not observed (#39).
 func storeStepOutcomeLost(now time.Time, owner string) store.StepOutcome {
 	return store.StepOutcome{
-		Event:      string(model.EvStepFailed),
-		ReasonCode: reason.STEPFailedExecutorLost,
-		FinishedAt: now,
-		DetailJSON: detailJSON(map[string]any{"recovered_by": owner}),
+		Event:         string(model.EvStepFailed),
+		ReasonCode:    reason.STEPFailedExecutorLost,
+		FinishedAt:    now,
+		DetailJSON:    detailJSON(map[string]any{"recovered_by": owner}),
+		OutcomeSource: "reconciled",
 	}
+}
+
+// settleFromSpool commits one running step's outcome from the result file
+// its shim left behind, if there is one and it still belongs to this
+// attempt. It reports whether the step was settled here.
+//
+// A spool-committed success still publishes what the step wrote (#13): the
+// output file is on disk under the run's directory, and the verdict commit
+// that lands the step on succeeded is the one that may name its artifacts.
+// A publication failure degrades: the step stays succeeded with no
+// artifacts, because a crashed executor's output contract cannot be
+// resurrected by refusing the honest verdict.
+func (e *Engine) settleFromSpool(ctx context.Context, runID string, step store.Step) (bool, error) {
+	if e.SpoolDir == "" {
+		return false, nil
+	}
+	path := filepath.Join(e.SpoolDir, spool.FileName(runID, step.Name, step.Attempt))
+	res, err := spool.ReadResult(path)
+	if err != nil {
+		return false, nil // no file, or one the format cannot vouch for
+	}
+	outcome, err := store.SpoolVerdict(res)
+	if err != nil {
+		return false, nil
+	}
+	// Publication (#13), before the commit so the artifacts land in the
+	// verdict's own transaction, exactly as the live path does. A read or
+	// collection failure degrades to no artifacts: the verdict stays what
+	// the file said, and the output contract of a crashed executor cannot
+	// be resurrected by refusing it.
+	if res.Outcome == spool.OutcomeSucceeded && e.StateDir != "" {
+		outputPath := filepath.Join(e.StateDir, "runs", runID,
+			fmt.Sprintf("%s.%d.output.ndjson", step.Name, step.Attempt))
+		if parsed, err := runner.ReadStepOutput(outputPath); err == nil {
+			if arts, warnings, err := e.collectPublications(ctx, runID, step.Name, step.Index, parsed); err == nil {
+				outcome.Artifacts = arts
+				outcome.DetailJSON = publicationDetail(outcome.DetailJSON, parsed.Params, warnings)
+			}
+		}
+	}
+	err = e.Store.CommitSpooledOutcome(ctx, store.SpoolOutcome{
+		RunID:      runID,
+		Step:       step.Name,
+		Attempt:    step.Attempt,
+		ClaimEpoch: res.ClaimEpoch,
+		BootID:     res.BootID,
+		Outcome:    outcome,
+	})
+	switch {
+	case err == nil:
+	case errors.Is(err, store.ErrEpochMismatch),
+		errors.Is(err, store.ErrUnknownAttempt),
+		errors.Is(err, store.ErrLeaseLost):
+		return false, nil // not this loop's file to settle
+	default:
+		return false, err
+	}
+	// The attempt is settled on the row; the file has told its story.
+	if err := spool.Remove(path); err != nil {
+		return false, err
+	}
+	return true, nil
 }
