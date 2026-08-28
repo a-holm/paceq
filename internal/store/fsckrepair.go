@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/a-holm/paceq/internal/model"
-	"github.com/a-holm/paceq/internal/reason"
 )
 
 // fsck --repair (M6-06): the conservative half of the sweep. Repair is always
@@ -209,48 +208,22 @@ WHERE state = 'running'
 				o.Skipped++
 				continue
 			}
-			state, _, err := model.NextRunState(model.RunRunning, model.EvLeaseExpired, model.Guards{
+			if _, _, err := model.NextRunState(model.RunRunning, model.EvLeaseExpired, model.Guards{
 				LeaseValid:      false,
 				CrashBudgetLeft: true,
-			})
-			if err != nil || state != model.RunQueued {
+			}); err != nil {
 				o.Skipped++
 				continue
 			}
-			epoch := c.epoch + 1
-			due := now.Add(DefaultRequeueBackoff)
-			res, err := tx.Exec(`UPDATE runs SET
-	state = 'queued',
-	lease_owner = NULL,
-	lease_expires_at = NULL,
-	lease_epoch = lease_epoch + 1,
-	crash_count = crash_count + 1,
-	defer_reason = ?,
-	available_at = ?,
-	updated_at = ?
-	WHERE id = ? AND state = 'running' AND lease_epoch = ?`,
-				model.DeferReasonAfterCrash, due.UnixMilli(), now.UnixMilli(),
-				c.id, c.epoch)
+			repaired, err := repairRequeueRunTx(tx, c.id, c.epoch, now)
 			if err != nil {
-				return fmt.Errorf("repair I1: requeue run %s: %w", c.id, err)
-			}
-			if n, _ := res.RowsAffected(); n == 0 {
-				o.Skipped++ // the row moved since the sweep; leave it be
-				continue
-			}
-			if err := appendRunEvent(tx, RunEvent{
-				RunID:      c.id,
-				At:         now,
-				Kind:       "run.requeued",
-				FromState:  string(model.RunRunning),
-				ToState:    string(model.RunQueued),
-				Actor:      fsckActor,
-				ReasonCode: string(reason.RUNOrphanedReconciled),
-				DetailJSON: epochDetail(epoch),
-			}); err != nil {
 				return err
 			}
-			o.Repaired++
+			if repaired {
+				o.Repaired++
+			} else {
+				o.Skipped++ // the row moved since the sweep; leave it be
+			}
 		}
 		return nil
 	})
@@ -293,75 +266,25 @@ WHERE s.state IN ('pending', 'running')
 
 		now := s.clk.Now().UTC()
 		for _, f := range found {
+			var (
+				repaired bool
+				err      error
+			)
 			switch model.StepState(f.state) {
 			case model.StepRunning:
-				state, effects, err := model.NextStepState(model.StepRunning, model.EvCancelObserved,
-					model.Guards{ReasonCode: string(reason.STEPCancelled)})
-				if err != nil || state != model.StepCancelled {
-					o.Skipped++
-					continue
-				}
-				res, err := tx.Exec(`UPDATE steps SET
-	state = 'cancelled', reason_code = ?, reason_data = '{}',
-	finished_at = ?,
-	duration_ms = CASE WHEN started_at IS NULL THEN NULL ELSE ? - started_at END
-	WHERE run_id = ? AND name = ? AND state = 'running'`,
-					string(reason.STEPCancelled), now.UnixMilli(), now.UnixMilli(), f.runID, f.name)
-				if err != nil {
-					return fmt.Errorf("repair I2: cancel step %s of run %s: %w", f.name, f.runID, err)
-				}
-				if n, _ := res.RowsAffected(); n == 0 {
-					o.Skipped++
-					continue
-				}
-				if err := appendRunEvent(tx, RunEvent{
-					RunID:      f.runID,
-					StepName:   f.name,
-					At:         now,
-					Kind:       emitKind(effects),
-					FromState:  string(model.StepRunning),
-					ToState:    string(model.StepCancelled),
-					ReasonCode: string(reason.STEPCancelled),
-					Actor:      fsckActor,
-				}); err != nil {
-					return err
-				}
-				o.Repaired++
+				repaired, err = repairCancelRunningStepTx(tx, f.runID, f.name, now)
 			case model.StepPending:
-				// The machine has no pending -> cancelled edge; the cancel
-				// path closes a pending step as skipped with the cancel code
-				// (transitions.go's run-cancel sweep), and so does the repair.
-				state, effects, err := model.NextStepState(model.StepPending, model.EvUpstreamFailed,
-					model.Guards{ReasonCode: string(reason.STEPCancelled)})
-				if err != nil || state != model.StepSkipped {
-					o.Skipped++
-					continue
-				}
-				res, err := tx.Exec(`UPDATE steps SET
-	state = 'skipped', reason_code = ?, reason_data = '{}', finished_at = ?
-	WHERE run_id = ? AND name = ? AND state = 'pending'`,
-					string(reason.STEPCancelled), now.UnixMilli(), f.runID, f.name)
-				if err != nil {
-					return fmt.Errorf("repair I2: close step %s of run %s: %w", f.name, f.runID, err)
-				}
-				if n, _ := res.RowsAffected(); n == 0 {
-					o.Skipped++
-					continue
-				}
-				if err := appendRunEvent(tx, RunEvent{
-					RunID:      f.runID,
-					StepName:   f.name,
-					At:         now,
-					Kind:       emitKind(effects),
-					FromState:  string(model.StepPending),
-					ToState:    string(model.StepSkipped),
-					ReasonCode: string(reason.STEPCancelled),
-					Actor:      fsckActor,
-				}); err != nil {
-					return err
-				}
-				o.Repaired++
+				repaired, err = repairSkipPendingStepTx(tx, f.runID, f.name, now)
 			default:
+				o.Skipped++
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			if repaired {
+				o.Repaired++
+			} else {
 				o.Skipped++
 			}
 		}
@@ -402,29 +325,15 @@ WHERE state = 'queued' AND available_at > created_at
 
 		now := s.clk.Now().UTC()
 		for _, id := range ids {
-			res, err := tx.Exec(`UPDATE runs SET defer_reason = ?, updated_at = ?
-WHERE id = ? AND state = 'queued' AND (defer_reason IS NULL OR defer_reason = '')`,
-				model.DeferReasonUnspecified, now.UnixMilli(), id)
+			repaired, err := repairStampDeferTx(tx, id, now)
 			if err != nil {
-				return fmt.Errorf("repair I14: stamp run %s: %w", id, err)
-			}
-			if n, _ := res.RowsAffected(); n == 0 {
-				o.Skipped++
-				continue
-			}
-			if err := appendRunEvent(tx, RunEvent{
-				RunID:     id,
-				At:        now,
-				Kind:      "run.repaired",
-				FromState: string(model.RunQueued),
-				ToState:   string(model.RunQueued),
-				Actor:     fsckActor,
-				DetailJSON: `{"repair":"defer_reason stamped as ` +
-					model.DeferReasonUnspecified + `"}`,
-			}); err != nil {
 				return err
 			}
-			o.Repaired++
+			if repaired {
+				o.Repaired++
+			} else {
+				o.Skipped++
+			}
 		}
 		return nil
 	})
@@ -466,29 +375,15 @@ WHERE state IN ('succeeded', 'failed', 'cancelled')
 		}
 
 		for _, r := range legacyRuns {
-			res, err := tx.Exec(`UPDATE runs SET reason_code = ?, updated_at = ?
-WHERE id = ? AND state = ?
-	AND (reason_code IS NULL OR reason_code = '' OR reason_code = 'UNKNOWN')`,
-				string(reason.RUNLegacyUnspecified), now.UnixMilli(), r.id, r.state)
+			repaired, err := repairStampRunReasonTx(tx, r.id, r.state, now)
 			if err != nil {
-				return fmt.Errorf("repair reason: stamp run %s: %w", r.id, err)
-			}
-			if n, _ := res.RowsAffected(); n == 0 {
-				o.Skipped++
-				continue
-			}
-			if err := appendRunEvent(tx, RunEvent{
-				RunID:      r.id,
-				At:         now,
-				Kind:       "run.repaired",
-				FromState:  r.state,
-				ToState:    r.state,
-				Actor:      fsckActor,
-				ReasonCode: string(reason.RUNLegacyUnspecified),
-			}); err != nil {
 				return err
 			}
-			o.Repaired++
+			if repaired {
+				o.Repaired++
+			} else {
+				o.Skipped++
+			}
 		}
 
 		steps, err := tx.Query(`SELECT s.run_id, s.name, s.state FROM steps s
@@ -514,30 +409,15 @@ WHERE s.state IN ('succeeded', 'failed', 'skipped', 'cancelled')
 			return fmt.Errorf("repair reason: %w", err)
 		}
 		for _, r := range legacySteps {
-			res, err := tx.Exec(`UPDATE steps SET reason_code = ?
-WHERE run_id = ? AND name = ?
-	AND (reason_code IS NULL OR reason_code = '' OR reason_code = 'UNKNOWN')`,
-				string(reason.STEPLegacyUnspecified), r.id, r.name)
+			repaired, err := repairStampStepReasonTx(tx, r.id, r.name, r.state, now)
 			if err != nil {
-				return fmt.Errorf("repair reason: stamp step %s of run %s: %w", r.name, r.id, err)
-			}
-			if n, _ := res.RowsAffected(); n == 0 {
-				o.Skipped++
-				continue
-			}
-			if err := appendRunEvent(tx, RunEvent{
-				RunID:      r.id,
-				StepName:   r.name,
-				At:         now,
-				Kind:       "step.repaired",
-				FromState:  r.state,
-				ToState:    r.state,
-				Actor:      fsckActor,
-				ReasonCode: string(reason.STEPLegacyUnspecified),
-			}); err != nil {
 				return err
 			}
-			o.Repaired++
+			if repaired {
+				o.Repaired++
+			} else {
+				o.Skipped++
+			}
 		}
 
 		// Ticks and triggers keep their history: the sweep still reports them,

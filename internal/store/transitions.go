@@ -639,6 +639,175 @@ func finalizeReconciledRunTx(tx *sql.Tx, runID string, cur model.RunState, agg m
 	return nil
 }
 
+// The fsck --repair writes (M6-06). Repair is reconciliation by another name:
+// the same states the reaper and the cancel path write, attributed to fsck
+// instead, in the same paired update-plus-event shape every transition uses.
+// Each helper re-checks its own predicate in the caller's transaction, so a
+// row that moved between the sweep and the repair is simply left alone, and
+// each reports whether it repaired anything.
+
+// repairRequeueRunTx puts a running run without a live lease back in the
+// queue, the reaper's requeue arm with fsck's name on the event.
+func repairRequeueRunTx(tx *sql.Tx, runID string, epoch int64, now time.Time) (bool, error) {
+	epoch++
+	res, err := tx.Exec(`UPDATE runs SET
+		state = 'queued',
+		lease_owner = NULL,
+		lease_expires_at = NULL,
+		lease_epoch = lease_epoch + 1,
+		crash_count = crash_count + 1,
+		defer_reason = ?,
+		available_at = ?,
+		updated_at = ?
+		WHERE id = ? AND state = 'running' AND lease_epoch = ?`,
+		model.DeferReasonAfterCrash, now.Add(DefaultRequeueBackoff).UnixMilli(),
+		now.UnixMilli(), runID, epoch-1)
+	if err != nil {
+		return false, fmt.Errorf("repair I1: requeue run %s: %w", runID, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return false, nil
+	}
+	if err := finishTransition(tx, "repair_requeue", func() error { return nil }, tx, RunEvent{
+		RunID:      runID,
+		At:         now,
+		Kind:       "run.requeued",
+		FromState:  string(model.RunRunning),
+		ToState:    string(model.RunQueued),
+		Actor:      fsckActor,
+		ReasonCode: string(reason.RUNOrphanedReconciled),
+		DetailJSON: epochDetail(epoch),
+	}); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// repairCancelRunningStepTx closes a step that outlived its run while it was
+// running: cancelled, the way the cancel path closes it.
+func repairCancelRunningStepTx(tx *sql.Tx, runID, name string, now time.Time) (bool, error) {
+	state, effects, err := model.NextStepState(model.StepRunning, model.EvCancelObserved,
+		model.Guards{ReasonCode: string(reason.STEPCancelled)})
+	if err != nil || state != model.StepCancelled {
+		return false, err
+	}
+	if err := finishTransition(tx, "repair_cancel_running", func() error {
+		_, err := tx.Exec(`UPDATE steps SET
+			state = 'cancelled', reason_code = ?, reason_data = '{}',
+			finished_at = ?,
+			duration_ms = CASE WHEN started_at IS NULL THEN NULL ELSE ? - started_at END
+			WHERE run_id = ? AND name = ? AND state = 'running'`,
+			string(reason.STEPCancelled), now.UnixMilli(), now.UnixMilli(), runID, name)
+		return err
+	}, tx, RunEvent{
+		RunID: runID, StepName: name, At: now,
+		Kind: emitKind(effects), FromState: string(model.StepRunning),
+		ToState: string(model.StepCancelled), ReasonCode: string(reason.STEPCancelled),
+		Actor: fsckActor,
+	}); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// repairSkipPendingStepTx closes a stranded pending step. The machine has no
+// pending-to-cancelled edge; the cancel path closes such a step as skipped
+// with the cancel code, and so does the repair.
+func repairSkipPendingStepTx(tx *sql.Tx, runID, name string, now time.Time) (bool, error) {
+	state, effects, err := model.NextStepState(model.StepPending, model.EvUpstreamFailed,
+		model.Guards{ReasonCode: string(reason.STEPCancelled)})
+	if err != nil || state != model.StepSkipped {
+		return false, err
+	}
+	if err := finishTransition(tx, "repair_skip_pending", func() error {
+		_, err := tx.Exec(`UPDATE steps SET
+			state = 'skipped', reason_code = ?, reason_data = '{}', finished_at = ?
+			WHERE run_id = ? AND name = ? AND state = 'pending'`,
+			string(reason.STEPCancelled), now.UnixMilli(), runID, name)
+		return err
+	}, tx, RunEvent{
+		RunID: runID, StepName: name, At: now,
+		Kind: emitKind(effects), FromState: string(model.StepPending),
+		ToState: string(model.StepSkipped), ReasonCode: string(reason.STEPCancelled),
+		Actor: fsckActor,
+	}); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// repairStampDeferTx stamps the defer reason the CLI reports as "held for an
+// unknown reason" and writes a state-preserving event, so the repair shows in
+// the history the way every other repair does.
+func repairStampDeferTx(tx *sql.Tx, runID string, now time.Time) (bool, error) {
+	res, err := tx.Exec(`UPDATE runs SET defer_reason = ?, updated_at = ?
+		WHERE id = ? AND state = 'queued' AND (defer_reason IS NULL OR defer_reason = '')`,
+		model.DeferReasonUnspecified, now.UnixMilli(), runID)
+	if err != nil {
+		return false, fmt.Errorf("repair I14: stamp run %s: %w", runID, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return false, nil
+	}
+	if err := finishTransition(tx, "repair_stamp_defer", func() error { return nil }, tx, RunEvent{
+		RunID: runID, At: now, Kind: "run.repaired",
+		FromState: string(model.RunQueued), ToState: string(model.RunQueued),
+		Actor: fsckActor,
+		DetailJSON: `{"repair":"defer_reason stamped as ` +
+			model.DeferReasonUnspecified + `"}`,
+	}); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// repairStampRunReasonTx stamps the legacy code over an unusable reason value
+// on a terminal run.
+func repairStampRunReasonTx(tx *sql.Tx, runID, state string, now time.Time) (bool, error) {
+	res, err := tx.Exec(`UPDATE runs SET reason_code = ?, updated_at = ?
+		WHERE id = ? AND state = ?
+			AND (reason_code IS NULL OR reason_code = '' OR reason_code = 'UNKNOWN')`,
+		string(reason.RUNLegacyUnspecified), now.UnixMilli(), runID, state)
+	if err != nil {
+		return false, fmt.Errorf("repair reason: stamp run %s: %w", runID, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return false, nil
+	}
+	if err := finishTransition(tx, "repair_stamp_run_reason", func() error { return nil }, tx, RunEvent{
+		RunID: runID, At: now, Kind: "run.repaired",
+		FromState: state, ToState: state,
+		Actor:      fsckActor,
+		ReasonCode: string(reason.RUNLegacyUnspecified),
+	}); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// repairStampStepReasonTx stamps the legacy code on a terminal step.
+func repairStampStepReasonTx(tx *sql.Tx, runID, name, state string, now time.Time) (bool, error) {
+	res, err := tx.Exec(`UPDATE steps SET reason_code = ?
+		WHERE run_id = ? AND name = ?
+			AND (reason_code IS NULL OR reason_code = '' OR reason_code = 'UNKNOWN')`,
+		string(reason.STEPLegacyUnspecified), runID, name)
+	if err != nil {
+		return false, fmt.Errorf("repair reason: stamp step %s of run %s: %w", name, runID, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return false, nil
+	}
+	if err := finishTransition(tx, "repair_stamp_step_reason", func() error { return nil }, tx, RunEvent{
+		RunID: runID, StepName: name, At: now, Kind: "step.repaired",
+		FromState: state, ToState: state,
+		Actor:      fsckActor,
+		ReasonCode: string(reason.STEPLegacyUnspecified),
+	}); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // firstFailedStepName names the first failed step of a run, in spec order.
 func firstFailedStepName(tx *sql.Tx, runID string) string {
 	var name string

@@ -124,7 +124,11 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 	// the start with the same anatomy the boot gate uses, because a state
 	// the code cannot reason about must not be served, however it got there.
 	_ = sdnotify.Status("checking invariants")
-	sweepViolations, err := st.Fsck(ctx)
+	// The sweep runs cancel-proof: a stop arriving mid-sweep is a stop, not
+	// a failed boot, and the sweep is bounded to seconds by its own
+	// per-statement deadline either way.
+	sweepCtx := context.WithoutCancel(ctx)
+	sweepViolations, err := st.Fsck(sweepCtx)
 	if err != nil {
 		_ = st.Close()
 		return fmt.Errorf("serve: the invariant sweep failed: %w", err)
@@ -133,7 +137,7 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 		_ = st.Close()
 		return startupRefusal(critical)
 	}
-	if err := recordStartupFindings(ctx, st, clk, log, sweepViolations); err != nil {
+	if err := recordStartupFindings(sweepCtx, st, clk, log, sweepViolations); err != nil {
 		_ = st.Close()
 		return fmt.Errorf("serve: %w", err)
 	}
