@@ -385,8 +385,13 @@ func CheckCriticalInvariants(ctx context.Context, db DB) Finding {
 // readSystemTzdataVersion is the production reader: the zone database's own
 // stamp, from the header of the compiled source or the release file beside it.
 func readSystemTzdataVersion() (string, bool) {
+	zoneinfo, err := os.OpenRoot("/usr/share/zoneinfo")
+	if err != nil {
+		return "", false
+	}
+	defer func() { _ = zoneinfo.Close() }()
 	for _, name := range []string{"tzdata.zi", "+VERSION"} {
-		raw, err := os.ReadFile(filepath.Join("/usr/share/zoneinfo", name))
+		raw, err := zoneinfo.ReadFile(name)
 		if err != nil {
 			continue
 		}
