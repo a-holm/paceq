@@ -14,6 +14,12 @@ const (
 	// TopicSLABreached is written when a job's expected_within elapses
 	// without a success; one notification per breach episode.
 	TopicSLABreached = "job.sla_breached"
+	// TopicDiskLow is written while the disk-guard holds new runs (#44);
+	// the outbox throttle collapses a lasting episode into one alert.
+	TopicDiskLow = "disk.low"
+	// TopicWALGrowth is written while the WAL is past its warn or error
+	// level (#44); a long-lived reader is the suspected cause.
+	TopicWALGrowth = "wal.growth"
 )
 
 // Notification is one alert line for the outbox. The engine (or the SLA

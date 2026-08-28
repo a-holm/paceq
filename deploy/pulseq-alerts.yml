@@ -37,6 +37,17 @@ groups:
           summary: "WAL vokser — sannsynlig langlevd leser hindrer checkpointing"
           runbook: "pulseq doctor; se docs/drift/wal.md"
 
+      # The daemon says so itself (#44): degraded mode refuses new runs, so
+      # the disk needs an operator before the queue starts answering for it.
+      - alert: PulseqLogDiskLow
+        expr: pulseq_degraded == 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Diskvakten har gått i degradert modus — nye runs avvises"
+          runbook: "pulseq doctor; pulseq prune"
+
       - alert: PulseqBackupStale
         expr: time() - pulseq_backup_last_success_timestamp_seconds > 129600 # 36 t
         labels:

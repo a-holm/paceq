@@ -9,6 +9,7 @@ import (
 
 	"github.com/a-holm/paceq/internal/engine"
 	"github.com/a-holm/paceq/internal/janitor"
+	"github.com/a-holm/paceq/internal/obs"
 	"github.com/a-holm/paceq/internal/store"
 )
 
@@ -145,6 +146,11 @@ type Config struct {
 	// fields fall back to the shipped defaults, so a config that says
 	// nothing keeps the documented horizons.
 	Policies store.Policies
+
+	// Limits carries the disk-guard's four configuration keys (#44) from
+	// config.yaml's limits section. Zero fields fall back to the shipped
+	// defaults; the guard applies them.
+	Limits obs.DiskLimits
 
 	// NightlyHour is the local hour the maintenance cycle aims for. Zero
 	// means 03:00 (07 section 6.5). Tests move it to make a slot due.

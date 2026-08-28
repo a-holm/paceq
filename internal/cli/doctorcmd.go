@@ -8,7 +8,9 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/a-holm/paceq/internal/buildinfo"
+	"github.com/a-holm/paceq/internal/daemon"
 	"github.com/a-holm/paceq/internal/doctor"
+	"github.com/a-holm/paceq/internal/obs"
 )
 
 func newDoctorCmd(env Env, g *globals) *cobra.Command {
@@ -16,7 +18,9 @@ func newDoctorCmd(env Env, g *globals) *cobra.Command {
 		Use:   "doctor",
 		Short: "Check the installation and say what to do about what is wrong",
 		Long: `Check the installation: the state directory, its permissions, the database,
-the write lock, free disk and the time zone database.
+the write lock, free disk against the disk-guard's thresholds, the log
+directory against its byte cap, the write ahead log against its alarm
+levels, and the time zone database.
 
 doctor never changes anything. It exits 0 when nothing failed, so it can stand
 in a login script, and 1 when something is broken. Warnings do not fail: another
@@ -51,7 +55,17 @@ func runDoctor(ctx context.Context, env Env, g *globals, out *ui) error {
 
 	out.note(1, "checking %s", stateDir)
 	report := doctor.Report{Findings: []doctor.Finding{buildFinding()}}
-	report.Findings = append(report.Findings, doctor.Run(ctx, stateDir, doctor.Options{Status: env.Status}).Findings...)
+	// The disk-guard's limits come from the same config.yaml the daemon
+	// reads (#44), best effort: a config the daemon will refuse loudly is
+	// the daemon's business, and a report with defaults is still honest
+	// about what it assumed.
+	var limits obs.DiskLimits
+	if cfg, err := daemon.LoadNotificationConfig(stateDir, ""); err != nil {
+		out.note(2, "config.yaml could not be read; the disk checks use the shipped defaults")
+	} else if cfg != nil {
+		limits = cfg.Limits
+	}
+	report.Findings = append(report.Findings, doctor.Run(ctx, stateDir, doctor.Options{Status: env.Status, Limits: limits}).Findings...)
 	for _, finding := range report.Findings {
 		out.note(2, "%s: %s", finding.Title, finding.Level)
 	}

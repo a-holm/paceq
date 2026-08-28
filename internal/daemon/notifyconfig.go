@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 
 	"github.com/a-holm/paceq/internal/model"
 	"github.com/a-holm/paceq/internal/notify"
+	"github.com/a-holm/paceq/internal/obs"
 )
 
 // NotifierFileName is the configuration file that names notifiers and
@@ -48,6 +50,10 @@ type NotificationConfig struct {
 	Entries  map[string]notifierFileEntry
 	Defaults model.NotifyDefaults
 
+	// Limits carries the disk-guard's four configuration keys (#44) from
+	// the same file. Zero values mean the shipped defaults.
+	Limits obs.DiskLimits
+
 	// Timeouts mirrors Entries keyed by name, parsed and defaulted.
 	Timeouts map[string]time.Duration
 }
@@ -62,6 +68,17 @@ type notifierDoc struct {
 		GroupBy     []string `yaml:"group_by"`
 		MaxAttempts int      `yaml:"max_attempts"` // zero means unset here
 	} `yaml:"notify_defaults"`
+	Limits limitsDoc `yaml:"limits"`
+}
+
+// limitsDoc is the disk-guard's four configuration keys (#44), in the same
+// file as the notification targets: one configuration file per installation.
+// Every value is optional; zero means the shipped default.
+type limitsDoc struct {
+	LogMaxBytes        string  `yaml:"log_max_bytes"`
+	DiskMinFreePercent float64 `yaml:"disk_min_free_percent"`
+	DiskMinFreeBytes   string  `yaml:"disk_min_free_bytes"`
+	WalWarnBytes       string  `yaml:"wal_warn_bytes"`
 }
 
 // LoadNotificationConfig reads the notification configuration from stateDir/config.yaml
@@ -186,7 +203,76 @@ func parseNotificationConfig(data []byte) (*NotificationConfig, error) {
 		}
 		cfg.Defaults.MaxAttempts = n
 	}
+	limits, lerr := doc.Limits.resolve()
+	if lerr != nil {
+		return nil, lerr
+	}
+	cfg.Limits = limits
 	return cfg, nil
+}
+
+// resolve turns the limits document into DiskLimits. Sizes are plain byte
+// counts or suffixed KiB/MiB/GiB values, case insensitive. Zero values stay
+// zero: the guard fills the shipped defaults, so an empty section changes
+// nothing.
+func (d limitsDoc) resolve() (obs.DiskLimits, error) {
+	var out obs.DiskLimits
+	if t := strings.TrimSpace(d.LogMaxBytes); t != "" {
+		n, err := parseByteSize(t)
+		if err != nil {
+			return out, fmt.Errorf("limits.log_max_bytes: %w", err)
+		}
+		out.LogMaxBytes = n
+	}
+	if t := strings.TrimSpace(d.DiskMinFreeBytes); t != "" {
+		n, err := parseByteSize(t)
+		if err != nil {
+			return out, fmt.Errorf("limits.disk_min_free_bytes: %w", err)
+		}
+		out.MinFreeBytes = n
+	}
+	if d.DiskMinFreePercent != 0 {
+		if d.DiskMinFreePercent < 0 || d.DiskMinFreePercent > 100 {
+			return out, fmt.Errorf("limits.disk_min_free_percent is %g, want 0..100", d.DiskMinFreePercent)
+		}
+		out.MinFreePercent = d.DiskMinFreePercent
+	}
+	if t := strings.TrimSpace(d.WalWarnBytes); t != "" {
+		n, err := parseByteSize(t)
+		if err != nil {
+			return out, fmt.Errorf("limits.wal_warn_bytes: %w", err)
+		}
+		out.WalWarnBytes = n
+	}
+	return out, nil
+}
+
+// parseByteSize reads "10GiB", "64MiB", "512KiB" or a plain byte count.
+func parseByteSize(raw string) (int64, error) {
+	t := strings.ToUpper(strings.TrimSpace(raw))
+	if t == "" {
+		return 0, fmt.Errorf("an empty size is not a number of bytes")
+	}
+	suffixes := []struct {
+		name   string
+		factor int64
+	}{
+		{"KIB", 1 << 10}, {"MIB", 1 << 20}, {"GIB", 1 << 30}, {"TIB", 1 << 40},
+	}
+	for _, s := range suffixes {
+		if strings.HasSuffix(t, s.name) {
+			n, err := strconv.ParseInt(strings.TrimSpace(strings.TrimSuffix(t, s.name)), 10, 64)
+			if err != nil || n < 0 {
+				return 0, fmt.Errorf("%q is not a number of bytes like 10GiB", raw)
+			}
+			return n * s.factor, nil
+		}
+	}
+	n, err := strconv.ParseInt(t, 10, 64)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("%q is not a number of bytes like 10GiB", raw)
+	}
+	return n, nil
 }
 
 func notifierTimeout(raw string) (time.Duration, error) {

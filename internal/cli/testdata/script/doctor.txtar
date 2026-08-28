@@ -16,3 +16,40 @@ stdout 'PQ5002'
 # An unknown one is not found, not a crash.
 ! exec paceq error PQ9999
 stderr 'PQ9999'
+
+# The disk-guard's degraded state, seen offline (#44). Tiny thresholds in
+# config.yaml make the readings deterministic on any machine: a 100 percent
+# floor no filesystem with a file on it can satisfy, a 100 byte log cap a
+# planted shard passes, and a 100 byte WAL warn line a planted file passes.
+exec paceq init
+mkdir .paceq/logs/2026-01-01/somerun
+cp placeholder.txt .paceq/logs/2026-01-01/somerun/build.1.ndjson
+cp placeholder.txt .paceq/state.db-wal
+cp config-tiny.yaml .paceq/config.yaml
+
+# The WAL is past its error level here, so the report fails (exit 1) and
+# says why: the text carries the degraded disk, the capped log directory
+# and the WAL alarm, each with its own next step.
+! exec paceq doctor -o text
+stdout 'degraded mode and refuses new runs'
+stdout 'over the 100 B cap'
+stdout 'over the error level'
+stdout 'paceq prune'
+
+# The JSON report says the same thing. The WAL file is planted again: the
+# previous report's database inspection legitimately cleared an invalid WAL,
+# which is exactly the checkpoint-recovery behaviour a real one would get.
+cp placeholder.txt .paceq/state.db-wal
+! exec paceq doctor
+stdout 'title":"disk space"'
+stdout 'title":"log directory"'
+stdout 'title":"write ahead log"'
+
+-- placeholder.txt --
+The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks. The log line the quota checks.
+-- config-tiny.yaml --
+limits:
+  disk_min_free_percent: 100
+  log_max_bytes: 100
+  wal_warn_bytes: 100
+

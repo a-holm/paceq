@@ -1,7 +1,6 @@
 package store
 
 import (
-	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -101,26 +100,4 @@ func (s *Store) standDownTickTx(tx *sql.Tx, tickID string, at int64, hold RunHol
 		return err
 	}
 	return nil
-}
-
-// MarkLogShardPruned clears every step's log_path that points into a removed
-// date shard (#44). steps.log_path must never name a file that does not
-// exist; log_bytes, log_truncated and error_tail survive the clearing, so
-// explain can still show what an attempt printed after the file itself is
-// gone. shard is the directory's name under the log root ("2026-01-02").
-func (s *Store) MarkLogShardPruned(ctx context.Context, shard string) (int64, error) {
-	var n int64
-	err := s.withTx(ctx, func(tx *sql.Tx) error {
-		res, err := tx.Exec(`UPDATE steps SET log_path = NULL WHERE log_path LIKE ?`,
-			shard+"/%")
-		if err != nil {
-			return fmt.Errorf("clear log paths under shard %s: %w", shard, err)
-		}
-		n, err = res.RowsAffected()
-		if err != nil {
-			return fmt.Errorf("count the cleared log paths under shard %s: %w", shard, err)
-		}
-		return nil
-	})
-	return n, err
 }

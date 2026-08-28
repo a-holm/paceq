@@ -656,6 +656,20 @@ func (s *Store) TakeDelivery() DeliverySnapshot {
 	return out
 }
 
+// RecordOpsNotifications writes operator-facing alerts that did not
+// originate in a run's transaction (#44): disk.low and wal.growth. The rows
+// go through the same dedup and throttle windows as every other outbox
+// write, inside one IMMEDIATE transaction, so a persistent episode is one
+// notification no matter how many guard cycles confirm it.
+func (s *Store) RecordOpsNotifications(ctx context.Context, notes []model.Notification) error {
+	if len(notes) == 0 {
+		return nil
+	}
+	return s.withTx(ctx, func(tx *sql.Tx) error {
+		return insertNotificationsTx(tx, notes)
+	})
+}
+
 // PruneDeliveredNotificationsBatch deletes delivered rows past the retention
 // horizon, batched like every other deletion here. Failed rows never age out.
 func (s *Store) PruneDeliveredNotificationsBatch(ctx context.Context, cutoff time.Time) (int64, error) {

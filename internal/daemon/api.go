@@ -20,7 +20,11 @@ import (
 // on a locked database turns one bad moment into a restart loop. M2-08 puts
 // the real protocol on this listener; the socket and the status surface it
 // will read are already here.
-func startHealthEndpoint(cfg Config, st *statuses, log *slog.Logger, store *store.Store, collector *obs.Collector) (stop func(context.Context)) {
+//
+// degraded (#44) is the disk-guard's state: only /readyz degrades with the
+// disk. /livez must not - a full disk that restarted the daemon would kill
+// the very loops that are cleaning up (06 §7.1, 06 §15 risiko 4).
+func startHealthEndpoint(cfg Config, st *statuses, log *slog.Logger, store *store.Store, collector *obs.Collector, degraded func() bool) (stop func(context.Context)) {
 	if cfg.SocketPath == "" {
 		return nil
 	}
@@ -55,6 +59,17 @@ func startHealthEndpoint(cfg Config, st *statuses, log *slog.Logger, store *stor
 		})
 	})
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
+		// The disk is the one condition that degrades readiness without
+		// touching the database (#44): under the floor, new runs are
+		// refused, so a load balancer must stop sending work before the
+		// refusals start answering for it.
+		if degraded != nil && degraded() {
+			writeHealth(w, http.StatusServiceUnavailable, map[string]any{
+				"status": "degraded",
+				"detail": "low disk: new runs are refused until space is freed",
+			})
+			return
+		}
 		writeHealth(w, http.StatusOK, map[string]any{
 			"status":  "ready",
 			"version": cfg.Version,

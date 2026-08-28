@@ -145,8 +145,9 @@ type GuardConfig struct {
 	// files are removed without the database being told (tests).
 	Pruner ShardPruner
 	// Emit receives the guard's events. Nil means nobody is listening;
-	// the metrics and the log lines carry the same facts.
-	Emit func(DiskEvent)
+	// the metrics and the log lines carry the same facts. The context is
+	// the guard loop's, so the receiver's write rides the loop's lifetime.
+	Emit func(context.Context, DiskEvent)
 
 	// CheckEvery is the cycle cadence. Zero means thirty seconds.
 	CheckEvery time.Duration
@@ -203,6 +204,37 @@ func (g *Guard) State() DiskState { return DiskState(g.state.Load()) }
 
 // Degraded is what admission's gate reads. One atomic load.
 func (g *Guard) Degraded() bool { return g.State() == DiskDegraded }
+
+// DegradedGauge is pulseq_degraded: 1 while new runs are held.
+func (g *Guard) DegradedGauge() float64 {
+	if g.Degraded() {
+		return 1
+	}
+	return 0
+}
+
+// TotalBytes is the newest total-capacity reading, and whether one exists.
+func (g *Guard) TotalBytes() (int64, bool) {
+	if !g.stateUsed.Load() {
+		return 0, false
+	}
+	return g.total.Load(), true
+}
+
+// FactsForHold is what the run-hold refusal records in reason_data: the
+// measurements that make the decision auditable from explain. Nil before
+// the first successful reading.
+func (g *Guard) FactsForHold() map[string]any {
+	if !g.stateUsed.Load() {
+		return nil
+	}
+	floor := diskFloorBytes(uint64(g.total.Load()), g.cfg.Limits)
+	return map[string]any{
+		"free_bytes":     g.free.Load(),
+		"total_bytes":    g.total.Load(),
+		"min_free_bytes": floor,
+	}
+}
 
 // FreeBytes is the newest statfs reading, and whether one exists.
 func (g *Guard) FreeBytes() (int64, bool) {
@@ -266,7 +298,7 @@ func (g *Guard) Step(ctx context.Context) error {
 	}
 
 	next := classifyDisk(free, total, g.cfg.Limits)
-	g.transition(next, free, total, logBytes)
+	g.transition(ctx, next, free, total, logBytes)
 	return nil
 }
 
@@ -280,7 +312,7 @@ func (g *Guard) statfs() (uint64, uint64, error) {
 // transition applies the newest verdict with the exit hysteresis: the way
 // out of Degraded needs two consecutive readings above one and a half times
 // the floor, so retention freeing space in bursts cannot flap the daemon.
-func (g *Guard) transition(next DiskState, free, total uint64, logBytes int64) {
+func (g *Guard) transition(ctx context.Context, next DiskState, free, total uint64, logBytes int64) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -322,17 +354,17 @@ func (g *Guard) transition(next DiskState, free, total uint64, logBytes int64) {
 			"free_bytes", free, "total_bytes", total)
 	}
 	if next != prev {
-		g.emit(next, free, total, logBytes, floor)
+		g.emitLocked(ctx, next, free, total, logBytes, floor)
 	} else if next == DiskDegraded {
 		// Every confirming check re-emits the same episode; the outbox
 		// dedup and throttle collapse them into one notification (#44).
-		g.emit(next, free, total, logBytes, floor)
+		g.emitLocked(ctx, next, free, total, logBytes, floor)
 	}
 }
 
-// emit publishes the event outside the state lock's callers. since is the
-// episode stamp read under the same mutex that moves the state.
-func (g *Guard) emit(state DiskState, free, total uint64, logBytes int64, floor int64) {
+// emitLocked publishes the event while the state lock is held; since is the
+// episode stamp the same critical section moved.
+func (g *Guard) emitLocked(ctx context.Context, state DiskState, free, total uint64, logBytes int64, floor int64) {
 	if g.cfg.Emit == nil {
 		return
 	}
@@ -343,7 +375,7 @@ func (g *Guard) emit(state DiskState, free, total uint64, logBytes int64, floor 
 	case DiskDegraded:
 		level = slog.LevelError
 	}
-	g.cfg.Emit(DiskEvent{
+	g.cfg.Emit(ctx, DiskEvent{
 		Event:      "disk.low",
 		Level:      level,
 		State:      state,

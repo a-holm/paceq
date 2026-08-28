@@ -34,8 +34,8 @@ type WALWatchConfig struct {
 	Log   *slog.Logger
 
 	// Emit receives the alarm events for the outbox. Nil means the log
-	// lines are all the alarm there is.
-	Emit func(WALEvent)
+	// lines are all the alarm there is. The context is the guard loop's.
+	Emit func(context.Context, WALEvent)
 
 	// SizeOf is the file-size seam. Nil means os.Stat.
 	SizeOf func(path string) (int64, bool)
@@ -78,7 +78,7 @@ func NewWALWatch(cfg WALWatchConfig) *WALWatch {
 // threshold upwards announces itself; dropping below the warn line logs
 // the recovery. Within a level, every confirming check re-emits the same
 // episode - the outbox dedup and throttle collapse those (#44).
-func (w *WALWatch) Step(_ context.Context) {
+func (w *WALWatch) Step(ctx context.Context) {
 	size := w.walSize()
 	next := w.levelOf(size)
 
@@ -111,7 +111,7 @@ func (w *WALWatch) Step(_ context.Context) {
 
 	if next > prev || (next > 0 && next == prev) {
 		if w.cfg.Emit != nil {
-			w.cfg.Emit(WALEvent{
+			w.cfg.Emit(ctx, WALEvent{
 				Level:      levelOfWAL(next),
 				WalBytes:   size,
 				WarnBytes:  w.cfg.Limits.WalWarnBytes,

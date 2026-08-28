@@ -204,6 +204,28 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 		return fmt.Errorf("serve: %w", nerr)
 	}
 	notifs := NewNotifications(st, clk, log, notifyCfg, os.Stderr)
+	ops := newOpsNotifier(st, notifyCfg, clk, log)
+	// The disk-guard (#44) watches the filesystem that holds the state and
+	// the log directory's byte cap; the WAL watch rides the same cadence.
+	// Its hold is installed before any loop starts, so no tick that arrives
+	// after the first measurement can admit a run the disk cannot afford.
+	guard := obs.NewGuard(obs.GuardConfig{
+		StateDir: cfg.StateDir,
+		LogDir:   filepath.Join(cfg.StateDir, logsink.LogDirName),
+		Limits:   cfg.Limits,
+		Clock:    clk,
+		Log:      log,
+		Pruner:   st,
+		Emit:     ops.emitDisk,
+	})
+	walWatch := obs.NewWALWatch(obs.WALWatchConfig{
+		DBPath: filepath.Join(cfg.StateDir, store.DatabaseFileName),
+		Limits: cfg.Limits,
+		Clock:  clk,
+		Log:    log,
+		Emit:   ops.emitWAL,
+	})
+	st.SetRunHold(runHoldGate(guard))
 	eng := newEngine(cfg, st, clk)
 	if notifyCfg != nil {
 		eng.Notify = notify.NewPlanner(notifyCfg.Defaults, func() time.Time { return clk.Now() })
@@ -215,6 +237,13 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 	// rather than on the next tick (#68). A disabled bus drops the wake
 	// and the ticker carries it alone, like every other topic.
 	pool.afterRun = func() { bus.Notify(notify.TopicRunQueued) }
+
+	// The guard's first cycle runs before the executors do: loggopprydding
+	// gets its chance to save the disk before the first run is admitted
+	// (06 §15 risiko 3). It is cheap - one statfs and a directory listing.
+	if err := guard.Step(ctx); err != nil {
+		log.Warn("the disk-guard's first cycle failed", "err", err.Error())
+	}
 
 	grp := newGroup(ctx)
 	intakeCtx, stopIntake := context.WithCancel(grp.ctx)
@@ -318,8 +347,21 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 	launch(grp.ctx, nil, func(c context.Context) error {
 		return maintenanceLoop(c, d, tickEvery, st, maint, cfg.nightlyHour(), cfg.owner())
 	})
+	// The disk-guard and the WAL watch (#44) share one loop on the thirty
+	// second cadence the plan fixes; both mark the same health line.
+	launch(grp.ctx, nil, func(c context.Context) error {
+		return loop(c, d, "diskguard", defaultGuardEvery, "", func(c context.Context) error {
+			if err := guard.Step(c); err != nil {
+				return err
+			}
+			walWatch.Step(c)
+			return nil
+		})
+	})
 	// The collector is built from the store's read pool and the same
 	// counters the store writes into: two sources, one document (#40).
+	// The disk-guard's readings join it (#44): a watch that has never
+	// measured leaves its families honestly absent.
 	collector := obs.NewCollector(st, counters, clk,
 		obs.Identity{
 			Version:   buildinfo.Get().Version,
@@ -327,7 +369,8 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 			GoVersion: buildinfo.Get().GoVersion,
 		},
 		filepath.Join(cfg.StateDir, logsink.LogDirName))
-	stopHealth := startHealthEndpoint(cfg, statuses, log, st, collector)
+	collector.DiskWatch = guard
+	stopHealth := startHealthEndpoint(cfg, statuses, log, st, collector, guard.Degraded)
 	if err := startMetricsTCP(cfg.MetricsListen, collector); err != nil {
 		if stopHealth != nil {
 			stopHealth(context.Background())

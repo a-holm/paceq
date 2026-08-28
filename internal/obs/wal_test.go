@@ -1,6 +1,7 @@
 package obs
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -25,7 +26,7 @@ func walTestWatch(t *testing.T, size int64) (*WALWatch, *int64, *[]WALEvent, *cl
 			}
 			return *sizeP, true
 		},
-		Emit: func(e WALEvent) { events = append(events, e) },
+		Emit: func(_ context.Context, e WALEvent) { events = append(events, e) },
 	})
 	return w, sizeP, &events, clk
 }
@@ -33,19 +34,19 @@ func walTestWatch(t *testing.T, size int64) (*WALWatch, *int64, *[]WALEvent, *cl
 func TestWALAlarmWarnsThenErrorsThenClears(t *testing.T) {
 	w, size, events, clk := walTestWatch(t, 0)
 
-	w.Step(nil)
+	w.Step(context.Background())
 	if len(*events) != 0 {
 		t.Fatalf("a healthy WAL raised %d events, want none", len(*events))
 	}
 
 	*size = DefaultWALWarnBytes + 1 // past 64 MiB
-	w.Step(nil)
+	w.Step(context.Background())
 	if len(*events) != 1 || (*events)[0].Level.String() != "WARN" {
 		t.Fatalf("crossing the warn line produced %v, want one WARN event", *events)
 	}
 
 	*size = DefaultWALWarnBytes*4 + 1 // past 256 MiB
-	w.Step(nil)
+	w.Step(context.Background())
 	last := (*events)[len(*events)-1]
 	if len(*events) != 2 || last.Level.String() != "ERROR" || last.ErrorBytes != DefaultWALWarnBytes*4 {
 		t.Fatalf("crossing the error line produced %v, want one ERROR event", *events)
@@ -54,7 +55,7 @@ func TestWALAlarmWarnsThenErrorsThenClears(t *testing.T) {
 	// Confirming checks re-emit the same episode: the outbox collapses
 	// them, so a persistent problem is one notification, not one per 30
 	// seconds.
-	w.Step(nil)
+	w.Step(context.Background())
 	if len(*events) != 3 || (*events)[2].Since != last.Since {
 		t.Fatalf("a confirming check raised a new episode: %v", *events)
 	}
@@ -63,14 +64,14 @@ func TestWALAlarmWarnsThenErrorsThenClears(t *testing.T) {
 	// clears and a later crossing starts a new episode.
 	*size = 1024
 	clk.Advance(2 * time.Minute)
-	w.Step(nil)
-	w.Step(nil)
+	w.Step(context.Background())
+	w.Step(context.Background())
 	if len(*events) != 3 {
 		t.Fatalf("the cleared state raised events: %v", *events)
 	}
 	*size = DefaultWALWarnBytes + 1
 	clk.Advance(2 * time.Minute)
-	w.Step(nil)
+	w.Step(context.Background())
 	if len(*events) != 4 || (*events)[3].Since == last.Since {
 		t.Fatalf("a new crossing did not start a new episode: %v", *events)
 	}
@@ -84,7 +85,7 @@ func TestWALAlarmPointsAtTheLongLivedReader(t *testing.T) {
 	// it names the reader. Both derive from the same crossing, so pinning
 	// the level here pins the pairing.
 	w, _, events, _ := walTestWatch(t, DefaultWALWarnBytes*4+1)
-	w.Step(nil)
+	w.Step(context.Background())
 	if len(*events) != 1 || (*events)[0].Level.String() != "ERROR" {
 		t.Fatalf("a WAL past the error level produced %v, want one ERROR event", *events)
 	}
