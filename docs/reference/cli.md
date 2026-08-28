@@ -204,18 +204,27 @@ Inherited flags:
 Check the installation and say what to do about what is wrong
 
 Check the installation: the state directory, its permissions, the database,
-the write lock, free disk against the disk-guard's thresholds, the log
-directory against its byte cap, the write ahead log against its alarm
-levels, and the time zone database.
+its pragma discipline, the write lock, free disk against the disk-guard's
+thresholds, the log directory against its byte cap, the write ahead log
+against its alarm levels, the clock, the time zone database, the result
+spool, leftover job processes, jobs that monitoring cannot alarm on, the
+filesystem the state sits on, the running daemon's version, and the
+database's critical invariants.
 
-doctor never changes anything. It exits 0 when nothing failed, so it can stand
-in a login script, and 1 when something is broken. Warnings do not fail: another
-paceq holding the state is normal, and a machine that has never run paceq init
-is not broken.
+Every finding carries its own next step. doctor never changes anything. It
+exits 0 when nothing failed, so it can stand in a login script, and 1 when
+something is broken. Warnings do not fail: another paceq holding the state is
+normal, and a machine that has never run paceq init is not broken.
 
 Usage:
 
-    paceq doctor
+    paceq doctor [flags]
+
+Flags:
+
+| Flag | | Meaning |
+|---|---|---|
+| `--json` | `- ` | emit the JSON contract, the same document -o json pins |
 
 Inherited flags:
 
@@ -442,16 +451,33 @@ Inherited flags:
 
 Check the state database against its invariants
 
-Sweep the state for broken rules: a terminal run with open steps, a run
-state its steps disagree with, timestamps that run backwards, a held run with
-no reason, an event chain with a hole, a row that ended without a reason code.
+Sweep the state for broken rules: a run running without a live lease, a
+terminal run with open steps, a duplicate run key or tick slot, a cyclic
+dependency graph, timestamps that run backwards, a held run with no reason,
+an event chain with a hole, a row that ended without a reason code.
 
-The command reads only, so it is safe while another paceq works. It exits 0
-when the state is sound and 1 when it is not, with every violation listed.
+Every finding carries a severity and a remedy. Warnings are historic or
+cosmetic: the command exits 0 with the findings listed. Serious and critical
+findings mean the state itself is wrong, and the command exits 1. A critical
+finding is a uniqueness rule or the dependency graph broken behind the code;
+startup is refused while it stands.
+
+--repair puts rows back where ordinary reconciliation would put them, and
+writes what it did into the event history. It never deletes, never touches
+run keys, and never repairs over a critical finding without --confirm.
 
 Usage:
 
-    paceq fsck
+    paceq fsck [flags]
+
+Flags:
+
+| Flag | | Meaning |
+|---|---|---|
+| `--confirm` | `- ` | confirm a repair while critical findings stand; required with --repair |
+| `--json` | `- ` | emit the JSON contract, the same document -o json pins |
+| `--only` | `- ` | sweep only these invariants, by name: I1, I3, reason, ... |
+| `--repair` | `- ` | repair the findings that are safely repairable |
 
 Inherited flags:
 

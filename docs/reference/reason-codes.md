@@ -63,6 +63,7 @@ Codes stored on the runs table, one row per run.
 | `RUN_DEFERRED_CONCURRENCY_KEY` | waiting for the concurrency key to free | no | `blocking_run_id`, `concurrency_key` |
 | `RUN_FAILED_STEP` | a step failed | yes | `attempt`, `step` |
 | `RUN_INTERRUPTED_SHUTDOWN` | interrupted by a clean daemon stop, nothing was lost | no | - |
+| `RUN_LEGACY_UNSPECIFIED` | ended before reason codes were kept | yes | - |
 | `RUN_ORPHANED_RECONCILED` | found running with no process, reconciled | yes | - |
 | `RUN_POISONED` | crashed more often than allowed | yes | `crash_count`, `max_crash_count` |
 | `RUN_QUEUED_CONCURRENCY` | held back by a concurrency limit | no | `limit`, `scope` |
@@ -84,6 +85,7 @@ Codes stored on the steps table, one row per step of a run.
 | `STEP_FAILED_SPAWN` | the command never started | yes | `argv0`, `errno`, `workdir` |
 | `STEP_FAILED_TIMEOUT` | killed at the deadline | yes | `timeout_ms` |
 | `STEP_INPUT_COLLISION` | an upstream params key was claimed twice | no | `name`, `winner`, `loser` |
+| `STEP_LEGACY_UNSPECIFIED` | ended before reason codes were kept | yes | - |
 | `STEP_OUTPUT_COLLISION` | two upstream steps published one name | no | `name`, `winner`, `loser` |
 | `STEP_OUTPUT_INVALID` | output had lines that could not be read | no | `count`, `first_line` |
 | `STEP_OUTPUT_TRUNCATED` | output was cut off at a bound | no | `bound`, `limit` |
@@ -476,6 +478,19 @@ What to do next:
 - nothing needs doing: the work resumes on its own once a daemon serves again
 - steps interrupted this way start over from their first command, so keep jobs idempotent
 
+### RUN_LEGACY_UNSPECIFIED
+
+ended before reason codes were kept. [run level, ends the object]
+
+This row ended without a reason code because it was written by a paceq older
+than the discipline that demands one. `paceq fsck --repair` stamped it
+rather than leave a terminal row explaining nothing. Nothing new is claimed
+here: the true reason is history the row no longer carries.
+
+What to do next:
+- nothing to fix; the stamp exists so reports stay complete
+- if the run's outcome matters, read its events and logs, which survive
+
 ### RUN_ORPHANED_RECONCILED
 
 found running with no process, reconciled. [run level, ends the object]
@@ -682,6 +697,18 @@ What to do next:
 - if the overwrite is intended, this warning is the record of which value won
 
 Promised reason_data keys: name, winner, loser.
+
+### STEP_LEGACY_UNSPECIFIED
+
+ended before reason codes were kept. [step level, ends the object]
+
+This step ended without a reason code because it was written by a paceq
+older than the discipline that demands one. `paceq fsck --repair` stamped it
+rather than leave a terminal step explaining nothing. Nothing new is claimed
+here: the true verdict is history the row no longer carries.
+
+What to do next:
+- nothing to fix; the stamp exists so reports stay complete
 
 ### STEP_OUTPUT_COLLISION
 

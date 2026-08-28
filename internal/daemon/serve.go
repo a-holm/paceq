@@ -65,8 +65,7 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 	}
 	if summary := reconcile.CriticalViolationSummary(violations); summary != "" {
 		_ = st.Close()
-		return fmt.Errorf("serve: startup refused: %s; run \"paceq fsck --repair\" "+
-			"and confirm manually before starting", summary)
+		return startupRefusal(summary)
 	}
 
 	// The gap is captured BEFORE StartSession closes the stale row. After
@@ -114,6 +113,31 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 		PrevSessionID:    prevSession,
 		Wake:             func() { bus.Notify(notify.TopicRunQueued) },
 	}); err != nil {
+		_ = st.Close()
+		return fmt.Errorf("serve: %w", err)
+	}
+
+	// R11, the last step of the reconciliation sequence (M6-06): the
+	// whole-state invariant sweep, after the reconciler has settled what the
+	// crash left, so the reconciler's own work is not reported as drift.
+	// Every finding lands in the integrity event log; a critical one refuses
+	// the start with the same anatomy the boot gate uses, because a state
+	// the code cannot reason about must not be served, however it got there.
+	_ = sdnotify.Status("checking invariants")
+	// The sweep runs cancel-proof: a stop arriving mid-sweep is a stop, not
+	// a failed boot, and the sweep is bounded to seconds by its own
+	// per-statement deadline either way.
+	sweepCtx := context.WithoutCancel(ctx)
+	sweepViolations, err := st.Fsck(sweepCtx)
+	if err != nil {
+		_ = st.Close()
+		return fmt.Errorf("serve: the invariant sweep failed: %w", err)
+	}
+	if critical := firstCriticalSummary(sweepViolations); critical != "" {
+		_ = st.Close()
+		return startupRefusal(critical)
+	}
+	if err := recordStartupFindings(sweepCtx, st, clk, log, sweepViolations); err != nil {
 		_ = st.Close()
 		return fmt.Errorf("serve: %w", err)
 	}
@@ -345,7 +369,7 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 		Log:       log,
 	})
 	launch(grp.ctx, nil, func(c context.Context) error {
-		return maintenanceLoop(c, d, tickEvery, st, maint, cfg.nightlyHour(), cfg.owner())
+		return maintenanceLoop(c, d, tickEvery, st, maint, cfg.nightlyHour(), cfg.owner(), st)
 	})
 	// The disk-guard and the WAL watch (#44) share one loop on the thirty
 	// second cadence the plan fixes; both mark the same health line.

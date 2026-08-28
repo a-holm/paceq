@@ -51,7 +51,7 @@ func TestMaintenanceNeverRunsUnderAForeignLease(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = maintenanceLoop(loopCtx, d, 20*time.Millisecond, s, maint, 3, "this-daemon")
+		_ = maintenanceLoop(loopCtx, d, 20*time.Millisecond, s, maint, 3, "this-daemon", nil)
 	}()
 	time.Sleep(300 * time.Millisecond)
 	cancel()
@@ -70,7 +70,7 @@ func TestMaintenanceNeverRunsUnderAForeignLease(t *testing.T) {
 	done2 := make(chan struct{})
 	go func() {
 		defer close(done2)
-		_ = maintenanceLoop(loopCtx2, d, 20*time.Millisecond, s, maint, 3, "this-daemon")
+		_ = maintenanceLoop(loopCtx2, d, 20*time.Millisecond, s, maint, 3, "this-daemon", nil)
 	}()
 
 	var cycled bool

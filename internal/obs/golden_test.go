@@ -20,6 +20,8 @@ var testOrigin = time.Date(2026, 3, 15, 12, 0, 0, 0, time.UTC)
 // the collector so its bytes can be pinned without a database.
 type stubSource struct {
 	counters      *Counters
+	integrity     []store.MetricsIntegrityViolation
+	fsckLastRun   time.Time
 	lastSuccesses []store.MetricsJobStamp
 	slas          []store.MetricsJobSLA
 	schedules     []store.MetricsInstigatorState
@@ -79,6 +81,17 @@ func (s *stubSource) TakeWriteWaitMax() float64 { return s.writeWait }
 func (s *stubSource) BusyTotal() uint64         { return s.busy }
 func (s *stubSource) MetricsNotificationsPending(context.Context) (int64, error) {
 	return s.notifPending, nil
+}
+
+func (s *stubSource) MetricsIntegrityViolations(context.Context) ([]store.MetricsIntegrityViolation, error) {
+	return s.integrity, nil
+}
+
+func (s *stubSource) MetricsFsckLastRun(context.Context) (time.Time, bool, error) {
+	if s.fsckLastRun.IsZero() {
+		return time.Time{}, false, nil
+	}
+	return s.fsckLastRun, true, nil
 }
 
 func (s *stubSource) MetricsNotificationsFailedTotal(context.Context) (int64, error) {

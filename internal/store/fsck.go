@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/a-holm/paceq/internal/model"
 )
@@ -17,6 +19,11 @@ import (
 //   - I1  A run in running holds a live lease: an owner, and an expiry still
 //         ahead of the wall clock minus the skew allowance.
 //   - I2  A terminal run has no step still pending or running.
+//   - I3  One run per (job, run_key).
+//   - I5  The attempt counter is tight within its budget.
+//   - I6  One tick per schedule slot.
+//   - I8  A step that is running has every need succeeded.
+//   - I9  The dependency graph is acyclic and names existing steps.
 //   - I10 The run's stored state is what its steps aggregate to.
 //   - I11 The fencing token never falls: the lease_epoch values recorded in
 //         a run's event history are non-decreasing and end at the row's own
@@ -31,6 +38,76 @@ import (
 //
 // The M1-05 reason code rule rides along, because the same sweep reads every
 // terminal row anyway.
+//
+// Each check's severity and remedy live in the invariant catalogue
+// (invariants.go); the generated reference document is built from that
+// catalogue, so code and documentation cannot diverge.
+
+// fsckQueryDeadline bounds one sweep statement (07 section 6.4): the sweep is
+// a guest on the read pool, and a statement that runs away must cost five
+// seconds, never the boot or the scrape behind it. No check of the sweep
+// opens a transaction: every statement is a single read on the pool.
+const fsckQueryDeadline = 5 * time.Second
+
+// The sweep's statements, one constant per invariant. The EQP gate
+// (TestEveryInvariantQueryPlansWithoutScanningRuns) explains exactly these
+// constants, so the plan assertions cannot drift from what production runs.
+const (
+	fsckI1SQL = `SELECT id FROM runs
+WHERE state = 'running'
+	AND (lease_owner IS NULL OR lease_owner = ''
+		OR lease_expires_at IS NULL
+		OR lease_expires_at <= ?)`
+
+	fsckI2SQL = `SELECT s.run_id, s.name FROM steps s
+JOIN runs r ON r.id = s.run_id
+WHERE s.state IN ('pending', 'running')
+	AND r.state IN ('succeeded', 'failed', 'cancelled')`
+
+	fsckI5SQL = `SELECT run_id, name, state, attempt, max_attempts FROM steps
+WHERE attempt < 0 OR attempt > max_attempts
+	OR (state IN ('running', 'succeeded', 'failed') AND attempt < 1)`
+
+	fsckI8SQL = `SELECT s.run_id, s.name FROM steps s
+WHERE s.state = 'running'
+	AND EXISTS (SELECT 1 FROM step_deps sd
+		JOIN steps need ON need.run_id = sd.run_id AND need.name = sd.depends_on
+		WHERE sd.run_id = s.run_id AND sd.step_name = s.name
+			AND need.state <> 'succeeded')`
+
+	fsckI10SQL = `SELECT r.id, r.state, COALESCE(s.state, '')
+FROM runs r LEFT JOIN steps s ON s.run_id = r.id ORDER BY r.id`
+
+	fsckI13SQL = `SELECT 'run', id FROM runs
+WHERE created_at <= 0
+	OR (started_at IS NOT NULL AND started_at < created_at)
+	OR (finished_at IS NOT NULL AND started_at IS NOT NULL AND finished_at < started_at)
+UNION ALL
+SELECT 'step', run_id || '/' || name FROM steps
+WHERE (started_at IS NOT NULL AND started_at <= 0)
+	OR (finished_at IS NOT NULL AND started_at IS NOT NULL AND finished_at < started_at)`
+
+	fsckI14SQL = `SELECT id FROM runs
+WHERE state = 'queued' AND available_at > created_at
+	AND (defer_reason IS NULL OR defer_reason = '')`
+
+	fsckI15SQL = `SELECT run_id, who FROM (
+	SELECT run_id,
+		COALESCE(step_name, '') || ':' || kind || ':' ||
+			COALESCE(from_state, '<start>') || '->' || to_state AS who,
+		from_state,
+		LAG(to_state) OVER w AS prev_to
+	FROM run_events
+	WHERE kind <> 'run.result_discarded'
+	WINDOW w AS (PARTITION BY run_id, COALESCE(step_name, '') ORDER BY id))
+WHERE prev_to IS NOT NULL AND COALESCE(from_state, '<start>') <> prev_to`
+
+	fsckI11EventsSQL = `SELECT run_id, detail_json FROM run_events
+WHERE step_name IS NULL AND kind <> 'run.result_discarded'
+ORDER BY run_id, id`
+
+	fsckI11EpochsSQL = `SELECT id, lease_epoch FROM runs`
+)
 
 // Violation is one broken invariant: which check caught it and on what row.
 type Violation struct {
@@ -43,6 +120,48 @@ type Violation struct {
 
 	// Detail says what was expected and what was found.
 	Detail string
+
+	// Severity grades the finding (M6-06): critical means the daemon refuses
+	// to start, serious means reconcilable drift, warning is cosmetic. It is
+	// looked up from the invariant catalogue, so a report can never grade a
+	// check differently from the reference.
+	Severity Severity
+
+	// Remedy is the catalogue's next step for this check, so a finding can
+	// be acted on without reading the source.
+	Remedy string
+}
+
+// tagViolations fills the catalogue fields of every finding. The sweep code
+// names only the check; the catalogue owns what the check means and what to
+// do about it. An unknown check keeps the Serious fallback: the catalogue
+// test keeps every emitted ID listed, so this never fires.
+func tagViolations(out []Violation) []Violation {
+	for i := range out {
+		out[i].Severity = severityOf(out[i].Check)
+		if inv, ok := invariantByID(out[i].Check); ok {
+			out[i].Remedy = inv.Remedy
+		}
+	}
+	return out
+}
+
+// fsckQuery runs one sweep statement under its own five second deadline. The
+// caller closes the rows and then the cancel, in that order.
+func (s *Store) fsckQuery(ctx context.Context, sql string, args ...any) (*sql.Rows, context.CancelFunc, error) {
+	qctx, cancel := context.WithTimeout(ctx, fsckQueryDeadline)
+	rows, err := s.r.QueryContext(qctx, sql, args...)
+	if err != nil {
+		cancel()
+		return nil, func() {}, err
+	}
+	return rows, cancel, nil
+}
+
+// fsckBounded bounds one helper call (the aggregate and reason sweeps keep
+// their own statements) to the same deadline the inline statements get.
+func fsckBounded(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, fsckQueryDeadline)
 }
 
 // Fsck sweeps the whole database and returns every violation it finds, empty
@@ -55,14 +174,11 @@ func (s *Store) Fsck(ctx context.Context) ([]Violation, error) {
 	// one the reaper waits out, so a lease that is merely inside the takeover
 	// window still counts as held.
 	skewCut := s.clk.Now().UTC().Add(-DefaultClockSkewAllowance).UnixMilli()
-	rows, err := s.r.QueryContext(ctx, `SELECT id FROM runs
-WHERE state = 'running'
-	AND (lease_owner IS NULL OR lease_owner = ''
-		OR lease_expires_at IS NULL
-		OR lease_expires_at <= ?)`, skewCut)
+	rows, cancel, err := s.fsckQuery(ctx, fsckI1SQL, skewCut)
 	if err != nil {
 		return nil, fmt.Errorf("fsck I1: %w", err)
 	}
+	defer cancel()
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
@@ -83,14 +199,14 @@ WHERE state = 'running'
 		return nil, fmt.Errorf("fsck I1: %w", err)
 	}
 
-	// I2: nothing open under a finished run.
-	rows, err = s.r.QueryContext(ctx, `SELECT r.id, s.name FROM runs r
-JOIN steps s ON s.run_id = r.id
-WHERE r.state IN ('succeeded', 'failed', 'cancelled')
-	AND s.state IN ('pending', 'running')`)
+	// I2: nothing open under a finished run. The sweep drives from the steps
+	// side: the run row is then reached by its primary key, so the plan never
+	// scans the runs table.
+	rows, cancel, err = s.fsckQuery(ctx, fsckI2SQL)
 	if err != nil {
 		return nil, fmt.Errorf("fsck I2: %w", err)
 	}
+	defer cancel()
 	for rows.Next() {
 		var runID, step string
 		if err := rows.Scan(&runID, &step); err != nil {
@@ -111,6 +227,30 @@ WHERE r.state IN ('succeeded', 'failed', 'cancelled')
 		return nil, fmt.Errorf("fsck I2: %w", err)
 	}
 
+	// I3: a run_key that names more than one run of one job. Critical: the
+	// schema refuses the write, so a break means a hand edit or corruption.
+	dupes, err := s.checkRunKeyDuplicates(ctx, "fsck I3")
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, dupes...)
+
+	// I6: a schedule slot holding more than one tick. Critical, same
+	// reasoning as I3.
+	dupes, err = s.checkTickSlotDuplicates(ctx, "fsck I6")
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, dupes...)
+
+	// I9: the dependency graph is acyclic and every edge names an existing
+	// step. Critical: a cyclic run has no legal first step.
+	graph, err := s.checkDAG(ctx, "fsck I9")
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, graph...)
+
 	// I5: the attempt counter is tight within its budget. A step that
 	// claims a verdict with no attempt counted, or one whose counter ran
 	// past what its budget allows, was written behind the transition layer:
@@ -121,12 +261,11 @@ WHERE r.state IN ('succeeded', 'failed', 'cancelled')
 	// purpose (05 section 3.2). This is the check a retry has to leave
 	// green: a reopen that reset attempts to zero while a verdict stood
 	// would read as an execution that never happened.
-	rows, err = s.r.QueryContext(ctx, `SELECT run_id, name, state, attempt, max_attempts FROM steps
-WHERE attempt < 0 OR attempt > max_attempts
-	OR (state IN ('running', 'succeeded', 'failed') AND attempt < 1)`)
+	rows, cancel, err = s.fsckQuery(ctx, fsckI5SQL)
 	if err != nil {
 		return nil, fmt.Errorf("fsck I5: %w", err)
 	}
+	defer cancel()
 	for rows.Next() {
 		var runID, step, state string
 		var attempt, max int
@@ -157,15 +296,11 @@ WHERE attempt < 0 OR attempt > max_attempts
 	// I8: a step that is running has every need succeeded. The claim
 	// predicate gates on the same predicate before any start, so a running
 	// step with an unmet need can only be drift (M4-03).
-	rows, err = s.r.QueryContext(ctx, `SELECT s.run_id, s.name FROM steps s
-WHERE s.state = 'running'
-	AND EXISTS (SELECT 1 FROM step_deps sd
-		JOIN steps need ON need.run_id = sd.run_id AND need.name = sd.depends_on
-		WHERE sd.run_id = s.run_id AND sd.step_name = s.name
-			AND need.state <> 'succeeded')`)
+	rows, cancel, err = s.fsckQuery(ctx, fsckI8SQL)
 	if err != nil {
 		return nil, fmt.Errorf("fsck I8: %w", err)
 	}
+	defer cancel()
 	for rows.Next() {
 		var runID, step string
 		if err := rows.Scan(&runID, &step); err != nil {
@@ -191,7 +326,9 @@ WHERE s.state = 'running'
 	// users; if they disagree, a row was written behind both. The sweep
 	// itself is the explicit checker the crash battery also asserts on,
 	// so this check and that battery cannot drift apart.
-	mismatches, err := s.RunAggregateMismatches(ctx)
+	qctx, qcancel := fsckBounded(ctx)
+	mismatches, err := s.RunAggregateMismatches(qctx)
+	qcancel()
 	if err != nil {
 		return nil, fmt.Errorf("fsck I10: %w", err)
 	}
@@ -205,17 +342,11 @@ WHERE s.state = 'running'
 	}
 
 	// I13: time only moves forward, and a present stamp is a real one.
-	rows, err = s.r.QueryContext(ctx, `SELECT 'run', id FROM runs
-WHERE created_at <= 0
-	OR (started_at IS NOT NULL AND started_at < created_at)
-	OR (finished_at IS NOT NULL AND started_at IS NOT NULL AND finished_at < started_at)
-UNION ALL
-SELECT 'step', run_id || '/' || name FROM steps
-WHERE (started_at IS NOT NULL AND started_at <= 0)
-	OR (finished_at IS NOT NULL AND started_at IS NOT NULL AND finished_at < started_at)`)
+	rows, cancel, err = s.fsckQuery(ctx, fsckI13SQL)
 	if err != nil {
 		return nil, fmt.Errorf("fsck I13: %w", err)
 	}
+	defer cancel()
 	for rows.Next() {
 		var kind, key string
 		if err := rows.Scan(&kind, &key); err != nil {
@@ -238,12 +369,11 @@ WHERE (started_at IS NOT NULL AND started_at <= 0)
 
 	// I14: a held back run always says why. Deferred is not a state, so
 	// the check is on the queued rows whose available_at lies ahead.
-	rows, err = s.r.QueryContext(ctx, `SELECT id FROM runs
-WHERE state = 'queued' AND available_at > created_at
-	AND (defer_reason IS NULL OR defer_reason = '')`)
+	rows, cancel, err = s.fsckQuery(ctx, fsckI14SQL)
 	if err != nil {
 		return nil, fmt.Errorf("fsck I14: %w", err)
 	}
+	defer cancel()
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
@@ -274,19 +404,11 @@ WHERE state = 'queued' AND available_at > created_at
 	// all), so it sits outside the chain exactly as it does in I11; a
 	// NULL to_state would otherwise both break every scan and blame the
 	// lease-lost writer for a gap it did not create.
-	rows, err = s.r.QueryContext(ctx, `SELECT run_id, who FROM (
-	SELECT run_id,
-		COALESCE(step_name, '') || ':' || kind || ':' ||
-			COALESCE(from_state, '<start>') || '->' || to_state AS who,
-		from_state,
-		LAG(to_state) OVER w AS prev_to
-	FROM run_events
-	WHERE kind <> 'run.result_discarded'
-	WINDOW w AS (PARTITION BY run_id, COALESCE(step_name, '') ORDER BY id))
-WHERE prev_to IS NOT NULL AND COALESCE(from_state, '<start>') <> prev_to`)
+	rows, cancel, err = s.fsckQuery(ctx, fsckI15SQL)
 	if err != nil {
 		return nil, fmt.Errorf("fsck I15: %w", err)
 	}
+	defer cancel()
 	for rows.Next() {
 		var runID, who string
 		if err := rows.Scan(&runID, &who); err != nil {
@@ -313,9 +435,7 @@ WHERE prev_to IS NOT NULL AND COALESCE(from_state, '<start>') <> prev_to`)
 	// it has to end exactly at the row's own epoch, and a row whose epoch rose
 	// without any history saying so is a violation on its own: that is the
 	// shape of an unfenced write.
-	rows, err = s.r.QueryContext(ctx, `SELECT run_id, detail_json FROM run_events
-WHERE step_name IS NULL AND kind <> 'run.result_discarded'
-ORDER BY run_id, id`)
+	rows, cancel, err = s.fsckQuery(ctx, fsckI11EventsSQL)
 	if err != nil {
 		return nil, fmt.Errorf("fsck I11: %w", err)
 	}
@@ -343,9 +463,10 @@ ORDER BY run_id, id`)
 	if err := rows.Close(); err != nil {
 		return nil, fmt.Errorf("fsck I11: %w", err)
 	}
+	cancel()
 
 	rowEpochs := map[string]int64{}
-	rows, err = s.r.QueryContext(ctx, `SELECT id, lease_epoch FROM runs`)
+	rows, cancel, err = s.fsckQuery(ctx, fsckI11EpochsSQL)
 	if err != nil {
 		return nil, fmt.Errorf("fsck I11: %w", err)
 	}
@@ -365,6 +486,7 @@ ORDER BY run_id, id`)
 	if err := rows.Close(); err != nil {
 		return nil, fmt.Errorf("fsck I11: %w", err)
 	}
+	cancel()
 
 	for id, epoch := range rowEpochs {
 		history := epochsByRun[id]
@@ -401,7 +523,9 @@ ORDER BY run_id, id`)
 	// I12: no job runs more than its ceiling allows (#68). The admission
 	// control and the claim both enforce this on the way in; the sweep
 	// catches what a hand edit, a future writer or a bug let through.
-	active, err := s.ActiveRunViolations(ctx)
+	qctx, qcancel = fsckBounded(ctx)
+	active, err := s.ActiveRunViolations(qctx)
+	qcancel()
 	if err != nil {
 		return nil, err
 	}
@@ -410,14 +534,18 @@ ORDER BY run_id, id`)
 	// I12 keys: no concurrency key is held by more than one active run
 	// (#17). The partial unique index makes the state unreachable through
 	// the code; the sweep names it when something outside the code made it.
-	keyed, err := s.ActiveConcurrencyKeyViolations(ctx)
+	qctx, qcancel = fsckBounded(ctx)
+	keyed, err := s.ActiveConcurrencyKeyViolations(qctx)
+	qcancel()
 	if err != nil {
 		return nil, err
 	}
 	out = append(out, keyed...)
 
 	// The reason code rule, swept along with everything else.
-	unexplained, err := s.UnexplainedReasons(ctx)
+	qctx, qcancel = fsckBounded(ctx)
+	unexplained, err := s.UnexplainedReasons(qctx)
+	qcancel()
 	if err != nil {
 		return nil, err
 	}
@@ -429,7 +557,7 @@ ORDER BY run_id, id`)
 		})
 	}
 
-	return out, nil
+	return tagViolations(out), nil
 }
 
 // unclaimedWork is the one shape the aggregate cannot name: steps that are

@@ -34,6 +34,18 @@ import (
 // Process is one candidate the scanner reports: a live process whose environ
 // carried PACEQ_RUN_ID. Everything else about it was read from /proc at scan
 // time.
+// ScanProcs is the exported probe doctor's orphan check uses (M6-06): every
+// live process this user can read whose environment carries PACEQ_RUN_ID. It
+// is the same scan the startup sweep walks, so doctor and reconciliation can
+// never disagree about what a live process is. Off Linux it answers "nothing
+// scannable" by being nil-backed, exactly like the startup sweep.
+func ScanProcs() ([]Process, error) {
+	if defaultScan == nil {
+		return nil, nil
+	}
+	return defaultScan()
+}
+
 type Process struct {
 	PID        int
 	PGID       int

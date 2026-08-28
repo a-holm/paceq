@@ -37,3 +37,22 @@ A wrapper script around `paceq run` can therefore trust the exit code it sees:
 
 For monitoring, `paceq status` folds the same information into its own exit
 code contract: see the [status contract](status-contract.md).
+
+## fsck and doctor: findings are graded
+
+`paceq fsck` and `paceq doctor` report findings, and every finding carries a
+grade that decides what the command does with it. The contract is stable from
+v0.2:
+
+| Findings | fsck exits | doctor exits |
+|---|---|---|
+| nothing wrong | 0 | 0 |
+| warnings only - historic or cosmetic rows, another paceq holding the lock | 0, findings listed | 0, findings listed |
+| serious - state drift the system can reconcile out of | 1 | 1 (doctor grades installation damage as `fail`, which is the same exit) |
+| critical - a uniqueness rule or the dependency graph broken behind the code | 1, and the text says startup will be refused | 1 via the `fsck` check |
+
+`fsck --repair` repairs only what ordinary reconciliation would repair, and
+`--confirm` is required while a critical finding stands. Both commands answer
+`--json` with the same document `-o json` pins, so a script can read the
+findings and the grades without parsing prose. The full invariant list with
+its grades and remedies is [invarianter.md](invarianter.md).

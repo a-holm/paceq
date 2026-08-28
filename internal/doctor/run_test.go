@@ -17,13 +17,18 @@ import (
 // fakeDB answers the four questions doctor asks a database, so every branch of
 // the report can be reproduced without a file in that state.
 type fakeDB struct {
-	path    string
-	schema  int
-	journal string
-	mode    store.AutoVacuumMode
-	backup  store.BackupInfo
-	err     error
-	closed  bool
+	path        string
+	schema      int
+	journal     string
+	mode        store.AutoVacuumMode
+	backup      store.BackupInfo
+	fsck        []store.Violation
+	unpoliced   []string
+	active      []store.AttemptProcess
+	foreignKeys bool
+	sync        string
+	err         error
+	closed      bool
 }
 
 func (f *fakeDB) Path() string { return f.path }
@@ -38,6 +43,27 @@ func (f *fakeDB) AutoVacuum(context.Context) (store.AutoVacuumMode, error) {
 
 func (f *fakeDB) BackupStatus(context.Context) (store.BackupInfo, error) {
 	return f.backup, f.err
+}
+
+func (f *fakeDB) SynchronousMode(context.Context) (string, error) {
+	if f.sync == "" {
+		return "1", f.err
+	}
+	return f.sync, f.err
+}
+
+func (f *fakeDB) ForeignKeys(context.Context) (bool, error) { return !f.foreignKeys, f.err }
+
+func (f *fakeDB) QuickFsck(context.Context) ([]store.Violation, error) {
+	return f.fsck, f.err
+}
+
+func (f *fakeDB) ActiveAttempts(context.Context) ([]store.AttemptProcess, error) {
+	return f.active, f.err
+}
+
+func (f *fakeDB) JobsWithoutFreshnessSLA(context.Context) ([]string, error) {
+	return f.unpoliced, f.err
 }
 
 func (f *fakeDB) Close() error {

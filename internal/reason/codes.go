@@ -75,6 +75,7 @@ var (
 	RUNSucceeded              = runCode("SUCCEEDED")
 	RUNOrphanedReconciled     = runCode("ORPHANED_RECONCILED")
 	RUNPoisoned               = runCode("POISONED")
+	RUNLegacyUnspecified      = runCode("LEGACY_UNSPECIFIED")
 
 	STEPSucceeded              = stepCode("SUCCEEDED")
 	STEPSkippedReplayReused    = stepCode("SKIPPED_REPLAY_REUSED")
@@ -88,6 +89,7 @@ var (
 	STEPFailedSignal           = stepCode("FAILED_SIGNAL")
 	STEPFailedExecutorLost     = stepCode("FAILED_EXECUTOR_LOST")
 	STEPCancelled              = stepCode("CANCELLED")
+	STEPLegacyUnspecified      = stepCode("LEGACY_UNSPECIFIED")
 
 	// The output warnings (#13). Both name facts about $PACEQ_OUTPUT that
 	// an operator must see, and neither may end a step: a parse warning
@@ -614,6 +616,23 @@ func newCatalog() map[Code]Entry {
 			DataKeys: []string{"crash_count", "max_crash_count"},
 			Terminal: true,
 		},
+		{
+			Code:  RUNLegacyUnspecified,
+			Level: LevelRun,
+			Short: "ended before reason codes were kept",
+			Explanation: "This row ended without a reason code because it was written by a paceq " +
+				"older than the discipline that demands one. `paceq fsck --repair` stamped it " +
+				"rather than leave a terminal row explaining nothing. Nothing new is claimed " +
+				"here: the true reason is history the row no longer carries.",
+			Remedy: []string{
+				"nothing to fix; the stamp exists so reports stay complete",
+				"if the run's outcome matters, read its events and logs, which survive",
+			},
+			Terminal:       true,
+			ScenarioExempt: true,
+			ExemptReason: "no producer can create this row through the machine: only " +
+				"fsck --repair writes it, onto rows that predate the catalogue itself.",
+		},
 
 		{
 			Code:  STEPSucceeded,
@@ -839,6 +858,22 @@ func newCatalog() map[Code]Entry {
 				"the run's own reason code says who cancelled it and why",
 			},
 			Terminal: true,
+		},
+		{
+			Code:  STEPLegacyUnspecified,
+			Level: LevelStep,
+			Short: "ended before reason codes were kept",
+			Explanation: "This step ended without a reason code because it was written by a paceq " +
+				"older than the discipline that demands one. `paceq fsck --repair` stamped it " +
+				"rather than leave a terminal step explaining nothing. Nothing new is claimed " +
+				"here: the true verdict is history the row no longer carries.",
+			Remedy: []string{
+				"nothing to fix; the stamp exists so reports stay complete",
+			},
+			Terminal:       true,
+			ScenarioExempt: true,
+			ExemptReason: "no producer can create this row through the machine: only " +
+				"fsck --repair writes it, onto rows that predate the catalogue itself.",
 		},
 
 		{

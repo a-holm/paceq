@@ -29,6 +29,13 @@ const DeferReasonConcurrency = "concurrency"
 // the two apart by this word.
 const DeferReasonConcurrencyKey = "concurrency_key"
 
+// DeferReasonUnspecified is what fsck --repair stamps onto a queued run held
+// into the future that carries no defer reason of its own (I14, M6-06). The
+// repair never invents the true reason - there is none to recover - so the
+// word it writes is the honest "unspecified", which the CLI then reports as
+// held for an unknown reason instead of a hold with no story at all.
+const DeferReasonUnspecified = "unspecified"
+
 // NextRunState is the run machine, and the only place that decides what a run
 // may do next. It reads nothing but its arguments: no database, no clock, no
 // package level state, so the same three inputs always give the same three

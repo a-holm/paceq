@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -39,6 +40,19 @@ type sessionToucher interface {
 type runQueue interface {
 	ClaimableRunIDs(ctx context.Context) ([]string, error)
 }
+
+// fsckSweeper is what the hourly invariant sweep needs (M6-06). It rides the
+// maintenance lease: two daemons must never sweep and record at the same
+// time, or the integrity log would tell every finding twice.
+type fsckSweeper interface {
+	Fsck(ctx context.Context) ([]store.Violation, error)
+	RecordIntegrityFindings(ctx context.Context, at time.Time, findings []store.IntegrityFinding) error
+}
+
+// fsckEvery is how often the maintenance leader runs the invariant sweep.
+// The issue fixes the cadence: every hour, on the clock that owns the rest
+// of the daemon, so a test can hold it to the timeline it asserts.
+const fsckEvery = time.Hour
 
 // loops carries what every loop shares.
 type loops struct {
@@ -144,8 +158,28 @@ func reaperLoop(ctx context.Context, d loops, every time.Duration, sweeper reapS
 // real cycle happens under the fenced maintenance lease - two daemons can
 // never retain at the same time, and a daemon that lost leadership stops
 // maintaining underneath the one that took over.
-func janitorLoop(ctx context.Context, d loops, every time.Duration, j *janitor.Janitor, hour int) error {
+func janitorLoop(ctx context.Context, d loops, every time.Duration, j *janitor.Janitor, hour int,
+	sweeper fsckSweeper,
+) error {
+	var lastFsck clock.Mono
+	haveFscked := false
 	return loop(ctx, d, "janitor", every, notify.TopicScheduleChanged, func(ctx context.Context) error {
+		// The hourly invariant sweep (M6-06) rides the same leadership and
+		// the same wake as the nightly cycle. The startup sweep is the first
+		// fact in the log; each hourly sweep appends only what it finds, so
+		// a clean hour costs one cheap read and writes nothing.
+		if sweeper != nil && (!haveFscked || d.clk.Since(lastFsck) >= fsckEvery) {
+			if err := sweepIntegrity(ctx, d, sweeper); err != nil {
+				return err
+			}
+			lastFsck = d.clk.Mark()
+			haveFscked = true
+		}
+		if j == nil {
+			// A sweeper-only loop (tests, and any future caller that wants
+			// the integrity cadence without the nightly cycle).
+			return nil
+		}
 		if !j.ShouldRun(ctx, hour) {
 			return nil
 		}
@@ -171,19 +205,76 @@ func janitorLoop(ctx context.Context, d loops, every time.Duration, j *janitor.J
 	})
 }
 
+// sweepIntegrity runs one fsck sweep and lands what it found in the
+// integrity event log and on the health surface. Findings never fail the
+// loop: a broken invariant is exactly the state the operator must be able to
+// watch through /metrics and /livez, and a loop that died on its own finding
+// would stop reporting it.
+func sweepIntegrity(ctx context.Context, d loops, sweeper fsckSweeper) error {
+	d.status.mark("fsck")
+	violations, err := sweeper.Fsck(ctx)
+	if err != nil {
+		return fmt.Errorf("the integrity sweep failed: %w", err)
+	}
+	if len(violations) == 0 {
+		return nil
+	}
+	at := d.clk.Now().UTC()
+	subjects := map[string][]string{}
+	counts := map[string]int{}
+	order := make([]string, 0, len(violations))
+	for _, v := range violations {
+		if _, seen := counts[v.Check]; !seen {
+			order = append(order, v.Check)
+		}
+		counts[v.Check]++
+		if len(subjects[v.Check]) < 5 {
+			subjects[v.Check] = append(subjects[v.Check], v.Subject)
+		}
+	}
+	findings := make([]store.IntegrityFinding, 0, len(order))
+	for _, check := range order {
+		findings = append(findings, store.IntegrityFinding{
+			Invariant:  check,
+			Severity:   severityOfCheck(check),
+			Violations: counts[check],
+			Subjects:   subjects[check],
+		})
+	}
+	if err := sweeper.RecordIntegrityFindings(ctx, at, findings); err != nil {
+		return fmt.Errorf("record the integrity findings: %w", err)
+	}
+	for _, f := range findings {
+		d.log.Warn("integrity violation",
+			"invariant", f.Invariant,
+			"severity", f.Severity.String(),
+			"violations", f.Violations,
+		)
+	}
+	return nil
+}
+
+// severityOfCheck reads the sweep's own catalogue, so the daemon cannot grade
+// a finding differently from the fsck command.
+func severityOfCheck(check string) store.Severity {
+	return store.SeverityOf(check)
+}
+
 // maintenanceLoop owns the whole maintenance leadership (#36): it takes the
 // fenced maintenance lease - two daemons can never retain at the same time -
 // and only then runs the nightly cycle whenever its slot is owed. Serve wires
 // it with the real store; the exclusivity test drives the exact same
 // composition against a foreign lease holder.
-func maintenanceLoop(ctx context.Context, d loops, every time.Duration, st leases.Store, j *janitor.Janitor, hour int, holder string) error {
+func maintenanceLoop(ctx context.Context, d loops, every time.Duration, st leases.Store, j *janitor.Janitor, hour int, holder string,
+	sweeper fsckSweeper,
+) error {
 	return leases.RunAsLeader(ctx, st, leases.Options{
 		Name:   "maintenance",
 		Holder: holder,
 		Clock:  d.clk,
 		Log:    d.log,
 	}, func(body context.Context, _ int64) error {
-		return janitorLoop(body, d, every, j, hour)
+		return janitorLoop(body, d, every, j, hour, sweeper)
 	})
 }
 

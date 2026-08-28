@@ -77,11 +77,12 @@ func TestFsckReportsViolationsAsFindings(t *testing.T) {
 		t.Fatalf("close: %v", err)
 	}
 
+	// A warning-class finding is reported but does not fail: the exit-code
+	// contract is graded, and I15 (a history hole) is historic, not serving
+	// breaking (M6-06). The finding is still listed, in every mode.
 	got := runCLI(t, dir, nil, "fsck")
-
-	// A state that fails its own invariants is not a clean exit.
-	if got.code == ExitOK {
-		t.Fatalf("fsck passed over a planted I15 violation\n%s%s", got.stdout, got.stderr)
+	if got.code != ExitOK {
+		t.Fatalf("fsck failed on a warning-class finding, want exit 0 with the finding listed:\n%s%s", got.stdout, got.stderr)
 	}
 	var doc struct {
 		Violations []struct {
@@ -105,6 +106,61 @@ func TestFsckReportsViolationsAsFindings(t *testing.T) {
 
 	text := runCLI(t, dir, nil, "fsck", "-o", "text")
 	for _, want := range []string{"I15"} {
+		if !strings.Contains(text.stdout, want) {
+			t.Errorf("the text findings do not name %q:\n%s", want, text.stdout)
+		}
+	}
+}
+
+// TestFsckFailsOnASeriousFinding plants I11, a fencing token that falls: the
+// grade that does fail the command, because the state itself is wrong however
+// well the machine is behaving. The events go through the public append, the
+// same door every writer uses, and the tokens they carry are history no live
+// writer could produce.
+func TestFsckFailsOnASeriousFinding(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, stateDirName)
+	s := openFixtureStoreAt(t, stateDir, clock.NewFake(testOrigin))
+	ctx := context.Background()
+	version, _, err := s.UpsertJobVersion(ctx, fixtureJobInput)
+	if err != nil {
+		t.Fatalf("record job: %v", err)
+	}
+	run, err := s.CreateRunWithSteps(ctx, store.NewRun{
+		JobName:      fixtureJobInput.JobName,
+		JobVersionID: version.ID,
+		Origin:       "manual",
+		Steps:        []store.NewStep{{Name: "extract"}},
+	})
+	if err != nil {
+		t.Fatalf("create the run: %v", err)
+	}
+	if err := s.AppendRunEvent(ctx, store.RunEvent{
+		RunID: run.ID, Kind: "run.started", FromState: "queued", ToState: "running",
+		DetailJSON: `{"lease_epoch":5}`,
+	}); err != nil {
+		t.Fatalf("append the first token: %v", err)
+	}
+	if err := s.AppendRunEvent(ctx, store.RunEvent{
+		RunID: run.ID, Kind: "run.failed", FromState: "running", ToState: "failed",
+		DetailJSON: `{"lease_epoch":3}`,
+	}); err != nil {
+		t.Fatalf("append the falling token: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	got := runCLI(t, dir, nil, "fsck")
+	if got.code != ExitInternal {
+		t.Fatalf("fsck exited %d over a falling token, want %d:\n%s%s",
+			got.code, ExitInternal, got.stdout, got.stderr)
+	}
+
+	// Text mode names the severity and the remedy, so the finding can be
+	// acted on from the report alone.
+	text := runCLI(t, dir, nil, "fsck", "-o", "text")
+	for _, want := range []string{"I11", "serious"} {
 		if !strings.Contains(text.stdout, want) {
 			t.Errorf("the text findings do not name %q:\n%s", want, text.stdout)
 		}
