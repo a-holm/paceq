@@ -27,6 +27,53 @@ import (
 // socketName is the file name of the daemon's socket inside its directory.
 const socketName = "paceq.sock"
 
+// socketOff is the word that turns the socket off wherever a socket can be
+// named. It disables the dial and the liveness probe both: the caller said
+// there is no daemon to ask about, so nothing asks.
+const socketOff = "none"
+
+// socketSetting is what resolution concluded: where the socket is, or that the
+// caller turned it off.
+type socketSetting struct {
+	// path is the socket to dial. Empty when off, and empty when nothing
+	// named one and there is no state directory to hold one.
+	path string
+
+	// off means socketOff was named. Writes then go to the state directory
+	// even while a daemon runs, because two writers are forbidden either
+	// way, and reads do not ask whether anybody is there.
+	off bool
+}
+
+// resolveSocket applies the documented order: --socket, then PACEQ_SOCKET,
+// then $XDG_RUNTIME_DIR/paceq.sock, then the state directory as the last
+// resort (03 section 3.6).
+//
+// It touches nothing on disk. Which socket a command means and whether that
+// socket may be trusted are two questions, and answering them in one place is
+// how one of them ends up skipped.
+func resolveSocket(g *globals, env Env, stateDir string) socketSetting {
+	switch {
+	case g.socket == socketOff:
+		return socketSetting{off: true}
+	case g.socket != "":
+		return socketSetting{path: g.socket}
+	}
+	switch named := env.Getenv("PACEQ_SOCKET"); {
+	case named == socketOff:
+		return socketSetting{off: true}
+	case named != "":
+		return socketSetting{path: named}
+	}
+	if runtimeDir := env.Getenv("XDG_RUNTIME_DIR"); runtimeDir != "" {
+		return socketSetting{path: filepath.Join(runtimeDir, socketName)}
+	}
+	if stateDir == "" {
+		return socketSetting{}
+	}
+	return socketSetting{path: filepath.Join(stateDir, socketName)}
+}
+
 // untrustedSocket is a socket file paceq will not talk to: the wrong owner, a
 // mode that invites the whole machine, or a path that is not a socket at all.
 // It is loud on purpose. Falling back to the direct path would turn somebody
@@ -52,19 +99,19 @@ type socketRefusal struct {
 func (e *socketRefusal) Error() string { return e.message }
 
 // daemonSocket answers which socket a command may dial. An empty path with no
-// error means no daemon serves this state directory and the caller writes
-// directly, which is the other half of the dual-mode design rather than a
-// failure. An error means a socket is there that paceq refuses to trust.
-func daemonSocket(stateDir string) (string, error) {
-	if stateDir == "" {
+// error means no daemon serves this project and the caller writes directly,
+// which is the other half of the dual-mode design rather than a failure. An
+// error means a socket is there that paceq refuses to trust.
+func daemonSocket(env Env, g *globals) (string, error) {
+	setting := resolveSocket(g, env, g.stateDirOrEmpty(env))
+	if setting.off || setting.path == "" {
 		return "", nil
 	}
-	path := filepath.Join(stateDir, socketName)
-	present, err := checkSocketFile(path)
+	present, err := checkSocketFile(setting.path)
 	if err != nil || !present {
 		return "", err
 	}
-	return path, nil
+	return setting.path, nil
 }
 
 // checkSocketFile decides what the file at path is before anything connects

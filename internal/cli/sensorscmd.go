@@ -565,7 +565,7 @@ func runSensorsTick(ctx context.Context, env Env, g *globals, out *ui, name stri
 	// SEAM (#14, #16): tick through the daemon when it answers. The daemon's
 	// evaluator owns the real tick transaction (Begin/CommitSensorTick); the
 	// direct path below re-runs the same evaluation in this process.
-	socketPath, err := daemonSocket(g.stateDirOrEmpty(env))
+	socketPath, err := daemonSocket(env, g)
 	if err != nil {
 		return socketRefusedError(err)
 	}
@@ -749,7 +749,7 @@ func runSensorsResume(ctx context.Context, env Env, g *globals, out *ui, name st
 func writeSensorOp(ctx context.Context, env Env, g *globals, out *ui, name string,
 	direct func(*store.Store) error, verb string, viaSocket func(context.Context, string, string) error,
 ) error {
-	socketPath, err := daemonSocket(g.stateDirOrEmpty(env))
+	socketPath, err := daemonSocket(env, g)
 	if err != nil {
 		return socketRefusedError(err)
 	}

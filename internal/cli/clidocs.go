@@ -110,13 +110,16 @@ func localPersistentFlags(cmd *cobra.Command) *pflag.FlagSet {
 
 // inheritedFlags collects persistent flags from every ancestor, so a
 // subcommand's section shows where `-o` comes from without repeating the
-// definition.
+// definition. A name the command declares itself is not inherited: cobra
+// parses the local flag, and listing the ancestor's beside it would document
+// a flag that never takes effect there.
 func inheritedFlags(cmd *cobra.Command) *pflag.FlagSet {
 	set := pflag.NewFlagSet("inherited", pflag.ContinueOnError)
+	own := cmd.LocalFlags()
 	for p := cmd.Parent(); p != nil; p = p.Parent() {
 		local := localPersistentFlags(p)
 		local.VisitAll(func(f *pflag.Flag) {
-			if set.Lookup(f.Name) == nil {
+			if set.Lookup(f.Name) == nil && own.Lookup(f.Name) == nil {
 				set.AddFlag(f)
 			}
 		})

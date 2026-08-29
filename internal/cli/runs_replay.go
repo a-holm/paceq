@@ -144,7 +144,7 @@ func joinNames(names []string) string {
 // directory when there is one, on the database directly when there is not.
 // A refusal that came back from the daemon is an answer, not an outage.
 func replayRunOnce(ctx context.Context, env Env, g *globals, stateDir, runID string, opts store.ReplayOpts) (store.ReplayResult, error) {
-	socketPath, err := daemonSocket(stateDir)
+	socketPath, err := daemonSocket(env, g)
 	if err != nil {
 		return store.ReplayResult{}, socketRefusedError(err)
 	}

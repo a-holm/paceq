@@ -504,7 +504,7 @@ func runSchedulesPause(ctx context.Context, env Env, g *globals, out *ui, ref st
 	}
 
 	// Try to pause through the daemon socket when it is running.
-	socketPath, err := daemonSocket(stateDir)
+	socketPath, err := daemonSocket(env, g)
 	if err != nil {
 		return socketRefusedError(err)
 	}
@@ -582,7 +582,7 @@ func runSchedulesResume(ctx context.Context, env Env, g *globals, out *ui, ref s
 	}
 
 	// Try to resume through the daemon socket.
-	socketPath, err := daemonSocket(stateDir)
+	socketPath, err := daemonSocket(env, g)
 	if err != nil {
 		return socketRefusedError(err)
 	}

@@ -77,11 +77,7 @@ func runStatus(ctx context.Context, env Env, g *globals, out *ui, ref string, f 
 // refuses is named on stderr and then read as down too, because a status
 // report that will not print is a worse answer than one that says so.
 func probeDaemon(env Env, g *globals, out *ui) bool {
-	stateDir, err := g.stateDir(env)
-	if err != nil {
-		return false
-	}
-	socketPath, err := daemonSocket(stateDir)
+	socketPath, err := daemonSocket(env, g)
 	if err != nil {
 		fmt.Fprintf(out.err, "paceq: %v\n", err)
 		return false

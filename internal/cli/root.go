@@ -84,6 +84,7 @@ func run(ctx context.Context, env Env, args []string) int {
 type globals struct {
 	output  string
 	db      string
+	socket  string
 	quiet   bool
 	verbose int
 	noColor bool
@@ -135,6 +136,9 @@ func newRoot(env Env) *cobra.Command {
 	flags := root.PersistentFlags()
 	flags.StringVarP(&g.output, "output", "o", "", "text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe)")
 	flags.StringVar(&g.db, "db", "", "state database to use (default: ./"+stateDirName+"/"+store.DatabaseFileName+")")
+	flags.StringVar(&g.socket, "socket", "",
+		"unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/"+socketName+
+			", else <state>/"+socketName+"; "+socketOff+" writes directly even while a daemon runs)")
 	flags.BoolVarP(&g.quiet, "quiet", "q", false, "only report what needs attention")
 	flags.CountVarP(&g.verbose, "verbose", "v", "progress on stderr, repeatable: -v, -vv")
 	flags.BoolVar(&g.noColor, "no-color", false, "no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE)")

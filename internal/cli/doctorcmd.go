@@ -81,7 +81,7 @@ func runDoctor(ctx context.Context, env Env, g *globals, out *ui) error {
 	}
 	report.Findings = append(report.Findings,
 		doctor.Run(ctx, stateDir, doctor.Options{Status: env.Status, Procs: env.Procs, Limits: limits}).Findings...)
-	report.Findings = append(report.Findings, checkDaemonVersion(ctx, stateDir, buildinfo.Get().Version))
+	report.Findings = append(report.Findings, checkDaemonVersion(ctx, env, g, buildinfo.Get().Version))
 	for _, finding := range report.Findings {
 		out.note(2, "%s: %s", finding.Title, finding.Level)
 	}
@@ -154,9 +154,9 @@ func writeDoctorReport(out *ui, report doctor.Report) error {
 // schema the other side may not share, so a mismatch is worth naming before
 // it becomes a confusing answer. No socket at all is the healthy case for a
 // machine that runs only the CLI side.
-func checkDaemonVersion(ctx context.Context, stateDir, cliVersion string) doctor.Finding {
+func checkDaemonVersion(ctx context.Context, env Env, g *globals, cliVersion string) doctor.Finding {
 	const title = "daemon version"
-	socketPath, err := daemonSocket(stateDir)
+	socketPath, err := daemonSocket(env, g)
 	if err != nil {
 		return doctor.Finding{
 			Level:  doctor.Fail,

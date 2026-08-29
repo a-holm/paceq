@@ -38,6 +38,7 @@ Global flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 ### `paceq apply`
@@ -69,6 +70,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 ### `paceq cutover`
@@ -143,6 +145,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 ### `paceq db`
@@ -164,6 +167,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 #### `paceq db compact`
@@ -197,6 +201,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 ### `paceq doctor`
@@ -234,6 +239,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 ### `paceq error`
@@ -269,6 +275,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 ### `paceq exec`
@@ -287,6 +294,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 ### `paceq explain`
@@ -335,6 +343,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 #### `paceq explain job`
@@ -354,6 +363,7 @@ Inherited flags:
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
 | `--since` | `- ` | how far back to look (a duration: 48h, 10m; default 48h) |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 #### `paceq explain run`
@@ -373,6 +383,7 @@ Inherited flags:
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
 | `--since` | `- ` | how far back to look (a duration: 48h, 10m; default 48h) |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 #### `paceq explain schedule`
@@ -392,6 +403,7 @@ Inherited flags:
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
 | `--since` | `- ` | how far back to look (a duration: 48h, 10m; default 48h) |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 #### `paceq explain sensor`
@@ -411,6 +423,7 @@ Inherited flags:
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
 | `--since` | `- ` | how far back to look (a duration: 48h, 10m; default 48h) |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 ### `paceq export`
@@ -432,6 +445,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 #### `paceq export run`
@@ -461,8 +475,8 @@ Inherited flags:
 |---|---|---|
 | `--db` | `- ` | state database to use (default: ./.paceq/state.db) |
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
-| `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 ### `paceq fsck`
@@ -505,6 +519,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 ### `paceq import`
@@ -529,6 +544,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 #### `paceq import crontab`
@@ -591,8 +607,8 @@ Inherited flags:
 |---|---|---|
 | `--db` | `- ` | state database to use (default: ./.paceq/state.db) |
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
-| `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 ### `paceq init`
@@ -619,6 +635,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 ### `paceq install-service`
@@ -650,6 +667,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 ### `paceq logs`
@@ -689,6 +707,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 ### `paceq ls`
@@ -714,6 +733,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 ### `paceq notifications`
@@ -739,6 +759,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 #### `paceq notifications list`
@@ -770,6 +791,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 #### `paceq notifications retry`
@@ -792,6 +814,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 #### `paceq notifications show`
@@ -810,6 +833,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 #### `paceq notifications test`
@@ -833,6 +857,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 ### `paceq prune`
@@ -865,6 +890,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 ### `paceq run`
@@ -914,6 +940,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 ### `paceq runs`
@@ -938,6 +965,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 #### `paceq runs artifacts`
@@ -963,6 +991,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 #### `paceq runs cancel`
@@ -988,6 +1017,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 #### `paceq runs list`
@@ -1021,6 +1051,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 #### `paceq runs replay`
@@ -1058,6 +1089,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 #### `paceq runs retry`
@@ -1096,6 +1128,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 #### `paceq runs show`
@@ -1121,6 +1154,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 ### `paceq schedules`
@@ -1145,6 +1179,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 #### `paceq schedules list`
@@ -1163,6 +1198,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 #### `paceq schedules pause`
@@ -1187,6 +1223,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 #### `paceq schedules preview`
@@ -1218,6 +1255,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 #### `paceq schedules resume`
@@ -1241,6 +1279,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 #### `paceq schedules show`
@@ -1265,6 +1304,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 ### `paceq sensors`
@@ -1290,6 +1330,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 #### `paceq sensors cursor`
@@ -1308,6 +1349,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 ##### `paceq sensors cursor get`
@@ -1326,6 +1368,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 ##### `paceq sensors cursor set`
@@ -1354,6 +1397,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 #### `paceq sensors list`
@@ -1379,6 +1423,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 #### `paceq sensors pause`
@@ -1407,6 +1452,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 #### `paceq sensors reset`
@@ -1443,6 +1489,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 #### `paceq sensors resume`
@@ -1464,6 +1511,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 #### `paceq sensors show`
@@ -1491,6 +1539,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 #### `paceq sensors test`
@@ -1524,6 +1573,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 #### `paceq sensors tick`
@@ -1554,6 +1604,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 ### `paceq serve`
@@ -1663,6 +1714,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 #### `paceq shadow report`
@@ -1703,6 +1755,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 #### `paceq shadow status`
@@ -1725,6 +1778,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 ### `paceq status`
@@ -1770,6 +1824,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 ### `paceq validate`
@@ -1808,6 +1863,7 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 
 ### `paceq version`
@@ -1837,5 +1893,6 @@ Inherited flags:
 | `--no-color` | `- ` | no colour, whatever the terminal says (also NO_COLOR, CLICOLOR_FORCE) |
 | `--output` | `-o` | text or json (default: PACEQ_OUTPUT, else text at a terminal, json in a pipe) |
 | `--quiet` | `-q` | only report what needs attention |
+| `--socket` | `- ` | unix socket of the daemon (default: PACEQ_SOCKET, else $XDG_RUNTIME_DIR/paceq.sock, else <state>/paceq.sock; none writes directly even while a daemon runs) |
 | `--verbose` | `-v` | progress on stderr, repeatable: -v, -vv |
 

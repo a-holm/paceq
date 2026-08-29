@@ -118,15 +118,11 @@ func runExplain(ctx context.Context, env Env, g *globals, out *ui, noun, ref str
 		return explainResolveError(err)
 	}
 
-	daemonUp := false
-	stateDir, dirErr := g.stateDir(env)
-	if dirErr == nil {
-		socketPath, socketErr := daemonSocket(stateDir)
-		if socketErr != nil {
-			fmt.Fprintf(out.err, "paceq: %v\n", socketErr)
-		}
-		daemonUp = daemonResponds(socketPath)
+	socketPath, socketErr := daemonSocket(env, g)
+	if socketErr != nil {
+		fmt.Fprintf(out.err, "paceq: %v\n", socketErr)
 	}
+	daemonUp := daemonResponds(socketPath)
 	if !daemonUp {
 		// A warning, never data: stdout stays clean for pipes either way.
 		fmt.Fprintln(out.err, "paceq: (daemon down - answering from the state database, read-only)")

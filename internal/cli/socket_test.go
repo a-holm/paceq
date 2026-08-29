@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -114,11 +115,40 @@ func TestPeerVerdictJudgesWhoIsActuallyListening(t *testing.T) {
 	}
 }
 
+// TestSocketResolutionFollowsTheDocumentedOrder walks the axis once: the
+// --socket flag, then PACEQ_SOCKET, then $XDG_RUNTIME_DIR/paceq.sock, then the
+// state directory as the last resort. none disables the socket from either
+// place that can name it.
+func TestSocketResolutionFollowsTheDocumentedOrder(t *testing.T) {
+	cases := []struct {
+		name     string
+		flag     string
+		environ  map[string]string
+		wantPath string
+		wantOff  bool
+	}{
+		{"nothing said falls to the state directory", "", nil, "/state/paceq.sock", false},
+		{"the flag wins over everything", "/flag/s.sock", map[string]string{"PACEQ_SOCKET": "/env/e.sock", "XDG_RUNTIME_DIR": "/xdg"}, "/flag/s.sock", false},
+		{"none on the flag forces direct even with an env path", "none", map[string]string{"PACEQ_SOCKET": "/env/e.sock"}, "", true},
+		{"the env names the socket without a flag", "", map[string]string{"PACEQ_SOCKET": "/env/e.sock", "XDG_RUNTIME_DIR": "/xdg"}, "/env/e.sock", false},
+		{"the env can also say none", "", map[string]string{"PACEQ_SOCKET": "none"}, "", true},
+		{"the runtime directory is next", "", map[string]string{"XDG_RUNTIME_DIR": "/xdg"}, "/xdg/paceq.sock", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveSocket(&globals{socket: tc.flag}, testEnv("", tc.environ), "/state")
+			if got.off != tc.wantOff || got.path != tc.wantPath {
+				t.Fatalf("resolveSocket = %+v, want path %q off=%v", got, tc.wantPath, tc.wantOff)
+			}
+		})
+	}
+}
+
 // TestDaemonSocketIsQuietWhenNothingIsThere: an absent socket is the other half
 // of the dual-mode design, not a failure. It must never become a refusal, or
 // every command on a machine without a daemon would stop working.
 func TestDaemonSocketIsQuietWhenNothingIsThere(t *testing.T) {
-	path, err := daemonSocket(t.TempDir())
+	path, err := daemonSocket(testEnv(t.TempDir(), nil), &globals{})
 	if err != nil {
 		t.Fatalf("an empty state directory refused the command: %v", err)
 	}
@@ -128,12 +158,12 @@ func TestDaemonSocketIsQuietWhenNothingIsThere(t *testing.T) {
 }
 
 // TestDaemonSocketAcceptsTheDaemonsOwnSocket is the guard against a check that
-// is satisfied by refusing everything.
+// is satisfied by refusing everything. It goes through the last resort of the
+// resolution order, which is where a project's own daemon puts its socket.
 func TestDaemonSocketAcceptsTheDaemonsOwnSocket(t *testing.T) {
-	stateDir := t.TempDir()
-	plantSocket(t, filepath.Join(stateDir, socketName), 0o600)
+	dir := newStateDirWithSocket(t, 0o600)
 
-	path, err := daemonSocket(stateDir)
+	path, err := daemonSocket(testEnv(dir, nil), &globals{})
 	if err != nil {
 		t.Fatalf("the daemon's own socket was refused: %v", err)
 	}
@@ -146,11 +176,10 @@ func TestDaemonSocketAcceptsTheDaemonsOwnSocket(t *testing.T) {
 // command with the path and the mode in the message, and the exit code a
 // script branches on is the validation one.
 func TestDaemonSocketRefusesAPlantedSocket(t *testing.T) {
-	stateDir := t.TempDir()
-	socketPath := filepath.Join(stateDir, socketName)
-	plantSocket(t, socketPath, 0o777)
+	dir := newStateDirWithSocket(t, 0o777)
+	socketPath := filepath.Join(dir, stateDirName, socketName)
 
-	path, err := daemonSocket(stateDir)
+	path, err := daemonSocket(testEnv(dir, nil), &globals{})
 	if err == nil {
 		t.Fatalf("a world writable socket was accepted as %q", path)
 	}
@@ -169,12 +198,7 @@ func TestDaemonSocketRefusesAPlantedSocket(t *testing.T) {
 // refusal: the command has to stop, because a silent change of transport is
 // how an attempt to answer for the daemon goes unnoticed.
 func TestARefusedSocketDoesNotFallBackToTheDirectPath(t *testing.T) {
-	dir := t.TempDir()
-	stateDir := filepath.Join(dir, stateDirName)
-	if err := os.MkdirAll(stateDir, 0o700); err != nil {
-		t.Fatalf("create the state directory: %v", err)
-	}
-	plantSocket(t, filepath.Join(stateDir, socketName), 0o777)
+	dir := newStateDirWithSocket(t, 0o777)
 
 	res := runCLI(t, dir, nil, "notifications", "retry", "1")
 	if res.code != ExitValidation {
@@ -213,4 +237,24 @@ func TestEveryUnixDialGoesThroughTheCheckedHelper(t *testing.T) {
 			}
 		}
 	}
+}
+
+// newStateDirWithSocket gives back a project directory whose state directory
+// holds one listening socket at the mode the test wants judged.
+func newStateDirWithSocket(t *testing.T, mode os.FileMode) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, stateDirName)
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatalf("create the state directory: %v", err)
+	}
+	plantSocket(t, filepath.Join(stateDir, socketName), mode)
+	return dir
+}
+
+// testEnv is an Env holding only what a test puts in it, so a socket path set
+// on the developer's machine cannot change what resolution answers.
+func testEnv(dir string, environ map[string]string) Env {
+	return Env{Stdout: io.Discard, Stderr: io.Discard, Dir: dir, Getenv: lookup(environ)}
 }

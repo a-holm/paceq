@@ -119,9 +119,13 @@ func setupScriptEnv(e *testscript.Env) error {
 // environment is not visible here, so the determinism layer is applied
 // again, and the caller's KEY=VALUE overrides go last.
 func paceqEnv(overrides []string) ([]string, error) {
+	// PACEQ_SOCKET and XDG_RUNTIME_DIR come before the state directory in
+	// socket resolution, so a developer's login session would otherwise
+	// decide which socket the commands under test dial.
 	drop := map[string]bool{
 		"PULSEQ_FAKE_CLOCK": true, "LC_ALL": true, "NO_COLOR": true,
 		"CLICOLOR_FORCE": true, "COLUMNS": true,
+		"PACEQ_SOCKET": true, "XDG_RUNTIME_DIR": true,
 	}
 	var env []string
 	for _, entry := range os.Environ() {

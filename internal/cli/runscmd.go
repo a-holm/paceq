@@ -452,7 +452,7 @@ func runRunsCancel(ctx context.Context, env Env, g *globals, out *ui, runArg str
 	actor := cliActor()
 
 	// Try through the daemon socket first.
-	socketPath, err := daemonSocket(stateDir)
+	socketPath, err := daemonSocket(env, g)
 	if err != nil {
 		return socketRefusedError(err)
 	}

@@ -167,7 +167,7 @@ func unknownOutcomeFacts(detail store.RunDetail) []string {
 // daemon is an answer, not an outage: it is returned as is instead of being
 // retried against a database the daemon holds.
 func retryRunOnce(ctx context.Context, env Env, g *globals, stateDir, runID string, opts store.ReopenOpts) (store.ReopenResult, error) {
-	socketPath, err := daemonSocket(stateDir)
+	socketPath, err := daemonSocket(env, g)
 	if err != nil {
 		return store.ReopenResult{}, socketRefusedError(err)
 	}
