@@ -34,11 +34,22 @@ import (
 // Process is one candidate the scanner reports: a live process whose environ
 // carried PACEQ_RUN_ID. Everything else about it was read from /proc at scan
 // time.
+type Process struct {
+	PID        int
+	PGID       int
+	RunID      string // the value of PACEQ_RUN_ID in its environment
+	StartTicks int64  // field 22 of /proc/<pid>/stat, when TicksOK
+	TicksOK    bool
+}
+
 // ScanProcs is the exported probe doctor's orphan check uses (M6-06): every
-// live process this user can read whose environment carries PACEQ_RUN_ID. It
-// is the same scan the startup sweep walks, so doctor and reconciliation can
-// never disagree about what a live process is. Off Linux it answers "nothing
-// scannable" by being nil-backed, exactly like the startup sweep.
+// live process this user can read whose environment carries PACEQ_RUN_ID. The
+// walk is machine wide, because a job process records nothing about which
+// installation started it, so other installations' processes come back too.
+// Ownership is decided after the scan, by Ownership over this database's
+// attempt baselines, and doctor and the sweep put this one scan through that
+// one predicate. Off Linux it answers "nothing scannable" by being nil-backed,
+// exactly like the startup sweep.
 func ScanProcs() ([]Process, error) {
 	if defaultScan == nil {
 		return nil, nil
@@ -46,12 +57,67 @@ func ScanProcs() ([]Process, error) {
 	return defaultScan()
 }
 
-type Process struct {
-	PID        int
-	PGID       int
-	RunID      string // the value of PACEQ_RUN_ID in its environment
-	StartTicks int64  // field 22 of /proc/<pid>/stat, when TicksOK
-	TicksOK    bool
+// Claim is what this database's attempt baselines say about a scanned
+// process: the sweep's refusal rules as an answer rather than as control
+// flow, so a report can name exactly what the sweep would act on.
+type Claim int
+
+const (
+	// ClaimForeign is a pid no attempt of ours ever held under this run.
+	// Another installation on this machine started it.
+	ClaimForeign Claim = iota
+	// ClaimMismatch is a pid a baseline of ours holds whose /proc start
+	// ticks disagree with it: the identity on file is not the identity on
+	// the machine, so the process is not ours either.
+	ClaimMismatch
+	// ClaimRunning is a pid an active attempt names, start ticks and all.
+	ClaimRunning
+	// ClaimOrphan is ours, and no active attempt names it.
+	ClaimOrphan
+)
+
+// Ownership answers whether this installation started a scanned process and
+// whether anything of ours still owns it. The startup sweep and doctor's
+// orphan check both classify through it, which is what keeps a report from
+// advising a kill the sweep would refuse to make.
+type Ownership struct {
+	// runID -> pid -> the start ticks recorded when we spawned it.
+	known  map[string]map[int]int64
+	active map[string]int64
+}
+
+// NewOwnership builds the predicate from a store's KnownAttempts, every
+// baseline ever recorded, and its ActiveAttempts, the baselines whose run and
+// step are still running.
+func NewOwnership(known, active []store.AttemptProcess) *Ownership {
+	o := &Ownership{known: map[string]map[int]int64{}, active: map[string]int64{}}
+	for _, k := range known {
+		if o.known[k.RunID] == nil {
+			o.known[k.RunID] = map[int]int64{}
+		}
+		o.known[k.RunID][k.PID] = k.StartTicks
+	}
+	for _, a := range active {
+		o.active[attemptKey(a.RunID, a.PID)] = a.StartTicks
+	}
+	return o
+}
+
+// Classify grades one scanned process. The baseline ticks come back with the
+// claim so a caller can say what the machine was compared against; they are
+// zero for a process no baseline holds.
+func (o *Ownership) Classify(p Process) (Claim, int64) {
+	baseline, ok := o.known[p.RunID][p.PID]
+	if !ok {
+		return ClaimForeign, 0
+	}
+	if !p.TicksOK || p.StartTicks != baseline {
+		return ClaimMismatch, baseline
+	}
+	if act, ok := o.active[attemptKey(p.RunID, p.PID)]; ok && act == p.StartTicks {
+		return ClaimRunning, baseline
+	}
+	return ClaimOrphan, baseline
 }
 
 // Signaller sends what the sweep has to send, addressed to groups.
@@ -94,18 +160,7 @@ func sweepProcesses(ctx context.Context, st *store.Store, opts *Options) error {
 		return fmt.Errorf("read the active attempts: %w", err)
 	}
 
-	// runID -> pid -> the start ticks recorded when we spawned it.
-	known := map[string]map[int]int64{}
-	for _, k := range knownRows {
-		if known[k.RunID] == nil {
-			known[k.RunID] = map[int]int64{}
-		}
-		known[k.RunID][k.PID] = k.StartTicks
-	}
-	active := map[string]int64{}
-	for _, a := range activeRows {
-		active[attemptKey(a.RunID, a.PID)] = a.StartTicks
-	}
+	own := NewOwnership(knownRows, activeRows)
 
 	signals := opts.Signals
 	if signals == nil {
@@ -117,11 +172,13 @@ func sweepProcesses(ctx context.Context, st *store.Store, opts *Options) error {
 		if p.PID == opts.pid() || p.PGID == opts.pgid() {
 			continue // never our own blood
 		}
-		baseline, ok := known[p.RunID][p.PID]
-		if !ok {
+		claim, baseline := own.Classify(p)
+		switch claim {
+		case ClaimForeign:
 			continue // not a pid any attempt of ours ever held
-		}
-		if !p.TicksOK || p.StartTicks != baseline {
+		case ClaimRunning:
+			continue // a legitimate worker of a running attempt
+		case ClaimMismatch:
 			// AC6: the identity on file does not match the machine. Either
 			// the baseline was tampered with or the pid was recycled; both
 			// refuse the kill.
@@ -129,9 +186,6 @@ func sweepProcesses(ctx context.Context, st *store.Store, opts *Options) error {
 				"pid", p.PID, "run", p.RunID,
 				"baseline_ticks", baseline, "seen_ticks", p.StartTicks)
 			continue
-		}
-		if act, ok := active[attemptKey(p.RunID, p.PID)]; ok && act == p.StartTicks {
-			continue // a legitimate worker of a running attempt
 		}
 
 		// Re-read right before shooting: if this pid died and was recycled

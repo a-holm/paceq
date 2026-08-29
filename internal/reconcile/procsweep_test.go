@@ -274,6 +274,53 @@ func TestTheSweepKillsOnlyWhatItCanProve(t *testing.T) {
 	})
 }
 
+// TestOwnershipGradesEveryProcessTheSweepCanMeet pins the predicate itself
+// (#189). The sweep and doctor's orphan check both classify through it, so
+// each case here is one branch of both, and neither consumer can drift into
+// its own idea of what "ours" means without changing this table.
+func TestOwnershipGradesEveryProcessTheSweepCanMeet(t *testing.T) {
+	worker := store.AttemptProcess{RunID: "01J0OURRUN0000000000000AA", Step: "work", PID: 101, StartTicks: 700}
+	leftover := store.AttemptProcess{RunID: "01J0OURRUN0000000000000BB", Step: "work", PID: 102, StartTicks: 800}
+	own := NewOwnership([]store.AttemptProcess{worker, leftover}, []store.AttemptProcess{worker})
+
+	proc := func(a store.AttemptProcess) Process {
+		return Process{PID: a.PID, PGID: a.PID, RunID: a.RunID, StartTicks: a.StartTicks, TicksOK: true}
+	}
+	recycled := proc(leftover)
+	recycled.StartTicks++
+	unreadable := proc(leftover)
+	unreadable.TicksOK = false
+	stranger := proc(worker)
+	stranger.RunID = "01J0ANOTHERINSTALLATION00"
+	unheldPID := proc(worker)
+	unheldPID.PID = 999
+
+	cases := []struct {
+		name     string
+		proc     Process
+		claim    Claim
+		baseline int64
+	}{
+		{"a worker an active attempt names", proc(worker), ClaimRunning, worker.StartTicks},
+		{"a pid of ours nothing active names", proc(leftover), ClaimOrphan, leftover.StartTicks},
+		{"another installation's run", stranger, ClaimForeign, 0},
+		{"our run id on a pid we never held", unheldPID, ClaimForeign, 0},
+		{"a pid recycled since the baseline", recycled, ClaimMismatch, leftover.StartTicks},
+		{"start ticks that could not be read", unreadable, ClaimMismatch, leftover.StartTicks},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			claim, baseline := own.Classify(c.proc)
+			if claim != c.claim {
+				t.Errorf("claim is %d, want %d", claim, c.claim)
+			}
+			if baseline != c.baseline {
+				t.Errorf("baseline ticks are %d, want %d", baseline, c.baseline)
+			}
+		})
+	}
+}
+
 // TestEscalationFiresOnTheCallerClock keeps the timing promise visible: the
 // timer belongs to the clock, and inside a synctest bubble the grace passes
 // only when this test says so.
