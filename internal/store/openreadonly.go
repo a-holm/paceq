@@ -43,7 +43,7 @@ func OpenReadOnly(ctx context.Context, path string, opt Options) (*Store, error)
 		clk = clock.System()
 	}
 	s := &Store{r: r, path: path, clk: clk, bootID: readBootID}
-	if err := verifyReaderOnly(ctx, s.r, syncMode); err != nil {
+	if err := verifyReaderOnly(ctx, s.r, s.path, syncMode); err != nil {
 		_ = s.Close()
 		return nil, err
 	}
@@ -52,6 +52,6 @@ func OpenReadOnly(ctx context.Context, path string, opt Options) (*Store, error)
 
 // verifyReaderOnly checks every reader pragma. The writer half of
 // verifyPragmas does not apply: there is no writer to verify.
-func verifyReaderOnly(ctx context.Context, db *sql.DB, sync string) error {
-	return verifyPool(ctx, db, "reader", readerSpecs(sync))
+func verifyReaderOnly(ctx context.Context, db *sql.DB, path, sync string) error {
+	return verifyPool(ctx, db, "reader", path, readerSpecs(sync))
 }

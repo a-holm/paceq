@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -215,22 +216,26 @@ func Open(ctx context.Context, path string, opt Options) (*Store, error) {
 // driver ignored the DSN, a driver swap reads _pragma differently, or the file
 // is in a journal mode this design does not support.
 func (s *Store) verifyPragmas(ctx context.Context, sync string) error {
-	if err := verifyPool(ctx, s.w, "writer", writerSpecs(sync)); err != nil {
+	if err := verifyPool(ctx, s.w, "writer", s.path, writerSpecs(sync)); err != nil {
 		return err
 	}
-	return verifyPool(ctx, s.r, "reader", readerSpecs(sync))
+	return verifyPool(ctx, s.r, "reader", s.path, readerSpecs(sync))
 }
 
 // verifyPool checks every spec on a single connection of the pool. Pragmas are
 // per connection, so reading them from one connection at a time is the only
-// meaningful check.
-func verifyPool(ctx context.Context, db *sql.DB, pool string, specs []pragmaSpec) error {
+// meaningful check. The file the connection holds is checked first: a pragma
+// read from the wrong database proves nothing about the right one.
+func verifyPool(ctx context.Context, db *sql.DB, pool, path string, specs []pragmaSpec) error {
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return fmt.Errorf("%s pool: take connection: %w", pool, err)
 	}
 	defer func() { _ = conn.Close() }()
 
+	if err := verifyFile(ctx, conn, pool, path); err != nil {
+		return err
+	}
 	for _, spec := range specs {
 		var got string
 		if err := conn.QueryRowContext(ctx, "PRAGMA "+spec.name).Scan(&got); err != nil {
@@ -241,6 +246,36 @@ func verifyPool(ctx context.Context, db *sql.DB, pool string, specs []pragmaSpec
 				"database file does not honour the requested setting, refusing to start",
 				pool, spec.name, got, spec.want)
 		}
+	}
+	return nil
+}
+
+// verifyFile refuses a connection that holds a database other than the file it
+// was asked for. The connection string is a URI, and a mistake in rendering one
+// does not fail: SQLite opens the name the URI actually spells and creates it if
+// it has to. Identity is compared with os.SameFile, so a symlink, a relative
+// path or a "." element still counts as the same database.
+func verifyFile(ctx context.Context, conn *sql.Conn, pool, path string) error {
+	var seq int
+	var name string
+	var file sql.NullString
+	if err := conn.QueryRowContext(ctx, "PRAGMA database_list").Scan(&seq, &name, &file); err != nil {
+		return fmt.Errorf("%s pool: read PRAGMA database_list: %w", pool, err)
+	}
+	if !file.Valid || file.String == "" {
+		return fmt.Errorf("%s pool: %s opened a temporary or in-memory database rather than a file, "+
+			"refusing to start", pool, path)
+	}
+	want, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("%s pool: stat %s: %w", pool, path, err)
+	}
+	got, err := os.Stat(file.String)
+	if err != nil {
+		return fmt.Errorf("%s pool: stat the database that was opened, %s: %w", pool, file.String, err)
+	}
+	if !os.SameFile(want, got) {
+		return fmt.Errorf("%s pool: asked for %s but opened %s: refusing to start", pool, path, file.String)
 	}
 	return nil
 }
