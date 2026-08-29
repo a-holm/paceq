@@ -109,6 +109,17 @@ func runTable() []runCase {
 			effects: with(kinds(model.EffectSetFinished, model.EffectReleaseLease), emit("run.failed")),
 		},
 		{
+			name:  "a run that finishes over a cancelled step is cancelled",
+			from:  model.RunRunning,
+			event: model.EvAllStepsDone,
+			guards: model.Guards{
+				Now: now, LeaseValid: true, AllStepsTerminal: true,
+				AnyStepCancelled: true, ReasonCode: reasonCode,
+			},
+			want:    model.RunCancelled,
+			effects: with(kinds(model.EffectSetFinished, model.EffectReleaseLease), emit("run.cancelled")),
+		},
+		{
 			name:   "a run cannot finish while a step of it is still active",
 			from:   model.RunRunning,
 			event:  model.EvAllStepsDone,

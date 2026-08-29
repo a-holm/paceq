@@ -11,7 +11,7 @@ A cross table cell holds the states an event can lead to, over every combination
 | state | claim | deferred | step_started | step_succeeded | step_failed | upstream_failed | all_steps_done | cancel_observed | lease_expired | operator_retry | shutdown_drain |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | queued | running, cancelled | queued | - | - | - | - | - | - | - | - | - |
-| running | - | - | - | - | - | - | succeeded, failed | succeeded, failed, cancelled | queued, failed | - | queued |
+| running | - | - | - | - | - | - | succeeded, failed, cancelled | succeeded, failed, cancelled | queued, failed | - | queued |
 | succeeded | - | - | - | - | - | - | - | - | - | queued | - |
 | failed | - | - | - | - | - | - | - | - | - | queued | - |
 | cancelled | - | - | - | - | - | - | - | - | - | queued | - |
@@ -27,6 +27,7 @@ A cross table cell holds the states an event can lead to, over every combination
 | queued | deferred | queued | a deferral records why and stays queued | set_available_at, set_defer_reason(concurrency_limit), emit(run.deferred) |
 | running | all_steps_done | succeeded | a run whose steps all succeeded succeeds | set_finished, release_lease, emit(run.succeeded) |
 | running | all_steps_done | failed | a run with a failed step fails | set_finished, release_lease, emit(run.failed) |
+| running | all_steps_done | cancelled | a run that finishes over a cancelled step is cancelled | set_finished, release_lease, emit(run.cancelled) |
 | running | cancel_observed | cancelled | an observed cancellation kills the process group and finishes the run | kill_process_group, set_finished, release_lease, emit(run.cancelled) |
 | running | cancel_observed | failed | a cancellation that arrives after a failure records the failure | kill_process_group, set_finished, release_lease, emit(run.failed) |
 | running | cancel_observed | succeeded | a cancellation that arrives after the last step succeeded records the success | kill_process_group, set_finished, release_lease, emit(run.succeeded) |

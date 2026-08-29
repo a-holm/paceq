@@ -24,7 +24,8 @@ import (
 //   - I6  One tick per schedule slot.
 //   - I8  A step that is running has every need succeeded.
 //   - I9  The dependency graph is acyclic and names existing steps.
-//   - I10 The run's stored state is what its steps aggregate to.
+//   - I10 The run's stored state is what its steps aggregate to, unless the
+//         run itself failed for a reason no step can express.
 //   - I11 The fencing token never falls: the lease_epoch values recorded in
 //         a run's event history are non-decreasing and end at the row's own
 //         epoch.
@@ -75,7 +76,7 @@ WHERE s.state = 'running'
 		WHERE sd.run_id = s.run_id AND sd.step_name = s.name
 			AND need.state <> 'succeeded')`
 
-	fsckI10SQL = `SELECT r.id, r.state, COALESCE(s.state, '')
+	fsckI10SQL = `SELECT r.id, r.state, COALESCE(r.reason_code, ''), COALESCE(s.state, '')
 FROM runs r LEFT JOIN steps s ON s.run_id = r.id ORDER BY r.id`
 
 	fsckI13SQL = `SELECT 'run', id FROM runs
@@ -321,11 +322,12 @@ func (s *Store) Fsck(ctx context.Context) ([]Violation, error) {
 		return nil, fmt.Errorf("fsck I8: %w", err)
 	}
 
-	// I10: the stored state is the aggregate of the steps, decided by the
-	// same model function the engine finishes runs with. One truth, two
-	// users; if they disagree, a row was written behind both. The sweep
-	// itself is the explicit checker the crash battery also asserts on,
-	// so this check and that battery cannot drift apart.
+	// I10: the stored state is the aggregate of the steps and of the run's
+	// own reason code, decided by the same model function every writer of a
+	// terminal state calls. One truth, two users; if they disagree, a row
+	// was written behind both. The sweep itself is the explicit checker the
+	// crash battery also asserts on, so this check and that battery cannot
+	// drift apart.
 	qctx, qcancel := fsckBounded(ctx)
 	mismatches, err := s.RunAggregateMismatches(qctx)
 	qcancel()

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/a-holm/paceq/internal/model"
+	"github.com/a-holm/paceq/internal/reason"
 )
 
 // AggregateMismatch names one run whose stored state disagrees with what its
@@ -32,19 +33,20 @@ func (s *Store) RunAggregateMismatches(ctx context.Context) ([]AggregateMismatch
 		return nil, fmt.Errorf("sweep for aggregate mismatches: %w", err)
 	}
 	type runSteps struct {
-		state string
-		steps []model.StepState
+		state  string
+		reason string
+		steps  []model.StepState
 	}
 	byRun := map[string]*runSteps{}
 	for rows.Next() {
-		var id, runState, stepState string
-		if err := rows.Scan(&id, &runState, &stepState); err != nil {
+		var id, runState, runReason, stepState string
+		if err := rows.Scan(&id, &runState, &runReason, &stepState); err != nil {
 			_ = rows.Close()
 			return nil, fmt.Errorf("sweep for aggregate mismatches: %w", err)
 		}
 		r, ok := byRun[id]
 		if !ok {
-			r = &runSteps{state: runState}
+			r = &runSteps{state: runState, reason: runReason}
 			byRun[id] = r
 		}
 		if stepState != "" {
@@ -61,7 +63,7 @@ func (s *Store) RunAggregateMismatches(ctx context.Context) ([]AggregateMismatch
 
 	var out []AggregateMismatch
 	for id, r := range byRun {
-		want := model.RunAggregate(r.steps)
+		want := model.RunAggregate(r.steps, runLevelFailure(r.reason))
 		if string(want) != r.state && !unclaimedWork(want, r.state) {
 			out = append(out, AggregateMismatch{
 				RunID:     id,
@@ -71,4 +73,16 @@ func (s *Store) RunAggregateMismatches(ctx context.Context) ([]AggregateMismatch
 		}
 	}
 	return out, nil
+}
+
+// runLevelFailure names the two reason codes that mean a run failed for
+// something no step can express: the reaper quarantined it, or its attempt
+// budget ran out. reapToFailedTx is the only writer of either, so the pair is
+// exact for every row this code writes.
+//
+// A run stamped RUN_LEGACY_UNSPECIFIED by fsck --repair reads false here even
+// if it failed at run level, because the stamp erased which kind it was. That
+// is a pre-catalogue row, and it is reported rather than excused.
+func runLevelFailure(code string) bool {
+	return code == string(reason.RUNPoisoned) || code == string(reason.RUNOrphanedReconciled)
 }

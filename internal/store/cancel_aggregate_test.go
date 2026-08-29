@@ -169,7 +169,7 @@ func assertRunMatchesItsSteps(t *testing.T, ctx context.Context, s *store.Store,
 		}
 		states = append(states, parsed)
 	}
-	if agg := model.RunAggregate(states); agg != want {
+	if agg := model.RunAggregate(states, false); agg != want {
 		t.Errorf("the steps aggregate to %s, want %s (states %v)", agg, want, states)
 	}
 

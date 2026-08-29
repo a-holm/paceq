@@ -80,10 +80,10 @@ func NextRunState(cur RunState, ev Event, g Guards) (RunState, []Effect, error) 
 			act(EffectSetAvailableAt), deferReason(g.DeferReason), emit("run.deferred")), nil
 
 	case cur == RunRunning && ev == EvAllStepsDone:
-		next, name := RunSucceeded, "run.succeeded"
-		if g.AnyStepFailed {
-			next, name = RunFailed, "run.failed"
-		}
+		// The same verdict the cancel arm takes. A finish that ranked its
+		// own way could write failed over steps that only cancelled, which
+		// is what I10 then reports and nothing ever repairs (#188).
+		next, name := TerminalVerdict(g)
 		if !g.LeaseValid {
 			return cur, nil, GuardError{From: cur, Event: ev, To: next, Want: ErrStaleLease}
 		}
@@ -102,7 +102,7 @@ func NextRunState(cur RunState, ev Event, g Guards) (RunState, []Effect, error) 
 		// failed and was then cancelled still failed, and a run whose steps
 		// all succeeded succeeded, however late the cancel arrived. The
 		// request stays on the row either way.
-		next, name := CancelVerdict(g)
+		next, name := TerminalVerdict(g)
 		if !g.LeaseValid {
 			return cur, nil, GuardError{From: cur, Event: ev, To: next, Want: ErrStaleLease}
 		}
@@ -168,13 +168,16 @@ func requireReason(from State, ev Event, to State, g Guards) error {
 	return GuardError{From: from, Event: ev, To: to, Want: ErrMissingReasonCode}
 }
 
-// CancelVerdict ranks a cancelled run's closed-out steps in the same order
-// RunAggregate does, from the two facts the guards carry: a failure outranks a
-// cancellation, and a cancellation outranks the plain success of steps that
-// were all done before the cancel landed. Keeping one order in two places is
-// what makes I10 hold without the machine reading a step row, and
-// TestCancelVerdictMatchesRunAggregate proves the two stay in step.
-func CancelVerdict(g Guards) (RunState, string) {
+// TerminalVerdict ranks a run's closed-out steps in the same order RunAggregate
+// does, from the two facts the guards carry: a failure outranks a cancellation,
+// and a cancellation outranks the plain success of steps that were all done
+// before the cancel landed. Both endings take it, the finish and the cancel, so
+// the machine holds one order rather than one per arm.
+//
+// Keeping that order the same as RunAggregate's is what makes I10 hold without
+// the machine reading a step row. TestTerminalVerdictMatchesRunAggregate proves
+// the two stay in step.
+func TerminalVerdict(g Guards) (RunState, string) {
 	switch {
 	case g.AnyStepFailed:
 		return RunFailed, "run.failed"
