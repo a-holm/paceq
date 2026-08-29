@@ -151,7 +151,7 @@ func seedStatusPerfDataset(t *testing.T, dbPath string) {
 		t.Fatalf("close after seeding jobs: %v", err)
 	}
 
-	db, err := sql.Open(driverName, dbPath)
+	db, err := sql.Open(driverName, testDSN(t, dbPath, "mode=rwc"))
 	if err != nil {
 		t.Fatalf("open the seeding database: %v", err)
 	}

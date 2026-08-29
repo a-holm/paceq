@@ -15,6 +15,20 @@ func tempPath(t *testing.T) string {
 	return filepath.Join(t.TempDir(), "state.db")
 }
 
+// testDSN renders a connection string for the tests that open a pool of their
+// own instead of going through Open. It goes through dsn, so a tempdir whose
+// name carries a # or a ? still opens the file the test named. params is
+// everything that would follow the ? in a hand-written DSN.
+func testDSN(t *testing.T, path, params string) string {
+	t.Helper()
+
+	got, err := dsn(path, params, nil)
+	if err != nil {
+		t.Fatalf("dsn(%q): %v", path, err)
+	}
+	return got
+}
+
 func TestOpenCreatesTheDatabaseFile(t *testing.T) {
 	path := tempPath(t)
 

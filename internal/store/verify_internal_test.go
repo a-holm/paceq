@@ -11,7 +11,7 @@ import (
 
 func TestVerifyPoolNamesTheMismatch(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
-	db, err := sql.Open(driverName, "file:"+path+"?_pragma=journal_mode(DELETE)&_pragma=foreign_keys(OFF)")
+	db, err := sql.Open(driverName, testDSN(t, path, "_pragma=journal_mode(DELETE)&_pragma=foreign_keys(OFF)"))
 	if err != nil {
 		t.Fatalf("open raw pool: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestVerifyFileRefusesAnotherDatabase(t *testing.T) {
 	opened := filepath.Join(root, "opened.db")
 	asked := filepath.Join(root, "asked.db")
 
-	db, err := sql.Open(driverName, "file:"+opened)
+	db, err := sql.Open(driverName, testDSN(t, opened, "mode=rwc"))
 	if err != nil {
 		t.Fatalf("open raw pool: %v", err)
 	}
