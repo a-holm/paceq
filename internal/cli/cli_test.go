@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/a-holm/paceq/internal/doctor"
+	"github.com/a-holm/paceq/internal/reconcile"
 )
 
 // result is one command run: what it wrote where, and what the shell would see.
@@ -46,9 +47,11 @@ func lookup(environ map[string]string) func(string) string {
 	return func(name string) string { return environ[name] }
 }
 
-// runCLIWithStatus runs the command line with a planted process sandbox status,
-// so doctor answers independently of the machine the test runs on.
-func runCLIWithStatus(t *testing.T, dir string, status doctor.StatusReader, args ...string) result {
+// runCLIWithDoctorEdges runs the command line with doctor's two machine
+// reading edges planted, so a report answers independently of the machine the
+// test runs on: its sandbox configuration, and whatever else on the box
+// happens to carry PACEQ_RUN_ID. A nil edge reads the machine.
+func runCLIWithDoctorEdges(t *testing.T, dir string, status doctor.StatusReader, procs doctor.ProcLister, args ...string) result {
 	t.Helper()
 
 	var stdout, stderr bytes.Buffer
@@ -58,6 +61,7 @@ func runCLIWithStatus(t *testing.T, dir string, status doctor.StatusReader, args
 		Dir:    dir,
 		Getenv: lookup(nil),
 		Status: status,
+		Procs:  procs,
 	}
 	code := run(context.Background(), env, args)
 	return result{code: code, stdout: stdout.String(), stderr: stderr.String()}
@@ -68,6 +72,17 @@ func runCLIWithStatus(t *testing.T, dir string, status doctor.StatusReader, args
 func sandboxedCLIStatus() doctor.StatusReader {
 	return func() (doctor.ProcessStatus, error) {
 		return doctor.ProcessStatus{NoNewPrivs: 1, Seccomp: 2, CapEff: "0000000000000000"}, nil
+	}
+}
+
+// otherInstallationsJob is a live job process a second paceq on this machine
+// started: it carries PACEQ_RUN_ID, and this installation's attempt baselines
+// have never heard of it.
+func otherInstallationsJob() doctor.ProcLister {
+	return func() ([]reconcile.Process, error) {
+		return []reconcile.Process{
+			{PID: 2107018, PGID: 2107018, RunID: "01M17NNQ5Y3EXTKHX9TFCNBZ2J", StartTicks: 900, TicksOK: true},
+		}, nil
 	}
 }
 

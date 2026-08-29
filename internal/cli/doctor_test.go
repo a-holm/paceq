@@ -2,25 +2,28 @@ package cli
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/a-holm/paceq/internal/store"
 )
 
 // TestInitThenDoctorIsClean is the end to end promise of M0: what init creates,
-// doctor approves of. It plants a hardened sandbox status so the promise holds
-// on a development machine that runs the sandboxless unit: the checks it
-// approves of are the ones about the state init created, not the machine's own
-// sandbox config.
+// doctor approves of. Both machine reading edges are planted, so the promise
+// holds on a development machine that runs the sandboxless unit and on one
+// where another paceq is running jobs: the checks it approves of are the ones
+// about the state init created.
 func TestInitThenDoctorIsClean(t *testing.T) {
 	dir := t.TempDir()
 	if code := runCLI(t, dir, nil, "init").code; code != ExitOK {
 		t.Fatalf("paceq init = %d, want %d", code, ExitOK)
 	}
 
-	got := runCLIWithStatus(t, dir, sandboxedCLIStatus(), "doctor")
+	got := runCLIWithDoctorEdges(t, dir, sandboxedCLIStatus(), otherInstallationsJob(), "doctor")
 
 	if got.code != ExitOK {
 		t.Fatalf("paceq doctor = %d, want %d\n%s%s", got.code, ExitOK, got.stdout, got.stderr)
@@ -41,6 +44,48 @@ func TestInitThenDoctorIsClean(t *testing.T) {
 		if finding["level"] != "ok" {
 			t.Errorf("%v: %v", finding["title"], finding["detail"])
 		}
+	}
+	if !strings.Contains(got.stdout, "another installation") {
+		t.Errorf("the report never accounts for the other installation's job process:\n%s", got.stdout)
+	}
+}
+
+// TestDoctorIgnoresARealForeignJobProcess is #189 against the real /proc walk,
+// which is where the defect bit: a soak run in another worktree, with its own
+// state directory, made this installation's report warn about processes it had
+// never started and could never signal. The scan is machine wide on purpose;
+// the attempt baselines decide what is ours, and a fresh init has none.
+func TestDoctorIgnoresARealForeignJobProcess(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the job process scan walks /proc, which is a linux feature")
+	}
+	dir := t.TempDir()
+	if code := runCLI(t, dir, nil, "init").code; code != ExitOK {
+		t.Fatalf("paceq init = %d, want %d", code, ExitOK)
+	}
+
+	// A job process of a second installation: it leads its own group, the
+	// way the runner spawns jobs, and carries a run id no database here has.
+	cmd := exec.Command("sleep", "60")
+	cmd.Env = append(os.Environ(), "PACEQ_RUN_ID=01M17NNQ5Y3EXTKHX9TFCNBZ2J")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("spawn the other installation's job: %v", err)
+	}
+	pid := cmd.Process.Pid
+	go func() { _ = cmd.Wait() }()
+	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL) })
+
+	got := runCLIWithDoctorEdges(t, dir, sandboxedCLIStatus(), nil, "doctor")
+
+	if got.code != ExitOK {
+		t.Fatalf("paceq doctor = %d, want %d\n%s%s", got.code, ExitOK, got.stdout, got.stderr)
+	}
+	if doc := got.json(t); doc["status"] != "ok" {
+		t.Errorf("status is %v, want ok:\n%s", doc["status"], got.stdout)
+	}
+	if strings.Contains(got.stdout, "orphaned job processes") {
+		t.Errorf("a process this installation never started was called an orphan:\n%s", got.stdout)
 	}
 }
 
