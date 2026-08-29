@@ -24,11 +24,11 @@ Severity: **serious**.
 
 the reaper clears this on its own within one lease TTL; paceq fsck --repair requeues the run now with epoch+1 and reason RUN_ORPHANED_RECONCILED
 
-### I10 — a run's stored state is what its steps aggregate to
+### I10 — a run's stored state is what its steps aggregate to, unless the run itself failed
 
 Severity: **serious**.
 
-paceq explain run <id> shows both stories; the reconciler repairs the aggregate on its next sweep
+paceq explain run <id> shows both stories; the reconciler converges a run that has not finished, and nothing revisits one that has, so report a terminal row as a bug with paceq export run <id>
 
 ### I11 — the fencing token never falls
 
