@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -505,11 +504,16 @@ func runSchedulesPause(ctx context.Context, env Env, g *globals, out *ui, ref st
 	}
 
 	// Try to pause through the daemon socket when it is running.
-	socketPath := daemonSocket(stateDir)
+	socketPath, err := daemonSocket(stateDir)
+	if err != nil {
+		return socketRefusedError(err)
+	}
 	if socketPath != "" {
 		if err := pauseViaSocket(ctx, socketPath, sch.JobName+"/"+sch.Name); err == nil {
 			out.print("%s paused %s/%s", out.symbols.ok, sch.JobName, sch.Name)
 			return nil
+		} else if stop := stopOnRefusal(err); stop != nil {
+			return stop
 		}
 		out.note(1, "daemon unreachable; writing directly to the database")
 	} else {
@@ -578,11 +582,16 @@ func runSchedulesResume(ctx context.Context, env Env, g *globals, out *ui, ref s
 	}
 
 	// Try to resume through the daemon socket.
-	socketPath := daemonSocket(stateDir)
+	socketPath, err := daemonSocket(stateDir)
+	if err != nil {
+		return socketRefusedError(err)
+	}
 	if socketPath != "" {
 		if err := resumeViaSocket(ctx, socketPath, sch.JobName+"/"+sch.Name); err == nil {
 			out.print("%s resumed %s/%s", out.symbols.ok, sch.JobName, sch.Name)
 			return nil
+		} else if stop := stopOnRefusal(err); stop != nil {
+			return stop
 		}
 		out.note(1, "daemon unreachable; writing directly to the database")
 	} else {
@@ -747,15 +756,6 @@ func policyOfRow(sch store.ScheduleRow) cronx.Policy {
 	return p
 }
 
-// daemonSocket returns the path to the daemon's socket file, or empty.
-func daemonSocket(stateDir string) string {
-	path := filepath.Join(stateDir, "paceq.sock")
-	if _, err := os.Stat(path); err != nil {
-		return ""
-	}
-	return path
-}
-
 // pauseViaSocket sends a POST /v1/schedules/{name}/pause to the daemon socket.
 func pauseViaSocket(ctx context.Context, socketPath, name string) error {
 	return sockPost(ctx, socketPath, "/v1/schedules/"+name+"/pause")
@@ -775,36 +775,6 @@ func cancelViaSocket(ctx context.Context, socketPath, runID, reason string) erro
 	}
 	req.Header.Set("Content-Type", "application/json")
 	return sendSocket(ctx, socketPath, req)
-}
-
-// sockPost sends an empty POST request over a unix socket.
-func sockPost(ctx context.Context, socketPath, path string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://unix"+path, strings.NewReader("{}"))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	return sendSocket(ctx, socketPath, req)
-}
-
-func sendSocket(ctx context.Context, socketPath string, req *http.Request) error {
-	client := &http.Client{
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				return net.Dial("unix", socketPath)
-			},
-		},
-		Timeout: 5 * time.Second,
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("daemon returned %d", resp.StatusCode)
-	}
-	return nil
 }
 
 // clockForEnv returns the clock an Env carries, or the system clock.

@@ -565,7 +565,10 @@ func runSensorsTick(ctx context.Context, env Env, g *globals, out *ui, name stri
 	// SEAM (#14, #16): tick through the daemon when it answers. The daemon's
 	// evaluator owns the real tick transaction (Begin/CommitSensorTick); the
 	// direct path below re-runs the same evaluation in this process.
-	socketPath := daemonSocket(g.stateDirOrEmpty(env))
+	socketPath, err := daemonSocket(g.stateDirOrEmpty(env))
+	if err != nil {
+		return socketRefusedError(err)
+	}
 	if socketPath != "" {
 		if err := sensorTickViaSocket(ctx, socketPath, name); err == nil {
 			if f.wait {
@@ -574,6 +577,8 @@ func runSensorsTick(ctx context.Context, env Env, g *globals, out *ui, name stri
 				out.print("%s tick of %s requested", out.symbols.ok, name)
 			}
 			return nil
+		} else if stop := stopOnRefusal(err); stop != nil {
+			return stop
 		}
 		out.note(1, "daemon unreachable; evaluating directly")
 	} else {
@@ -744,11 +749,16 @@ func runSensorsResume(ctx context.Context, env Env, g *globals, out *ui, name st
 func writeSensorOp(ctx context.Context, env Env, g *globals, out *ui, name string,
 	direct func(*store.Store) error, verb string, viaSocket func(context.Context, string, string) error,
 ) error {
-	socketPath := daemonSocket(g.stateDirOrEmpty(env))
+	socketPath, err := daemonSocket(g.stateDirOrEmpty(env))
+	if err != nil {
+		return socketRefusedError(err)
+	}
 	if socketPath != "" {
 		if err := viaSocket(ctx, socketPath, name); err == nil {
 			out.print("%s %s %s", out.symbols.ok, verb, name)
 			return nil
+		} else if stop := stopOnRefusal(err); stop != nil {
+			return stop
 		}
 		out.note(1, "daemon unreachable; writing directly to the database")
 	} else {

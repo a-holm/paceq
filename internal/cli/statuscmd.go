@@ -72,15 +72,21 @@ func runStatus(ctx context.Context, env Env, g *globals, out *ui, ref string, f 
 	return runStatusOverview(ctx, env, g, out, f)
 }
 
-// probeDaemon asks whether a daemon answers right now: a socket file that
-// exists gets one short dial, everything else reads as down. Half a second
-// is generous for a local unix socket.
-func probeDaemon(env Env, g *globals) bool {
+// probeDaemon asks whether a daemon answers right now: a socket file paceq
+// trusts gets one short dial, everything else reads as down. A socket it
+// refuses is named on stderr and then read as down too, because a status
+// report that will not print is a worse answer than one that says so.
+func probeDaemon(env Env, g *globals, out *ui) bool {
 	stateDir, err := g.stateDir(env)
 	if err != nil {
 		return false
 	}
-	return daemonResponds(daemonSocket(stateDir))
+	socketPath, err := daemonSocket(stateDir)
+	if err != nil {
+		fmt.Fprintf(out.err, "paceq: %v\n", err)
+		return false
+	}
+	return daemonResponds(socketPath)
 }
 
 // runStatusOverview builds and renders the whole-project report.
@@ -90,7 +96,7 @@ func runStatusOverview(ctx context.Context, env Env, g *globals, out *ui, f stat
 		return err
 	}
 
-	daemonUp := probeDaemon(env, g)
+	daemonUp := probeDaemon(env, g, out)
 	rep, err := status.Build(ctx, ro, status.Options{
 		Clock:    clkOf(env),
 		DaemonUp: daemonUp,
@@ -158,7 +164,7 @@ func runStatusRef(ctx context.Context, env Env, g *globals, out *ui, ref string)
 		return explainResolveError(err)
 	}
 
-	daemonUp := probeDaemon(env, g)
+	daemonUp := probeDaemon(env, g, out)
 	rep, err := status.BuildSubject(ctx, ro, status.SubjectRef{
 		Kind:     string(resolved.Kind),
 		Job:      resolved.Job,

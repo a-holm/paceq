@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"runtime"
 	"time"
@@ -157,7 +156,18 @@ func writeDoctorReport(out *ui, report doctor.Report) error {
 // machine that runs only the CLI side.
 func checkDaemonVersion(ctx context.Context, stateDir, cliVersion string) doctor.Finding {
 	const title = "daemon version"
-	socketPath := daemonSocket(stateDir)
+	socketPath, err := daemonSocket(stateDir)
+	if err != nil {
+		return doctor.Finding{
+			Level:  doctor.Fail,
+			Title:  title,
+			Detail: err.Error(),
+			Next: []string{
+				"ls -l the path: another account owning it, or a mode wider than 0600, is how a stranger answers for the daemon",
+				"remove it if a crash left it behind, then start the daemon again",
+			},
+		}
+	}
 	if socketPath == "" {
 		return doctor.Finding{Level: doctor.OK, Title: title, Detail: "no daemon is running"}
 	}
@@ -190,15 +200,7 @@ func daemonVersion(ctx context.Context, socketPath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	client := &http.Client{
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return net.Dial("unix", socketPath)
-			},
-		},
-		Timeout: 2 * time.Second,
-	}
-	resp, err := client.Do(req)
+	resp, err := socketClient(socketPath, 2*time.Second).Do(req)
 	if err != nil {
 		return "", err
 	}

@@ -6,12 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"net"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -170,11 +167,17 @@ func unknownOutcomeFacts(detail store.RunDetail) []string {
 // daemon is an answer, not an outage: it is returned as is instead of being
 // retried against a database the daemon holds.
 func retryRunOnce(ctx context.Context, env Env, g *globals, stateDir, runID string, opts store.ReopenOpts) (store.ReopenResult, error) {
-	socketPath := daemonSocket(stateDir)
+	socketPath, err := daemonSocket(stateDir)
+	if err != nil {
+		return store.ReopenResult{}, socketRefusedError(err)
+	}
 	if socketPath != "" {
 		res, err := retryViaSocket(ctx, socketPath, runID, opts)
 		if err == nil {
 			return res, nil
+		}
+		if stop := stopOnRefusal(err); stop != nil {
+			return store.ReopenResult{}, stop
 		}
 		var refusal *socketRefusal
 		if errors.As(err, &refusal) {
@@ -261,51 +264,3 @@ func retryViaSocket(ctx context.Context, socketPath, runID string, opts store.Re
 	}
 	return res, nil
 }
-
-// postForJSON POSTs one JSON body over the daemon's unix socket and decodes
-// the JSON answer. A non 2xx answer is a refusal, not an outage: it comes
-// back as a socketRefusal naming the daemon's error class, so the caller can
-// render it exactly like the same refusal made in this process.
-func postForJSON(ctx context.Context, socketPath, path string, body []byte, out any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://unix"+path,
-		strings.NewReader(string(body)))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				var d net.Dialer
-				return d.DialContext(ctx, "unix", socketPath)
-			},
-		},
-		Timeout: 10 * time.Second,
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		var doc struct {
-			Error string `json:"error"`
-			Code  string `json:"code"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&doc); err == nil && doc.Error != "" {
-			return &socketRefusal{code: doc.Code, message: doc.Error}
-		}
-		return fmt.Errorf("the daemon answered %d for %s", resp.StatusCode, path)
-	}
-	return json.NewDecoder(resp.Body).Decode(out)
-}
-
-// socketRefusal is a write the daemon refused on its side. The code is the
-// daemon's error class ("not_found", "invalid_state"); the message is its
-// own words for what went wrong.
-type socketRefusal struct {
-	code    string
-	message string
-}
-
-func (e *socketRefusal) Error() string { return e.message }

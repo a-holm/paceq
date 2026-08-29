@@ -452,7 +452,10 @@ func runRunsCancel(ctx context.Context, env Env, g *globals, out *ui, runArg str
 	actor := cliActor()
 
 	// Try through the daemon socket first.
-	socketPath := daemonSocket(stateDir)
+	socketPath, err := daemonSocket(stateDir)
+	if err != nil {
+		return socketRefusedError(err)
+	}
 	if socketPath != "" {
 		if err := cancelViaSocket(ctx, socketPath, detail.ID, "manual"); err == nil {
 			if detail.State == "queued" {
@@ -461,6 +464,8 @@ func runRunsCancel(ctx context.Context, env Env, g *globals, out *ui, runArg str
 				out.print("%s cancellation of %s requested; the owner stops within roughly 20 s", out.symbols.ok, detail.ID)
 			}
 			return nil
+		} else if stop := stopOnRefusal(err); stop != nil {
+			return stop
 		}
 		out.note(1, "daemon unreachable; writing directly to the database")
 	} else {
