@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"bufio"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -177,17 +178,44 @@ func TestShimMainWatchdogEOFKillsTheWholeGroup(t *testing.T) {
 	}
 	defer w.Close()
 
+	// The child names fd 3 and fd 4, so both have to be here. ExtraFiles[i]
+	// lands on fd 3+i, and an fd the child names but the parent never passed
+	// is not an error anywhere: it is whatever this process had open there,
+	// and the shim writes its baseline straight into it. Under `git push` that
+	// descriptor was git's pipe to remote-curl, and one JSON line into it
+	// killed the push with "remote-curl: unknown command" long after the gate
+	// had gone green.
+	baseR, baseW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer baseR.Close()
+
 	shim := exec.Command(os.Args[0], "-test.run=TestShimExecChild", "-test.count=1")
 	shim.Env = append(os.Environ(),
 		"PACEQ_TEST_SHIM_CHILD=1",
 		"PACEQ_TEST_SHIM_SPOOL="+spoolDir,
 	)
-	shim.ExtraFiles = []*os.File{r} // the read end is fd 3 for the shim
+	shim.ExtraFiles = []*os.File{r, baseW} // fd 3 is the watchdog, fd 4 the baseline
+
+	// Reading the baseline is what keeps the two descriptor numbers honest: a
+	// child that writes it somewhere else leaves this read empty.
+	baseline := make(chan string, 1)
+	go func() {
+		line, _ := bufio.NewReader(baseR).ReadString('\n')
+		baseline <- line
+	}()
 	shimStdout := &strings.Builder{}
 	shim.Stderr = stderrOf(shimStdout)
 
 	runErr := make(chan error, 1)
-	go func() { runErr <- shim.Run() }()
+	go func() {
+		err := shim.Run()
+		// The parent's copy of the write end has to go, or the reader above
+		// never sees EOF when the child dies without writing.
+		_ = baseW.Close()
+		runErr <- err
+	}()
 
 	// The watchdog write end lives in this process; closing it is exactly
 	// what the kernel does when a daemon dies, whatever the cause.
@@ -208,6 +236,18 @@ func TestShimMainWatchdogEOFKillsTheWholeGroup(t *testing.T) {
 	}
 	if took := time.Since(start); took > 20*time.Second {
 		t.Fatalf("EOF to cleanup took %s; the group survived its grace", took)
+	}
+
+	// The baseline has to have come down fd 4. An empty read means the child
+	// wrote it to a descriptor this test never handed it, which is a write
+	// into whatever the parent process had open there.
+	select {
+	case line := <-baseline:
+		if !strings.Contains(line, "\"pid\"") || !strings.Contains(line, "\"start_ticks\"") {
+			t.Errorf("baseline line = %q, want the child's pid and start ticks on fd 4", line)
+		}
+	case <-time.After(10 * time.Second):
+		t.Error("the baseline never arrived on fd 4")
 	}
 
 	cfg := shimConfig(nil) // only the identity matters here
