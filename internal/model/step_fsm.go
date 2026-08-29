@@ -48,6 +48,17 @@ func NextStepState(cur StepState, ev Event, g Guards) (StepState, []Effect, erro
 		return StepCancelled, effects(act(EffectKillProcessGroup), act(EffectSetFinished),
 			emit("step.cancelled")), nil
 
+	case cur == StepPending && ev == EvCancelObserved:
+		// A step that never started is cancelled, not skipped: a skip is a
+		// decision about work, a cancellation is a decision about the run,
+		// and the aggregate (I10) has to be able to tell them apart. This
+		// is what keeps a cancelled run's steps from aggregating to a
+		// succeeded verdict nobody earned.
+		if err := requireReason(cur, ev, StepCancelled, g); err != nil {
+			return cur, nil, err
+		}
+		return StepCancelled, effects(act(EffectSetFinished), emit("step.cancelled")), nil
+
 	case cur == StepRunning && ev == EvShutdownDrain:
 		// The daemon is stopping and this attempt was cut short by it.
 		// The attempt goes back to pending with the start's increment

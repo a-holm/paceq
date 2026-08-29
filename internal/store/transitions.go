@@ -928,23 +928,14 @@ func (s *Store) FinishRun(ctx context.Context, runID string, ref LeaseRef, fr Fi
 			return err
 		}
 
-		steps, err := readStepsTx(tx, runID)
+		states, err := stepStatesTx(tx, runID)
 		if err != nil {
 			return err
 		}
-		allTerminal, anyFailed := true, false
-		for _, step := range steps {
-			st, err := model.ParseStepState(step.State)
-			if err != nil {
-				return err
-			}
-			if !st.IsTerminal() {
-				allTerminal = false
-			}
-			if st == model.StepFailed || st == model.StepCancelled {
-				anyFailed = true
-			}
-		}
+		allTerminal := allStepsTerminal(states)
+		// A step that was cancelled ends the run the way a failed one does:
+		// the work it stood for never completed.
+		anyFailed := anyStepIs(states, model.StepFailed) || anyStepIs(states, model.StepCancelled)
 
 		guards := model.Guards{
 			LeaseValid: run.LeaseOwner == ref.Owner && run.LeaseEpoch == ref.Epoch &&
@@ -1008,8 +999,14 @@ func (s *Store) FinishRun(ctx context.Context, runID string, ref LeaseRef, fr Fi
 // ObserveRunCancel effectuates a cancellation somebody requested earlier: the
 // caller has already killed the process group outside any transaction (the
 // machine lists that effect first, and the engine performs it before calling
-// here), the steps that were running are cancelled by their own events, and
-// this closes whatever pending steps remain and then the run itself.
+// here), and this closes out whatever steps are still open - running and
+// pending alike, each through its own event - and then the run itself.
+//
+// The run's state comes from those closed-out steps, not from the request
+// (I10). A cancellation that arrived after the run had already failed records
+// the failure, and one that arrived after the last step succeeded records the
+// success; the request stays on the row either way, so the history still shows
+// that somebody asked.
 //
 // The caller must still hold the lease at its token; the write is a CAS like
 // every other result write, so a holder that lost the run while killing the
@@ -1040,24 +1037,28 @@ func (s *Store) ObserveRunCancel(ctx context.Context, runID string, ref LeaseRef
 			return err
 		}
 
-		guards := model.Guards{
-			LeaseValid: true,
-			ReasonCode: string(code),
+		// The close-out comes first, then the verdict. A cancellation ends
+		// the steps it finds open, and only once none is open can the run's
+		// state be read off them (I10). Reading the aggregate before the
+		// close-out answers about a run that is still running, which is no
+		// answer at all.
+		states, err := closeOutCancelledStepsTx(tx, runID, now)
+		if err != nil {
+			return err
 		}
+		guards := cancelGuards(states, code)
+
 		state, effects, err := model.NextRunState(cur, model.EvCancelObserved, guards)
 		if err != nil {
 			return fmt.Errorf("observe the cancellation of run %s: %w", runID, err)
 		}
 
-		if err := skipPendingStepsTx(tx, runID, now, string(reason.STEPCancelled)); err != nil {
-			return err
-		}
 		return finishTransition(tx, "observe_cancel", func() error {
-			result, err := tx.Exec(`UPDATE runs SET state = 'cancelled',
+			result, err := tx.Exec(`UPDATE runs SET state = ?,
 				finished_at = ?, reason_code = ?, reason_data = ?,
 				lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
 			WHERE id = ? AND state = ? AND lease_owner = ? AND lease_epoch = ?`,
-				now.UnixMilli(), string(code), "{}", now.UnixMilli(),
+				string(state), now.UnixMilli(), guards.ReasonCode, "{}", now.UnixMilli(),
 				runID, string(cur), ref.Owner, ref.Epoch)
 			if err != nil {
 				return err
@@ -1073,7 +1074,7 @@ func (s *Store) ObserveRunCancel(ctx context.Context, runID string, ref LeaseRef
 		}, tx, RunEvent{
 			RunID: runID, At: now, Kind: emitKind(effects),
 			FromState: string(cur), ToState: string(state),
-			ReasonCode: string(code),
+			ReasonCode: guards.ReasonCode,
 			Actor:      actor,
 			DetailJSON: epochDetail(ref.Epoch),
 		})
@@ -1164,6 +1165,37 @@ FROM steps WHERE run_id = ? AND state = 'pending' ORDER BY idx`, runID)
 // through the machine with its own event. It is what keeps a terminal run
 // from sitting over open steps: a run ends, or its steps all do.
 func skipPendingStepsTx(tx *sql.Tx, runID string, now time.Time, code string) error {
+	return forEachPendingStepTx(tx, runID, func(name string) error {
+		state, effects, err := model.NextStepState(model.StepPending, model.EvUpstreamFailed,
+			model.Guards{ReasonCode: code})
+		if err != nil {
+			return fmt.Errorf("skip step %s of run %s: %w", name, runID, err)
+		}
+		if err := finishTransition(tx, "skip_pending", func() error {
+			// nolint:fencing: the caller's transaction already checked the
+			// holder's token, or the run is queued and has no lease to check;
+			// steps carry no token of their own.
+			_, err := tx.Exec(`UPDATE steps SET state = 'skipped', finished_at = ?,
+				reason_code = ?, reason_data = '{}'
+			WHERE run_id = ? AND name = ? AND state = 'pending'`,
+				now.UnixMilli(), code, runID, name)
+			return err
+		}, tx, RunEvent{
+			RunID: runID, StepName: name, At: now, Kind: emitKind(effects),
+			FromState: string(model.StepPending), ToState: string(state),
+			ReasonCode: code,
+		}); err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
+// forEachPendingStepTx walks a run's pending steps in spec order and runs
+// one machine transition per step. It is the shared spine of the two
+// close-outs: a skip is a decision about work, a cancellation is a decision
+// about the run, and each writes its own state through its own event.
+func forEachPendingStepTx(tx *sql.Tx, runID string, fn func(name string) error) error {
 	rows, err := tx.Query(`SELECT name FROM steps WHERE run_id = ? AND state = 'pending' ORDER BY idx`, runID)
 	if err != nil {
 		return fmt.Errorf("read the pending steps of run %s: %w", runID, err)
@@ -1186,18 +1218,32 @@ func skipPendingStepsTx(tx *sql.Tx, runID string, now time.Time, code string) er
 	}
 
 	for _, name := range names {
-		state, effects, err := model.NextStepState(model.StepPending, model.EvUpstreamFailed,
+		if err := fn(name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// cancelPendingStepsTx moves every pending step of a cancelled run to
+// cancelled, each through the machine with its own event. The sibling of
+// skipPendingStepsTx: a skip is a decision about work, a cancellation is a
+// decision about the run, and the run's aggregate (I10) can only tell the
+// two apart when the steps say which one happened.
+func cancelPendingStepsTx(tx *sql.Tx, runID string, now time.Time, code string) error {
+	return forEachPendingStepTx(tx, runID, func(name string) error {
+		state, effects, err := model.NextStepState(model.StepPending, model.EvCancelObserved,
 			model.Guards{ReasonCode: code})
 		if err != nil {
-			return fmt.Errorf("skip step %s of run %s: %w", name, runID, err)
+			return fmt.Errorf("cancel step %s of run %s: %w", name, runID, err)
 		}
-		if err := finishTransition(tx, "skip_pending", func() error {
+		if err := finishTransition(tx, "cancel_pending", func() error {
 			// nolint:fencing: the caller's transaction already checked the
 			// holder's token, or the run is queued and has no lease to check;
 			// steps carry no token of their own.
-			_, err := tx.Exec(`UPDATE steps SET state = 'skipped', finished_at = ?,
+			_, err := tx.Exec(`UPDATE steps SET state = 'cancelled', finished_at = ?,
 				reason_code = ?, reason_data = '{}'
-			WHERE run_id = ? AND name = ? AND state = 'pending'`,
+				WHERE run_id = ? AND name = ? AND state = 'pending'`,
 				now.UnixMilli(), code, runID, name)
 			return err
 		}, tx, RunEvent{
@@ -1207,8 +1253,85 @@ func skipPendingStepsTx(tx *sql.Tx, runID string, now time.Time, code string) er
 		}); err != nil {
 			return err
 		}
+		return nil
+	})
+}
+
+// allStepsTerminal is the guard half of FinishRun's aggregate read, shared
+// with the cancel close-outs that must respect the same verdict.
+func allStepsTerminal(states []model.StepState) bool {
+	for _, s := range states {
+		if !s.IsTerminal() {
+			return false
+		}
 	}
-	return nil
+	return true
+}
+
+// closeOutCancelledStepsTx ends every step a cancellation finds open and
+// answers with the states the run's steps ended in. Running steps and pending
+// steps both end cancelled, each through its own event. Every cancel writer
+// goes through here, so none of them can write a run state its steps
+// contradict (I10): the answer is what the verdict is read from.
+func closeOutCancelledStepsTx(tx *sql.Tx, runID string, now time.Time) ([]model.StepState, error) {
+	if err := cancelRunningStepsTx(tx, runID, now); err != nil {
+		return nil, err
+	}
+	if err := cancelPendingStepsTx(tx, runID, now, string(reason.STEPCancelled)); err != nil {
+		return nil, err
+	}
+	return stepStatesTx(tx, runID)
+}
+
+// stepStatesTx reads a run's step states in spec order.
+func stepStatesTx(tx *sql.Tx, runID string) ([]model.StepState, error) {
+	steps, err := readStepsTx(tx, runID)
+	if err != nil {
+		return nil, err
+	}
+	states := make([]model.StepState, 0, len(steps))
+	for _, step := range steps {
+		st, err := model.ParseStepState(step.State)
+		if err != nil {
+			return nil, err
+		}
+		states = append(states, st)
+	}
+	return states, nil
+}
+
+func anyStepIs(states []model.StepState, want model.StepState) bool {
+	for _, st := range states {
+		if st == want {
+			return true
+		}
+	}
+	return false
+}
+
+// cancelGuards turns closed-out step states into the facts the run machine
+// ranks them by, and names the verdict they reach. The reason code follows the
+// verdict rather than the request: a cancellation that arrived after the run
+// had already failed records the failure, because that is what happened.
+func cancelGuards(states []model.StepState, code reason.Code) model.Guards {
+	return model.Guards{
+		LeaseValid:       true,
+		AnyStepFailed:    anyStepIs(states, model.StepFailed),
+		AnyStepCancelled: anyStepIs(states, model.StepCancelled),
+		AllStepsTerminal: allStepsTerminal(states),
+		ReasonCode:       string(cancelReason(model.RunAggregate(states), code)),
+	}
+}
+
+func cancelReason(verdict model.RunState, code reason.Code) reason.Code {
+	switch verdict {
+	case model.RunFailed:
+		return reason.RUNFailedStep
+	case model.RunSucceeded:
+		return reason.RUNSucceeded
+	default:
+		return code
+	}
 }
 
 // finishTransition pairs the state write with the event write and refuses to

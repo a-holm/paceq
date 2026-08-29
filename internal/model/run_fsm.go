@@ -98,14 +98,25 @@ func NextRunState(cur RunState, ev Event, g Guards) (RunState, []Effect, error) 
 		return next, effects(act(EffectSetFinished), act(EffectReleaseLease), emit(name)), nil
 
 	case cur == RunRunning && ev == EvCancelObserved:
+		// The steps hold the verdict, not the request (I10). A run that
+		// failed and was then cancelled still failed, and a run whose steps
+		// all succeeded succeeded, however late the cancel arrived. The
+		// request stays on the row either way.
+		next, name := CancelVerdict(g)
 		if !g.LeaseValid {
-			return cur, nil, GuardError{From: cur, Event: ev, To: RunCancelled, Want: ErrStaleLease}
+			return cur, nil, GuardError{From: cur, Event: ev, To: next, Want: ErrStaleLease}
 		}
-		if err := requireReason(cur, ev, RunCancelled, g); err != nil {
+		if !g.AllStepsTerminal {
+			// I2, and the ordering the verdict depends on: the caller closes
+			// the open steps out first, then asks what they add up to. A step
+			// still open here means it asked in the wrong order.
+			return cur, nil, GuardError{From: cur, Event: ev, To: next, Want: ErrStepsNotTerminal}
+		}
+		if err := requireReason(cur, ev, next, g); err != nil {
 			return cur, nil, err
 		}
-		return RunCancelled, effects(act(EffectKillProcessGroup), act(EffectSetFinished),
-			act(EffectReleaseLease), emit("run.cancelled")), nil
+		return next, effects(act(EffectKillProcessGroup), act(EffectSetFinished),
+			act(EffectReleaseLease), emit(name)), nil
 
 	case cur == RunRunning && ev == EvLeaseExpired:
 		next, name := RunQueued, "run.requeued"
@@ -155,4 +166,21 @@ func requireReason(from State, ev Event, to State, g Guards) error {
 		return nil
 	}
 	return GuardError{From: from, Event: ev, To: to, Want: ErrMissingReasonCode}
+}
+
+// CancelVerdict ranks a cancelled run's closed-out steps in the same order
+// RunAggregate does, from the two facts the guards carry: a failure outranks a
+// cancellation, and a cancellation outranks the plain success of steps that
+// were all done before the cancel landed. Keeping one order in two places is
+// what makes I10 hold without the machine reading a step row, and
+// TestCancelVerdictMatchesRunAggregate proves the two stay in step.
+func CancelVerdict(g Guards) (RunState, string) {
+	switch {
+	case g.AnyStepFailed:
+		return RunFailed, "run.failed"
+	case g.AnyStepCancelled:
+		return RunCancelled, "run.cancelled"
+	default:
+		return RunSucceeded, "run.succeeded"
+	}
 }

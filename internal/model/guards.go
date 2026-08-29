@@ -24,10 +24,13 @@ type Guards struct {
 	// backoff itself is M1-09; the model only says the retry transition is
 	// allowed.
 	AttemptsLeft bool
-	// AnyStepFailed and AllStepsTerminal describe the run's steps. Together
-	// they are how the run machine enforces I2 and I10 without reading a
-	// single step row itself.
+	// AnyStepFailed, AnyStepCancelled and AllStepsTerminal describe the
+	// run's steps. Together they are how the run machine enforces I2 and I10
+	// without reading a single step row itself. AnyStepCancelled separates a
+	// run whose steps were cancelled from one whose steps all succeeded: both
+	// end without a failure, and only the steps say which verdict is honest.
 	AnyStepFailed    bool
+	AnyStepCancelled bool
 	AllStepsTerminal bool
 	// CrashBudgetLeft is the poison quarantine (02 section 5.7): a run that
 	// has crashed too often is failed instead of requeued.
