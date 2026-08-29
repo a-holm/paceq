@@ -25,6 +25,7 @@ type fakeDB struct {
 	fsck        []store.Violation
 	unpoliced   []string
 	active      []store.AttemptProcess
+	known       []store.AttemptProcess
 	foreignKeys bool
 	sync        string
 	err         error
@@ -60,6 +61,10 @@ func (f *fakeDB) QuickFsck(context.Context) ([]store.Violation, error) {
 
 func (f *fakeDB) ActiveAttempts(context.Context) ([]store.AttemptProcess, error) {
 	return f.active, f.err
+}
+
+func (f *fakeDB) KnownAttempts(context.Context) ([]store.AttemptProcess, error) {
+	return f.known, f.err
 }
 
 func (f *fakeDB) JobsWithoutFreshnessSLA(context.Context) ([]string, error) {

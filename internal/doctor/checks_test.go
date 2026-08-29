@@ -99,18 +99,27 @@ func TestCheckSpoolBacklogCountsUnconsumedResults(t *testing.T) {
 	}
 }
 
+// scanned is the process /proc reports for a baseline row: the same pid, run
+// and start ticks. A test that wants a foreign or a recycled process changes
+// one of the three.
+func scanned(a store.AttemptProcess) reconcile.Process {
+	return reconcile.Process{PID: a.PID, PGID: a.PID, RunID: a.RunID, StartTicks: a.StartTicks, TicksOK: true}
+}
+
+func listing(procs ...reconcile.Process) doctor.ProcLister {
+	return func() ([]reconcile.Process, error) { return procs, nil }
+}
+
 func TestCheckOrphanedProcessesNamesTheLeftovers(t *testing.T) {
 	ctx := context.Background()
-	db := &fakeDB{fsck: nil}
-	db.active = []store.AttemptProcess{{RunID: "01ALIVE", Step: "build", PID: 10}}
-
-	lister := func() ([]reconcile.Process, error) {
-		return []reconcile.Process{
-			{PID: 11, RunID: "01ALIVE"},
-			{PID: 12, RunID: "01DEAD"},
-		}, nil
+	worker := store.AttemptProcess{RunID: "01ALIVE", Step: "build", PID: 11, StartTicks: 100}
+	leftover := store.AttemptProcess{RunID: "01DEAD", Step: "build", PID: 12, StartTicks: 200}
+	db := &fakeDB{
+		known:  []store.AttemptProcess{worker, leftover},
+		active: []store.AttemptProcess{worker},
 	}
-	found := doctor.CheckOrphanedProcesses(ctx, db, lister)
+
+	found := doctor.CheckOrphanedProcesses(ctx, db, listing(scanned(worker), scanned(leftover)))
 	if found.Level != doctor.Warn {
 		t.Fatalf("an orphan is a warning: %+v", found)
 	}
@@ -120,12 +129,112 @@ func TestCheckOrphanedProcessesNamesTheLeftovers(t *testing.T) {
 	if strings.Contains(found.Detail, "pid 11") {
 		t.Errorf("a live process was called an orphan: %+v", found.Detail)
 	}
+	if len(found.Next) == 0 {
+		t.Error("the warning carries no next step")
+	}
 
-	quiet := doctor.CheckOrphanedProcesses(ctx, db, func() ([]reconcile.Process, error) {
-		return []reconcile.Process{{PID: 11, RunID: "01ALIVE"}}, nil
-	})
+	quiet := doctor.CheckOrphanedProcesses(ctx, db, listing(scanned(worker)))
 	if quiet.Level != doctor.OK {
-		t.Fatalf("every process claimed by a run is healthy: %+v", quiet)
+		t.Fatalf("every process claimed by an active attempt is healthy: %+v", quiet)
+	}
+}
+
+// TestCheckOrphanedProcessesLeavesAnotherInstallationAlone is #189: the scan is
+// machine wide, so a second paceq's healthy job processes turn up in it. They
+// are none of this report's business, and advising a kill on one would send an
+// operator after work the sweep itself refuses to signal.
+func TestCheckOrphanedProcessesLeavesAnotherInstallationAlone(t *testing.T) {
+	ctx := context.Background()
+	db := &fakeDB{} // a fresh paceq init: no baselines at all
+
+	finding := doctor.CheckOrphanedProcesses(ctx, db, listing(
+		reconcile.Process{PID: 2107018, RunID: "01M17NNQ5Y3EXTKHX9TFCNBZ2J", StartTicks: 900, TicksOK: true},
+		reconcile.Process{PID: 2107029, RunID: "01M17NNQ5Y3EXTKHX9TFCNBZ2J", StartTicks: 901, TicksOK: true},
+	))
+
+	if finding.Level != doctor.OK {
+		t.Fatalf("another installation's processes are not this installation's problem: %+v", finding)
+	}
+	if strings.Contains(finding.Detail, "orphan") {
+		t.Errorf("a foreign process was called an orphan: %q", finding.Detail)
+	}
+	if len(finding.Next) != 0 {
+		t.Errorf("the healthy finding advises action on a process paceq must not touch: %v", finding.Next)
+	}
+	if !strings.Contains(finding.Detail, "2") || !strings.Contains(finding.Detail, "another installation") {
+		t.Errorf("the finding never accounts for the two foreign processes: %q", finding.Detail)
+	}
+}
+
+func TestCheckOrphanedProcessesCountsWhatBelongsElsewhere(t *testing.T) {
+	ctx := context.Background()
+	worker := store.AttemptProcess{RunID: "01ALIVE", Step: "build", PID: 11, StartTicks: 100}
+	foreign := func(pid int) reconcile.Process {
+		return reconcile.Process{PID: pid, RunID: "01ELSEWHERE", StartTicks: 900, TicksOK: true}
+	}
+
+	cases := []struct {
+		name  string
+		procs []reconcile.Process
+		want  string
+	}{
+		{
+			name:  "none",
+			procs: []reconcile.Process{scanned(worker)},
+			want:  "1 job processes, all named by active attempts",
+		},
+		{
+			name:  "one",
+			procs: []reconcile.Process{scanned(worker), foreign(20)},
+			want:  "1 job processes, all named by active attempts; 1 more belong to another installation",
+		},
+		{
+			name:  "several, and none of ours",
+			procs: []reconcile.Process{foreign(20), foreign(21), foreign(22)},
+			want:  "no job processes of this installation; 3 belong to another installation",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			db := &fakeDB{
+				known:  []store.AttemptProcess{worker},
+				active: []store.AttemptProcess{worker},
+			}
+			finding := doctor.CheckOrphanedProcesses(ctx, db, listing(c.procs...))
+			if finding.Level != doctor.OK {
+				t.Fatalf("nothing here is an orphan: %+v", finding)
+			}
+			if finding.Detail != c.want {
+				t.Errorf("detail is %q, want %q", finding.Detail, c.want)
+			}
+		})
+	}
+}
+
+// TestCheckOrphanedProcessesRefusesARecycledPid is the sweep's tick comparison
+// read from the doctor side: a pid our baseline holds whose /proc identity has
+// changed is somebody else's process now, and the sweep would refuse to signal
+// it, so the report must not name it either.
+func TestCheckOrphanedProcessesRefusesARecycledPid(t *testing.T) {
+	ctx := context.Background()
+	gone := store.AttemptProcess{RunID: "01DEAD", Step: "build", PID: 12, StartTicks: 200}
+	db := &fakeDB{known: []store.AttemptProcess{gone}}
+
+	recycled := scanned(gone)
+	recycled.StartTicks = gone.StartTicks + 1
+
+	finding := doctor.CheckOrphanedProcesses(ctx, db, listing(recycled))
+	if finding.Level != doctor.OK {
+		t.Fatalf("a pid whose identity no longer matches the baseline is not our orphan: %+v", finding)
+	}
+	if strings.Contains(finding.Detail, "pid 12") {
+		t.Errorf("the finding names a pid the sweep would refuse to signal: %q", finding.Detail)
+	}
+
+	unreadable := scanned(gone)
+	unreadable.TicksOK = false
+	if quiet := doctor.CheckOrphanedProcesses(ctx, db, listing(unreadable)); quiet.Level != doctor.OK {
+		t.Errorf("a process whose start ticks could not be read is not our orphan: %+v", quiet)
 	}
 }
 
@@ -215,14 +324,14 @@ func TestEveryNonOKFindingCarriesANextStep(t *testing.T) {
 	clk := clock.NewFake(time.Date(2027, 1, 21, 8, 0, 0, 0, time.UTC))
 	ctx := context.Background()
 	db := &fakeDB{}
+	orphan := store.AttemptProcess{RunID: "01DEAD", Step: "build", PID: 12, StartTicks: 200}
 
 	findings := []doctor.Finding{
 		doctor.CheckNTP(func() (bool, bool) { return false, true }),
 		doctor.CheckTzdataVersion(func() (string, bool) { return "2027a", true }, "2026c"),
 		doctor.CheckSpoolBacklog(t.TempDir(), clk),
-		doctor.CheckOrphanedProcesses(ctx, db, func() ([]reconcile.Process, error) {
-			return []reconcile.Process{{PID: 12, RunID: "01DEAD"}}, nil
-		}),
+		doctor.CheckOrphanedProcesses(ctx,
+			&fakeDB{known: []store.AttemptProcess{orphan}}, listing(scanned(orphan))),
 		doctor.CheckFreshnessSLA(ctx, db),
 		doctor.CheckFilesystem("/state", func(string) (uint64, error) { return 0x6969, nil }),
 		doctor.CheckCriticalInvariants(ctx, &fakeDB{fsck: []store.Violation{

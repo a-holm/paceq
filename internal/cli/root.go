@@ -32,6 +32,10 @@ type Env struct {
 	// /proc/self/status. A test plants a status so the report answers on a
 	// machine that sandboxes nothing.
 	Status doctor.StatusReader
+	// Procs lists the live job processes for doctor. Nil walks the real
+	// /proc. A test plants a listing so the report answers whatever else on
+	// the machine happens to carry PACEQ_RUN_ID.
+	Procs doctor.ProcLister
 }
 
 // stateDirName is the state directory paceq creates inside a project.
