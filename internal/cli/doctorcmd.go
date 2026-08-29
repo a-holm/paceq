@@ -158,21 +158,17 @@ func checkDaemonVersion(ctx context.Context, env Env, g *globals, cliVersion str
 	const title = "daemon version"
 	socketPath, err := daemonSocket(env, g)
 	if err != nil {
-		return doctor.Finding{
-			Level:  doctor.Fail,
-			Title:  title,
-			Detail: err.Error(),
-			Next: []string{
-				"ls -l the path: another account owning it, or a mode wider than 0600, is how a stranger answers for the daemon",
-				"remove it if a crash left it behind, then start the daemon again",
-			},
-		}
+		return refusedSocketFinding(title, err)
 	}
 	if socketPath == "" {
 		return doctor.Finding{Level: doctor.OK, Title: title, Detail: "no daemon is running"}
 	}
 	version, err := daemonVersion(ctx, socketPath)
 	if err != nil {
+		var refused *untrustedSocket
+		if errors.As(err, &refused) {
+			return refusedSocketFinding(title, refused)
+		}
 		return doctor.Finding{
 			Level:  doctor.Warn,
 			Title:  title,
@@ -192,6 +188,22 @@ func checkDaemonVersion(ctx context.Context, env Env, g *globals, cliVersion str
 		Detail: fmt.Sprintf("this CLI is %s, the daemon is %s: answers may come from a schema "+
 			"the other side does not share", cliVersion, version),
 		Next: []string{"restart the service so both sides are the same build: systemctl restart paceq"},
+	}
+}
+
+// refusedSocketFinding reports a socket paceq will not talk to. It fails the
+// installation rather than warning about it: another account answering for the
+// daemon is the one thing this socket's whole authorisation model rests on not
+// happening.
+func refusedSocketFinding(title string, err error) doctor.Finding {
+	return doctor.Finding{
+		Level:  doctor.Fail,
+		Title:  title,
+		Detail: err.Error(),
+		Next: []string{
+			"ls -l the path: another account owning it, or a mode wider than 0600, is how a stranger answers for the daemon",
+			"remove it if a crash left it behind, then start the daemon again",
+		},
 	}
 }
 
