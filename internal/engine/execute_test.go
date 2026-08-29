@@ -489,8 +489,8 @@ func TestExecuteRunACancelRequestedBeforeTheClaimCancelsCleanly(t *testing.T) {
 		t.Errorf("unexpected run state %+v", detail.Run)
 	}
 	step := detail.Steps[0]
-	if step.State != "skipped" {
-		t.Errorf("the never started step = %s, want skipped", step.State)
+	if step.State != "cancelled" {
+		t.Errorf("the never started step = %s, want cancelled: a cancellation is a decision about the run, and I10 reads the verdict off its steps", step.State)
 	}
 	events, err := f.Store.RunEvents(ctx, runID)
 	if err != nil {

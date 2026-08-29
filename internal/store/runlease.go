@@ -407,17 +407,35 @@ func closeCancelledQueuedTx(tx *sql.Tx, now time.Time) error {
 		}
 		// A cancelled run carries no open steps past this transaction (I2):
 		// its pending steps leave through their own events, the same way any
-		// step leaves pending when its run ends without it.
-		if err := skipPendingStepsTx(tx, c.id, now, string(reason.STEPCancelled)); err != nil {
+		// step leaves pending when its run ends without it. The verdict then
+		// follows those steps rather than the request (I10). The statement
+		// above wrote cancelled because that is the answer for a queued run
+		// with work left; a replay that reused every step has none left, and
+		// its row is corrected here before anything announces it.
+		states, err := closeOutCancelledStepsTx(tx, c.id, now)
+		if err != nil {
 			return err
+		}
+		guards := cancelGuards(states, reason.RUNCancelledManual)
+		verdict, kind := model.CancelVerdict(guards)
+		if verdict != model.RunCancelled {
+			// nolint:fencing: a queued run holds no lease to fence against,
+			// and the statement above already took this row out of the queued
+			// set inside this same transaction; the predicate pins the state
+			// that statement wrote, so only its own row is corrected.
+			if _, err := tx.Exec(`UPDATE runs SET state = ?, reason_code = ?, updated_at = ?
+				WHERE id = ? AND state = 'cancelled'`,
+				string(verdict), guards.ReasonCode, now.UnixMilli(), c.id); err != nil {
+				return fmt.Errorf("close the queued cancellation of run %s: %w", c.id, err)
+			}
 		}
 		if err := appendRunEvent(tx, RunEvent{
 			RunID:      c.id,
 			At:         now,
-			Kind:       "run.cancelled",
+			Kind:       kind,
 			FromState:  string(model.RunQueued),
-			ToState:    string(model.RunCancelled),
-			ReasonCode: string(reason.RUNCancelledManual),
+			ToState:    string(verdict),
+			ReasonCode: guards.ReasonCode,
 			Actor:      actor,
 			DetailJSON: epochDetail(c.epoch),
 		}); err != nil {
@@ -814,15 +832,16 @@ func reapToFailedTx(tx *sql.Tx, run Run, now time.Time, code reason.Code, kind s
 // owner: the request was durable, the owner is gone, and the run ends
 // cancelled instead of being offered to a new holder.
 func reapToCancelledTx(tx *sql.Tx, run Run, now time.Time) (ReapedRun, error) {
-	if err := cancelRunningStepsTx(tx, run.ID, now); err != nil {
+	states, err := closeOutCancelledStepsTx(tx, run.ID, now)
+	if err != nil {
 		return ReapedRun{}, err
 	}
-	if err := skipPendingStepsTx(tx, run.ID, now, string(reason.STEPCancelled)); err != nil {
-		return ReapedRun{}, err
-	}
+	guards := cancelGuards(states, reason.RUNCancelledManual)
+	verdict, kind := model.CancelVerdict(guards)
+
 	epoch := run.LeaseEpoch + 1
 	if _, err := tx.Exec(`UPDATE runs SET
-		state = 'cancelled',
+		state = ?,
 		reason_code = ?,
 		finished_at = ?,
 		duration_ms = CASE WHEN started_at IS NULL THEN NULL ELSE ? - started_at END,
@@ -832,17 +851,17 @@ func reapToCancelledTx(tx *sql.Tx, run Run, now time.Time) (ReapedRun, error) {
 		crash_count = crash_count + 1,
 		updated_at = ?
 		WHERE id = ? AND state = 'running' AND lease_epoch = ?`,
-		string(reason.RUNCancelledManual), now.UnixMilli(), now.UnixMilli(),
+		string(verdict), guards.ReasonCode, now.UnixMilli(), now.UnixMilli(),
 		now.UnixMilli(), run.ID, run.LeaseEpoch); err != nil {
 		return ReapedRun{}, fmt.Errorf("cancel run %s: %w", run.ID, err)
 	}
 	if err := appendRunEvent(tx, RunEvent{
 		RunID:      run.ID,
 		At:         now,
-		Kind:       "run.cancelled",
+		Kind:       kind,
 		FromState:  string(model.RunRunning),
-		ToState:    string(model.RunCancelled),
-		ReasonCode: string(reason.RUNCancelledManual),
+		ToState:    string(verdict),
+		ReasonCode: guards.ReasonCode,
 		Actor:      "reaper",
 		DetailJSON: epochDetail(epoch),
 	}); err != nil {
@@ -850,8 +869,8 @@ func reapToCancelledTx(tx *sql.Tx, run Run, now time.Time) (ReapedRun, error) {
 	}
 	return ReapedRun{
 		ID:         run.ID,
-		State:      string(model.RunCancelled),
-		ReasonCode: string(reason.RUNCancelledManual),
+		State:      string(verdict),
+		ReasonCode: guards.ReasonCode,
 		CrashCount: run.CrashCount + 1,
 		Attempt:    run.Attempt,
 		LeaseEpoch: epoch,

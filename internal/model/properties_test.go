@@ -14,7 +14,7 @@ import (
 // than sampled, which is what makes the sweeps below proofs rather than
 // evidence. Nothing here is random, so nothing here can be flaky.
 func guardCombos() []model.Guards {
-	const flags = 6
+	const flags = 7
 
 	var out []model.Guards
 	for _, availableAt := range []int64{past, now, future} {
@@ -30,6 +30,7 @@ func guardCombos() []model.Guards {
 						AnyStepFailed:    mask&8 != 0,
 						AllStepsTerminal: mask&16 != 0,
 						CrashBudgetLeft:  mask&32 != 0,
+						AnyStepCancelled: mask&64 != 0,
 						ReasonCode:       reason,
 						DeferReason:      why,
 					})
@@ -106,7 +107,7 @@ func stepMachine() machine {
 		},
 		legal:     legal,
 		wantPairs: 66,
-		wantLegal: 8,
+		wantLegal: 9,
 	}
 }
 
