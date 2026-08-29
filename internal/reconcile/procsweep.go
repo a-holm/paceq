@@ -47,8 +47,8 @@ type Process struct {
 // walk is machine wide, because a job process records nothing about which
 // installation started it, so other installations' processes come back too.
 // Ownership is decided after the scan, by Ownership over this database's
-// attempt baselines, and doctor and the sweep put this one scan through that
-// one predicate. Off Linux it answers "nothing scannable" by being nil-backed,
+// attempt baselines. Doctor and the sweep walk separately, at their own
+// moments, but they put what they find through the one predicate. Off Linux it answers "nothing scannable" by being nil-backed,
 // exactly like the startup sweep.
 func ScanProcs() ([]Process, error) {
 	if defaultScan == nil {
@@ -59,7 +59,9 @@ func ScanProcs() ([]Process, error) {
 
 // Claim is what this database's attempt baselines say about a scanned
 // process: the sweep's refusal rules as an answer rather than as control
-// flow, so a report can name exactly what the sweep would act on.
+// flow, so a report can name what the sweep would consider. The sweep adds
+// refusals of its own before it signals, so a claim bounds it rather than
+// predicting it.
 type Claim int
 
 const (

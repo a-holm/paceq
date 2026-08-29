@@ -231,9 +231,15 @@ func CheckSpoolBacklog(dir string, clk clock.Clock) Finding {
 //
 // The /proc scan is machine wide, so ownership is decided afterwards through
 // reconcile.Ownership, the predicate the startup sweep itself acts on. That is
-// what keeps the finding's next steps true: the sweep clears exactly what this
-// check calls an orphan, and another installation's processes, which the sweep
-// will never signal, are counted rather than accused.
+// what keeps the finding's next steps true: the sweep signals nothing this
+// check does not call an orphan, and another installation's processes, which
+// the sweep will never signal, are counted rather than accused.
+//
+// The containment runs one way only. The sweep refuses more than the predicate
+// does: it skips its own process and group, and it re-reads the start ticks
+// immediately before signalling and stands down if they moved. So a named
+// orphan may still be left alone, and the error is a process reported that
+// nothing kills rather than a process killed that should have lived.
 func CheckOrphanedProcesses(ctx context.Context, db DB, list ProcLister) Finding {
 	const title = "processes"
 	if list == nil {
