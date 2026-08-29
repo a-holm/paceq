@@ -32,6 +32,7 @@ type hookRun struct {
 	stderr    string
 	makeCalls []string
 	makeStdin string
+	gateLog   string
 }
 
 // gateRan reports whether the hook handed the push to `make ci`.
@@ -129,6 +130,41 @@ func TestPrePushFailsWhenTheGateFails(t *testing.T) {
 	if !strings.Contains(run.stderr, "make ci") {
 		t.Fatalf("a failed gate has to name what failed, stderr = %q", run.stderr)
 	}
+	if !strings.Contains(run.stderr, "gate") || !strings.Contains(run.stderr, "lines") {
+		t.Errorf("a failed gate has to point at the whole log, stderr = %q", run.stderr)
+	}
+	if !strings.Contains(run.gateLog, "gate output for ci") {
+		t.Errorf("the gate log has to hold what the gate printed, log = %q", run.gateLog)
+	}
+}
+
+// TestPrePushKeepsTheGateOutOfGitsChannel is the fix for #178. git reads a hook's
+// output itself and stops reading once it has what it wants. A gate that streams
+// tens of thousands of bytes takes SIGPIPE on a later write, dies, and git aborts
+// the push reporting the hook's status: a green gate, no transfer, and no message
+// saying why. The gate belongs in a file, and a summary belongs on the channel.
+func TestPrePushKeepsTheGateOutOfGitsChannel(t *testing.T) {
+	refLines := "refs/heads/feature " + newSHA + " refs/heads/feature " + oldSHA + "\n"
+
+	run := runPrePush(t, "origin", refLines, 0)
+
+	if run.exitCode != 0 {
+		t.Fatalf("a green gate has to let the push through, exit code = %d\nstderr: %s",
+			run.exitCode, run.stderr)
+	}
+	if !run.gateRan() {
+		t.Fatalf("the gate has to run, make calls = %v", run.makeCalls)
+	}
+	if !strings.Contains(run.gateLog, "gate output for ci") {
+		t.Fatalf("the gate output has to reach the log, log = %q", run.gateLog)
+	}
+	if strings.Contains(run.stdout, "gate output for") {
+		t.Errorf("the gate is being streamed to git again, stdout = %q", run.stdout)
+	}
+	if got := len(strings.Split(strings.TrimSpace(run.stdout), "\n")); got > 3 {
+		t.Errorf("the hook printed %d lines to git, want a summary of at most 3\nstdout: %s",
+			got, run.stdout)
+	}
 }
 
 // runPrePush runs .githooks/pre-push the way git does: the remote name and url as
@@ -146,9 +182,13 @@ func runPrePush(t *testing.T, remote, refLines string, makeExit int) hookRun {
 
 	callsFile := filepath.Join(dir, "calls")
 	stdinFile := filepath.Join(dir, "stdin")
+	logFile := filepath.Join(dir, "gate.log")
+	// The stub also writes to stdout, the way make does. That is what the hook
+	// has to keep off git's channel, so the tests need something to look for.
 	stub := "#!/bin/sh\n" +
 		"cat >\"$PACEQ_STUB_STDIN\"\n" +
 		"printf '%s\\n' \"$*\" >>\"$PACEQ_STUB_CALLS\"\n" +
+		"printf 'gate output for %s\\n' \"$*\"\n" +
 		"exit \"$PACEQ_STUB_EXIT\"\n"
 	if err := os.WriteFile(filepath.Join(binDir, "make"), []byte(stub), 0o700); err != nil {
 		t.Fatalf("write the make stub: %v", err)
@@ -161,6 +201,7 @@ func runPrePush(t *testing.T, remote, refLines string, makeExit int) hookRun {
 		"PACEQ_STUB_CALLS="+callsFile,
 		"PACEQ_STUB_STDIN="+stdinFile,
 		"PACEQ_STUB_EXIT="+strconv.Itoa(makeExit),
+		"PACEQ_GATE_LOG="+logFile,
 	)
 	cmd.Stdin = strings.NewReader(refLines)
 
@@ -183,6 +224,7 @@ func runPrePush(t *testing.T, remote, refLines string, makeExit int) hookRun {
 		stderr:    stderr.String(),
 		makeCalls: readLines(t, callsFile),
 		makeStdin: readFile(t, stdinFile),
+		gateLog:   readFile(t, logFile),
 	}
 }
 

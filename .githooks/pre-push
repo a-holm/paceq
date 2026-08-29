@@ -40,7 +40,21 @@ if awk -v zero=0000000000000000000000000000000000000000 '
 	exit 0
 fi
 
-if ! make ci <"$refs"; then
+# The gate writes to a file, not to git's hook channel. git reads a hook's
+# output itself and stops reading once it has what it wants; the gate is tens
+# of thousands of bytes, so streaming it here takes SIGPIPE on a later write,
+# kills the hook, and git aborts the push reporting the hook's status. The
+# push then fails after a green gate, with no transfer and no message. What
+# reaches git is a summary; what reaches a person who needs it is the file.
+# PACEQ_GATE_LOG lets the hook's own test point the log somewhere it owns.
+# It moves where the output lands and nothing else: the gate still runs and
+# still decides the push.
+log="${PACEQ_GATE_LOG:-$(git rev-parse --git-path pre-push-gate.log)}"
+if ! make ci <"$refs" >"$log" 2>&1; then
 	echo "pre-push: 'make ci' failed. Fix it before pushing." >&2
+	echo "pre-push: the whole gate is in $log" >&2
+	echo "pre-push: its last 30 lines:" >&2
+	tail -n 30 "$log" >&2
 	exit 1
 fi
+echo "pre-push: gate green, $(grep -c '' "$log") lines in $log"
