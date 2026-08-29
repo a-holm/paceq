@@ -189,17 +189,17 @@ release:
 test-scratch:
 	@if ! command -v docker >/dev/null 2>&1; then \
 		echo "SKIP test-scratch: docker not available"; \
-		exit 0; \
+	else \
+		mkdir -p bin/scratch && \
+		$(GO) build -trimpath -o bin/scratch/paceq-scratch ./test/scratch && \
+		docker build -q -t paceq-scratch-proof -f test/scratch/Dockerfile . && \
+		out=$$(docker run --rm --network none paceq-scratch-proof) && \
+		if [ "$$out" != "2026-01-01T01:00:00Z" ]; then \
+			echo "test-scratch: next tick = $$out, want 2026-01-01T01:00:00Z"; \
+			exit 1; \
+		fi && \
+		echo "test-scratch: Europe/Oslo resolves inside FROM scratch, next tick $$out"; \
 	fi
-	@mkdir -p bin/scratch
-	$(GO) build -trimpath -o bin/scratch/paceq-scratch ./test/scratch
-	docker build -q -t paceq-scratch-proof -f test/scratch/Dockerfile .
-	@out=$$(docker run --rm --network none paceq-scratch-proof); \
-	if [ "$$out" != "2026-01-01T01:00:00Z" ]; then \
-		echo "test-scratch: next tick = $$out, want 2026-01-01T01:00:00Z"; \
-		exit 1; \
-	fi; \
-	echo "test-scratch: Europe/Oslo resolves inside FROM scratch, next tick $$out"
 
 # The example sensors (issue #14, M3-07) are shell, not Go, so they get their
 # own gate: every script must parse under `sh -n`, and `shellcheck` runs when
@@ -257,23 +257,23 @@ install-script:
 prom-check-metrics:
 	@if ! command -v $(PROMTOOL) >/dev/null 2>&1; then \
 		echo "SKIP prom-check-metrics: promtool not installed (pin: $(PROM_VERSION))"; \
-		exit 0; \
+	else \
+		$(PROMTOOL) check metrics < internal/obs/testdata/golden/metrics.txt; \
 	fi
-	$(PROMTOOL) check metrics < internal/obs/testdata/golden/metrics.txt
 
 prom-check-rules:
 	@if ! command -v $(PROMTOOL) >/dev/null 2>&1; then \
 		echo "SKIP prom-check-rules: promtool not installed (pin: $(PROM_VERSION))"; \
-		exit 0; \
+	else \
+		$(PROMTOOL) check rules deploy/pulseq-alerts.yml; \
 	fi
-	$(PROMTOOL) check rules deploy/pulseq-alerts.yml
 
 prom-rules:
 	@if ! command -v $(PROMTOOL) >/dev/null 2>&1; then \
 		echo "SKIP prom-rules: promtool not installed (pin: $(PROM_VERSION))"; \
-		exit 0; \
+	else \
+		cd deploy && $(PROMTOOL) test rules pulseq-alerts.test.yml; \
 	fi
-	cd deploy && $(PROMTOOL) test rules pulseq-alerts.test.yml
 
 # Gold standard fixtures are expectations, not code: a commit that edits one
 # must carry a FIXTURE-CHANGE: line with the reason (plan 04 section 8 point
