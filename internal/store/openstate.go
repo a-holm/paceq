@@ -82,7 +82,11 @@ func lockOwner(ctx context.Context, dbPath string) *Session {
 	if _, err := os.Stat(dbPath); err != nil {
 		return nil
 	}
-	db, err := sql.Open(driverName, dsn(dbPath, "mode=ro", readerSpecs("NORMAL")))
+	uri, err := dsn(dbPath, "mode=ro", readerSpecs("NORMAL"))
+	if err != nil {
+		return nil
+	}
+	db, err := sql.Open(driverName, uri)
 	if err != nil {
 		return nil
 	}

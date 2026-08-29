@@ -25,7 +25,11 @@ func OpenReadOnly(ctx context.Context, path string, opt Options) (*Store, error)
 		return nil, err
 	}
 
-	r, err := sql.Open(driverName, dsn(path, "mode=ro", readerSpecs(syncMode)))
+	readerDSN, err := dsn(path, "mode=ro", readerSpecs(syncMode))
+	if err != nil {
+		return nil, err
+	}
+	r, err := sql.Open(driverName, readerDSN)
 	if err != nil {
 		return nil, fmt.Errorf("open reader pool: %w", err)
 	}

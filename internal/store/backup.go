@@ -147,7 +147,11 @@ func (s *Store) VacuumInto(ctx context.Context, dst string) error {
 // else, including a file that cannot be opened at all, fails. This is the
 // only way a backup counts as taken.
 func VerifyDatabaseFile(ctx context.Context, path string, deep bool) error {
-	db, err := sql.Open(driverName, dsn(path, "mode=ro", nil))
+	uri, err := dsn(path, "mode=ro", nil)
+	if err != nil {
+		return fmt.Errorf("verify %s: %w", path, err)
+	}
+	db, err := sql.Open(driverName, uri)
 	if err != nil {
 		return fmt.Errorf("open backup copy for verification: %w", err)
 	}

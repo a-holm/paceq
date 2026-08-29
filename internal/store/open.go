@@ -148,8 +148,19 @@ func Open(ctx context.Context, path string, opt Options) (*Store, error) {
 	if err := guardFilesystem(filepath.Dir(path), opt.AllowNetworkFS); err != nil {
 		return nil, err
 	}
+	// Both connection strings are rendered before either pool exists: the path
+	// they carry is the same, so a path no URI can carry must fail before a
+	// single file is created.
+	writerDSN, err := dsn(path, "_txlock=immediate", writerSpecs(sync))
+	if err != nil {
+		return nil, err
+	}
+	readerDSN, err := dsn(path, "mode=ro", readerSpecs(sync))
+	if err != nil {
+		return nil, err
+	}
 
-	w, err := sql.Open(driverName, dsn(path, "_txlock=immediate", writerSpecs(sync)))
+	w, err := sql.Open(driverName, writerDSN)
 	if err != nil {
 		return nil, fmt.Errorf("open writer pool: %w", err)
 	}
@@ -166,7 +177,7 @@ func Open(ctx context.Context, path string, opt Options) (*Store, error) {
 		return nil, fmt.Errorf("connect writer pool: %w", err)
 	}
 
-	r, err := sql.Open(driverName, dsn(path, "mode=ro", readerSpecs(sync)))
+	r, err := sql.Open(driverName, readerDSN)
 	if err != nil {
 		_ = w.Close()
 		return nil, fmt.Errorf("open reader pool: %w", err)
@@ -310,7 +321,11 @@ func syncReadback(sync string) string {
 // the pragmas: _txlock=immediate makes every writer transaction BEGIN
 // IMMEDIATE, which is what avoids the lock upgrade that busy_timeout cannot
 // retry; mode=ro opens the reader read-only.
-func dsn(path, first string, specs []pragmaSpec) string {
+func dsn(path, first string, specs []pragmaSpec) (string, error) {
+	name, err := uriFilename(path)
+	if err != nil {
+		return "", err
+	}
 	params := make([]string, 0, len(specs)+1)
 	params = append(params, first)
 	for _, spec := range specs {
@@ -319,5 +334,41 @@ func dsn(path, first string, specs []pragmaSpec) string {
 		}
 		params = append(params, "_pragma="+spec.name+"("+spec.arg+")")
 	}
-	return "file:" + path + "?" + strings.Join(params, "&")
+	return "file:" + name + "?" + strings.Join(params, "&"), nil
+}
+
+// uriEscaper covers the three characters SQLite reads rather than passes on
+// inside a URI filename: ? ends the filename and starts the parameters, #
+// starts the fragment, and % introduces an escape of its own. Everything else,
+// spaces and non-ASCII bytes included, reaches the VFS unchanged, so escaping
+// more would only rename directories that work today.
+var uriEscaper = strings.NewReplacer("%", "%25", "?", "%3f", "#", "%23")
+
+// uriFilename renders path as the filename part of a file: URI. The driver
+// passes a file: connection string to SQLite with SQLITE_OPEN_URI set, so the
+// path is read as a URI: an unescaped character in it names a different
+// database, which SQLite then creates rather than refuses.
+//
+// A path starting with ':' is passed through. ":memory:" is an in-memory DSN,
+// and escaping it would materialise a file with that name instead; the startup
+// verification refuses an in-memory database, which is where that refusal
+// belongs.
+func uriFilename(path string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("database path is empty: an empty file: URI opens a private temporary database")
+	}
+	if strings.ContainsRune(path, 0) {
+		return "", fmt.Errorf("database path %q contains a NUL byte, which no URI can carry", path)
+	}
+	if strings.HasPrefix(path, ":") {
+		return path, nil
+	}
+	name := uriEscaper.Replace(path)
+	// file:// opens an authority segment, which SQLite refuses unless it is
+	// empty or "localhost", and it reads that segment before decoding any
+	// escape. A path that begins with two slashes has to lose one of them here.
+	if strings.HasPrefix(name, "//") {
+		name = "%2f" + name[1:]
+	}
+	return name, nil
 }
