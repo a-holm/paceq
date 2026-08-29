@@ -291,17 +291,19 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 
 	tickEvery := cfg.tickInterval()
 
-	// The sensor runtime is the long-lived evaluator context (M3-02). Its
-	// source of due sensors is a seam: the store-backed reader arrives with
-	// M3-01, until then a nil source keeps the loop alive and idle. The sink
-	// that commits results to cursor, tick and trigger rows is M3-03's; the
-	// daemon wires it when that lands.
+	// The sensor runtime is the long-lived evaluator context (M3-02): the
+	// store says which sensors are due, the runtime evaluates each one off the
+	// loop, and the sink commits every result as one transaction. Each tick
+	// the sink writes carries this session id, so a tick names the daemon that
+	// produced it. It does not name an evaluation in flight: the seam hands a
+	// result over only once the sensor has answered, so a daemon that dies
+	// mid-evaluation leaves no tick behind at all.
 	sensorEv := sensor.NewEvaluator(sensor.Config{
 		KillGrace: cfg.killGrace(),
 	}, clk)
 	sensorRt := sensor.NewRuntime(sensorEv, sensor.RuntimeConfig{
-		Source:       nil, // M3-01: the store-backed due-sensors reader
-		Sink:         nil, // M3-03: the atomic sensor commit
+		Source:       sensorSource{st: st, clk: clk, log: log},
+		Sink:         sensorSink{st: st, clk: clk, session: sess.ID},
 		MaxParallel:  cfg.sensorMaxParallel(),
 		DrainTimeout: cfg.drainTimeout(),
 		Clock:        clk,

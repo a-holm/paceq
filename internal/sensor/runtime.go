@@ -24,7 +24,23 @@ type Source interface {
 // prove what it hands over without depending on a write layer that is not
 // here yet.
 type Sink interface {
-	Commit(ctx context.Context, sensorName string, r Result) error
+	// Begin opens the tick before the sensor runs. The version it returns is
+	// the one the commit fences against, so a cursor reset that lands while
+	// the sensor is running loses that race instead of being overwritten by
+	// a result computed from the cursor it replaced. Opening first also
+	// leaves a tick on the row for recovery to close when a daemon dies
+	// mid-evaluation.
+	Begin(ctx context.Context, spec Spec) (Ticket, error)
+	// Commit closes the tick Begin opened.
+	Commit(ctx context.Context, spec Spec, tk Ticket, r Result) error
+}
+
+// Ticket is an opened tick: what the commit closes, and the version it fences
+// against. The runtime carries it from Begin to Commit and never reads inside
+// it.
+type Ticket struct {
+	ID      string
+	Version int64
 }
 
 // Runtime is the long-lived evaluator context: it finds due sensors under the
@@ -194,6 +210,20 @@ func (rt *Runtime) evaluate(ctx context.Context, spec Spec) {
 	brek := rt.breakerFor(spec.Name)
 	defer rt.ReleasePermit()
 	defer rt.unclaim(spec.Name)
+	// The tick opens before the sensor runs, never after: see Sink.Begin.
+	// A sensor whose tick cannot be opened is not evaluated at all, because
+	// an evaluation nothing can close is work with no record of it.
+	var tk Ticket
+	if rt.sink != nil {
+		opened, err := rt.sink.Begin(ctx, spec)
+		if err != nil {
+			if ctx.Err() == nil {
+				rt.log.Warn("sensor tick was not opened", "sensor", spec.Name, "error", err.Error())
+			}
+			return
+		}
+		tk = opened
+	}
 	in := rt.inputFor(spec)
 	res := rt.ev.Evaluate(ctx, spec, in)
 	// Truncate the batch before it reaches the sink: a single evaluation is
@@ -206,7 +236,7 @@ func (rt *Runtime) evaluate(ctx context.Context, spec Spec) {
 	// regardless of how many triggers were dropped.
 	_ = brek.NoteOutcome(ClassifyFailure(res.ExitCode), res.Outcome != Errored)
 	if rt.sink != nil {
-		if err := rt.sink.Commit(ctx, spec.Name, res); err != nil && ctx.Err() == nil {
+		if err := rt.sink.Commit(ctx, spec, tk, res); err != nil && ctx.Err() == nil {
 			rt.log.Warn("sensor result was not committed", "sensor", spec.Name, "error", err.Error())
 		}
 	}

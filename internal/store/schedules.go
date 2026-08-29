@@ -15,8 +15,9 @@ import (
 )
 
 // Schedules are the automatic firing rules the scheduler loop reads. This file
-// is the single owner of their SQL: the due discovery query and the upsert the
-// apply path and tests use to put a schedule in the database.
+// owns the SQL the loop runs: the due discovery query, the tick transaction and
+// the upsert tests seed a schedule with. The write that materialises a declared
+// schedule at apply lives in schedulesync.go.
 
 // ScheduleRow is one schedule as the due query returns it. Every column the
 // loop needs to decide what fired comes back at once, so processing one
