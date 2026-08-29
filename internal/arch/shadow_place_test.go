@@ -27,11 +27,14 @@ func TestShadowIsOnlyReadAtTheMaterialisationSeam(t *testing.T) {
 		filepath.Join("scheduler", "loop.go"):    true,
 		filepath.Join("scheduler", "observe.go"): true,
 		filepath.Join("store", "schedules.go"):   true,
-		filepath.Join("store", "shadow.go"):      true,
-		filepath.Join("cli", "shadowcmd.go"):     true,
-		filepath.Join("cli", "statuscmd.go"):     true,
-		filepath.Join("cli", "servecmd.go"):      true,
-		filepath.Join("cli", "root.go"):          true,
+		// Apply materialises the declared flag into the row. It makes no
+		// decision with it; the decision stays at the materialisation seam.
+		filepath.Join("store", "schedulesync.go"): true,
+		filepath.Join("store", "shadow.go"):       true,
+		filepath.Join("cli", "shadowcmd.go"):      true,
+		filepath.Join("cli", "statuscmd.go"):      true,
+		filepath.Join("cli", "servecmd.go"):       true,
+		filepath.Join("cli", "root.go"):           true,
 		// The import next-steps hint quotes the future flag; no decision.
 		filepath.Join("cli", "importcmd.go"): true,
 		// Cutover's help quotes the shadow fence in its safety story; the

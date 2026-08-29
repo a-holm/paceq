@@ -28,6 +28,11 @@ type JobApplyResult struct {
 	// Sensors is the sensor sync that ran in the same transaction, so a job's
 	// new definition and its sensor rows land and are reported together.
 	Sensors SyncResult
+
+	// Schedules is the schedule sync that ran in the same transaction, for
+	// the same reason: a job file that declares a cron schedule leaves the
+	// apply with a schedule row the scheduler loop can already find.
+	Schedules SyncResult
 }
 
 // applySensorWork is the sensor sync settled on for one job before the write
@@ -37,11 +42,19 @@ type applySensorWork struct {
 	eventIDs []string
 }
 
+// applyScheduleWork is the schedule sync settled on for one job before the
+// write transaction opens.
+type applyScheduleWork struct {
+	plan   []schedulePlanItem
+	rowIDs []string
+}
+
 // ApplyJobs records a batch of job specs and leaves every job pointing at the
 // version its spec hashes to. The whole batch is one transaction on purpose:
 // apply either lands complete or not at all, because a half applied catalog is
 // the one state an operator cannot reason about. Any failure rolls every job
-// in the batch back, including the sensor rows each job's spec declares.
+// in the batch back, including the sensor and schedule rows each job's spec
+// declares.
 //
 // Idempotency lives in the schema, not in a check: job_versions carries
 // UNIQUE (job_name, spec_hash), the insert comes first, and a conflict means
@@ -58,8 +71,10 @@ func (s *Store) ApplyJobs(ctx context.Context, inputs []JobVersionInput) ([]JobA
 
 	ids := make([]string, len(inputs))
 	type planned struct {
-		work applySensorWork
-		res  SyncResult
+		sensors     applySensorWork
+		sensorRes   SyncResult
+		schedules   applyScheduleWork
+		scheduleRes SyncResult
 	}
 	plans := make([]planned, len(inputs))
 	for i := range inputs {
@@ -73,14 +88,32 @@ func (s *Store) ApplyJobs(ctx context.Context, inputs []JobVersionInput) ([]JobA
 		if err != nil {
 			return nil, err
 		}
-		plan := buildSensorPlan(inputs[i].JobName, inputs[i].Sensors, existing)
-		eventIDs := make([]string, len(plan))
-		for j := range plan {
+		sensorPlan := buildSensorPlan(inputs[i].JobName, inputs[i].Sensors, existing)
+		eventIDs := make([]string, len(sensorPlan))
+		for j := range sensorPlan {
 			if eventIDs[j], err = id.New(now); err != nil {
 				return nil, fmt.Errorf("mint a sensor event id for %s: %w", inputs[i].JobName, err)
 			}
 		}
-		plans[i] = planned{applySensorWork{plan: plan, eventIDs: eventIDs}, resultOf(plan)}
+
+		known, err := currentScheduleDefs(ctx, s.r, inputs[i].JobName)
+		if err != nil {
+			return nil, err
+		}
+		schedulePlan := buildSchedulePlan(inputs[i].Schedules, known)
+		rowIDs := make([]string, len(schedulePlan))
+		for j := range schedulePlan {
+			if rowIDs[j], err = id.New(now); err != nil {
+				return nil, fmt.Errorf("mint a schedule id for %s: %w", inputs[i].JobName, err)
+			}
+		}
+
+		plans[i] = planned{
+			sensors:     applySensorWork{plan: sensorPlan, eventIDs: eventIDs},
+			sensorRes:   resultOf(sensorPlan),
+			schedules:   applyScheduleWork{plan: schedulePlan, rowIDs: rowIDs},
+			scheduleRes: scheduleResultOf(schedulePlan),
+		}
 	}
 
 	results := make([]JobApplyResult, 0, len(inputs))
@@ -94,8 +127,15 @@ func (s *Store) ApplyJobs(ctx context.Context, inputs []JobVersionInput) ([]JobA
 				return err
 			}
 			work := plans[i]
-			if len(work.work.plan) > 0 {
-				if err := syncSensorsTx(tx, at, in.JobName, work.work.plan, work.work.eventIDs); err != nil {
+			if len(work.sensors.plan) > 0 {
+				if err := syncSensorsTx(tx, at, in.JobName, work.sensors.plan, work.sensors.eventIDs); err != nil {
+					return err
+				}
+			}
+			// The schedule rows come after the job version because they
+			// reference jobs (name), so the job has to exist first.
+			if len(work.schedules.plan) > 0 {
+				if err := syncSchedulesTx(tx, at, in.JobName, work.schedules.plan, work.schedules.rowIDs); err != nil {
 					return err
 				}
 			}
@@ -104,7 +144,8 @@ func (s *Store) ApplyJobs(ctx context.Context, inputs []JobVersionInput) ([]JobA
 				VersionID: version.ID,
 				Version:   version.Version,
 				Created:   created,
-				Sensors:   work.res,
+				Sensors:   work.sensorRes,
+				Schedules: work.scheduleRes,
 			})
 		}
 		return nil

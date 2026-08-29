@@ -27,23 +27,35 @@ func (f *fakeSource) Due(_ context.Context, limit int) ([]Spec, error) {
 	return f.specs, nil
 }
 
-// recSink records every committed Result, the stand-in for M3-03's commit
-// transaction in the runtime tests.
+// recSink records every opened tick and every committed Result, the stand-in
+// for the store's commit transaction in the runtime tests.
 type recSink struct {
 	mu      sync.Mutex
+	opened  []string
+	nextID  int
 	commits []struct {
 		name   string
 		result Result
+		ticket Ticket
 	}
 }
 
-func (r *recSink) Commit(_ context.Context, name string, res Result) error {
+func (r *recSink) Begin(_ context.Context, spec Spec) (Ticket, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.nextID++
+	r.opened = append(r.opened, spec.Name)
+	return Ticket{ID: fmt.Sprintf("tick-%d", r.nextID), Version: int64(r.nextID)}, nil
+}
+
+func (r *recSink) Commit(_ context.Context, spec Spec, tk Ticket, res Result) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.commits = append(r.commits, struct {
 		name   string
 		result Result
-	}{name, res})
+		ticket Ticket
+	}{spec.Name, res, tk})
 	return nil
 }
 

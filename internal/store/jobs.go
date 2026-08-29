@@ -39,6 +39,11 @@ type JobVersionInput struct {
 	// the same transaction that writes the version. Nil or empty means the
 	// job declares no sensors, and any sensor rows it owned are removed.
 	Sensors []spec.Sensor
+
+	// Schedules are the schedule definitions of the job, materialised as rows
+	// in the same transaction that writes the version. Nil or empty means the
+	// job declares no schedules, and any schedule rows it owned are removed.
+	Schedules []spec.Schedule
 }
 
 // JobVersion is one immutable snapshot of a job spec.
