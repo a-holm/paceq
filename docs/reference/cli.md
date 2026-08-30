@@ -1831,12 +1831,18 @@ Inherited flags:
 
 Check job files and say exactly what is wrong with them
 
-Check job files: read them, apply every rule, and report what is wrong with
-each one by file, line and column, with the line quoted and a way forward.
+Check job files: read them, apply every rule that the files themselves can
+answer, and report what is wrong with each one by file, line and column, with
+the line quoted and a way forward.
 
-With no arguments it checks the jobs directory. A path that names a file checks
-that file; a path that names a directory checks every .yaml and .yml file under
-it, in a fixed order.
+With no arguments it checks the catalog apply loads: the directory named by
+PACEQ_JOBS_DIR, or the jobs directory beside the project. A path that names a
+file checks that file; a path that names a directory checks every .yaml and
+.yml file under it, in a fixed order.
+
+The rules run over each file alone and then over the files together: a sensor
+name is a primary key across every job, so two files claiming one are refused
+here exactly as apply refuses them.
 
 validate reads nothing but the files it is given. It touches no database, starts
 no process and needs no daemon.

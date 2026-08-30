@@ -90,7 +90,7 @@ type failedEntry struct {
 }
 
 func runApply(ctx context.Context, env Env, g *globals, out *ui, args []string) error {
-	files, err := applyFilesFor(env, args)
+	files, err := catalogFilesFor(env, args, applyCatalog)
 	if err != nil {
 		return err
 	}
@@ -331,61 +331,6 @@ func jobWidth(results []store.JobApplyResult) int {
 		}
 	}
 	return width
-}
-
-// applyFilesFor turns what was typed on the command line into the files to
-// load. With nothing given, PACEQ_JOBS_DIR names the catalog and otherwise the
-// jobs directory beside the state directory does.
-func applyFilesFor(env Env, args []string) ([]jobFile, error) {
-	roots := args
-	if len(roots) == 0 {
-		if fromEnv := env.Getenv("PACEQ_JOBS_DIR"); fromEnv != "" {
-			roots = []string{fromEnv}
-		} else {
-			defaultDir := filepath.Join(env.Dir, jobsDir)
-			info, err := os.Stat(defaultDir)
-			if err != nil || !info.IsDir() {
-				return nil, usageError(
-					fmt.Sprintf("no paths given, and there is no %s directory here", jobsDir),
-					"name what to load: paceq apply jobs/ or paceq apply jobs/nightly.yaml",
-					"set PACEQ_JOBS_DIR to read a catalog from somewhere else",
-					"paceq init  creates a project with a "+jobsDir+" directory",
-				)
-			}
-			roots = []string{defaultDir}
-		}
-	}
-
-	resolved := make([]string, 0, len(roots))
-	for _, root := range roots {
-		path := root
-		if !filepath.IsAbs(path) {
-			path = filepath.Join(env.Dir, path)
-		}
-		if _, err := os.Stat(path); err != nil {
-			return nil, pathError(root, err)
-		}
-		resolved = append(resolved, path)
-	}
-
-	paths, err := spec.Collect(resolved)
-	if err != nil {
-		return nil, internalError("could not list the job files", err)
-	}
-	if len(paths) == 0 {
-		return nil, notFoundError(
-			"no job files to load",
-			strings.Join(roots, ", "),
-			"paceq reads files ending in "+strings.Join(spec.Extensions, " or "),
-			"paceq init  creates a project with an example job that applies as it stands",
-		)
-	}
-
-	files := make([]jobFile, 0, len(paths))
-	for _, path := range paths {
-		files = append(files, jobFile{path: path, display: relative(env.Dir, path)})
-	}
-	return files, nil
 }
 
 // displayPath renders a path for a message, relative to the project when it
