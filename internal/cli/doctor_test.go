@@ -64,17 +64,7 @@ func TestDoctorIgnoresARealForeignJobProcess(t *testing.T) {
 		t.Fatalf("paceq init = %d, want %d", code, ExitOK)
 	}
 
-	// A job process of a second installation: it leads its own group, the
-	// way the runner spawns jobs, and carries a run id no database here has.
-	cmd := exec.Command("sleep", "60")
-	cmd.Env = append(os.Environ(), "PACEQ_RUN_ID=01M17NNQ5Y3EXTKHX9TFCNBZ2J")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("spawn the other installation's job: %v", err)
-	}
-	pid := cmd.Process.Pid
-	go func() { _ = cmd.Wait() }()
-	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL) })
+	spawnForeignJobProcess(t)
 
 	got := runCLIWithDoctorEdges(t, dir, sandboxedCLIStatus(), nil, "doctor")
 
@@ -87,6 +77,24 @@ func TestDoctorIgnoresARealForeignJobProcess(t *testing.T) {
 	if strings.Contains(got.stdout, "orphaned job processes") {
 		t.Errorf("a process this installation never started was called an orphan:\n%s", got.stdout)
 	}
+}
+
+// spawnForeignJobProcess starts a live job process of a second paceq
+// installation: it leads its own group, the way the runner spawns jobs, and
+// carries a run id no database here has. It dies with the test, killed through
+// the group it leads and nothing else.
+func spawnForeignJobProcess(t *testing.T) {
+	t.Helper()
+
+	cmd := exec.Command("sleep", "60")
+	cmd.Env = append(os.Environ(), "PACEQ_RUN_ID=01M17NNQ5Y3EXTKHX9TFCNBZ2J")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("spawn the other installation's job: %v", err)
+	}
+	pid := cmd.Process.Pid
+	go func() { _ = cmd.Wait() }()
+	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL) })
 }
 
 // TestDoctorReportsWhatTheIssueAsksFor keeps the report answering the questions
