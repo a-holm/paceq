@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/a-holm/paceq/internal/id"
+	"github.com/a-holm/paceq/internal/spec"
 )
 
 // Errors callers act on rather than report. Everything else that comes out of
@@ -75,6 +76,11 @@ type NewRun struct {
 
 	// MaxAttempts is how many times the run may be attempted. Zero means one.
 	MaxAttempts int
+
+	// MaxParallel is how many steps of this run may be in flight at once, the
+	// budget the claim predicate reads off the run row. Zero means the spec
+	// default, which is what a job that declares nothing gets.
+	MaxParallel int
 
 	// ReplayOf is the run this one replays, empty when it replays nothing.
 	ReplayOf string
@@ -322,6 +328,10 @@ func (s *Store) CreateRunWithSteps(ctx context.Context, in NewRun) (Run, error) 
 	if run.MaxAttempts == 0 {
 		run.MaxAttempts = 1
 	}
+	maxParallel := in.MaxParallel
+	if maxParallel < 1 {
+		maxParallel = spec.DefaultMaxParallel
+	}
 
 	at := now.UnixMilli()
 	err = s.withTx(ctx, func(tx *sql.Tx) error {
@@ -331,14 +341,14 @@ func (s *Store) CreateRunWithSteps(ctx context.Context, in NewRun) (Run, error) 
 		result, err := tx.Exec(`INSERT INTO runs
 	(id, job_name, job_version_id, trigger_id, origin, run_key, state, available_at,
 	 defer_reason, scheduled_for, params_json, concurrency_key, max_attempts, replay_of,
-	 created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	 created_at, updated_at, max_parallel)
+VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (concurrency_key) WHERE concurrency_key IS NOT NULL
 	AND state IN ('queued', 'running') DO NOTHING`,
 			run.ID, run.JobName, run.JobVersionID, nullIfEmpty(run.TriggerID), run.Origin,
 			nullIfEmpty(run.RunKey), run.AvailableAt.UnixMilli(), nullIfEmpty(run.DeferReason),
 			nullTime(run.ScheduledFor), run.ParamsJSON, nullIfEmpty(run.ConcurrencyKey),
-			run.MaxAttempts, nullIfEmpty(in.ReplayOf), at, at)
+			run.MaxAttempts, nullIfEmpty(in.ReplayOf), at, at, maxParallel)
 		if err != nil {
 			return fmt.Errorf("create a run of job %s: %w", run.JobName, err)
 		}

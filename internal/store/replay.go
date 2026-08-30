@@ -130,10 +130,11 @@ FROM job_versions v WHERE v.id = ?`, src.JobVersionID).Scan(&specJSON); err != n
 		// decision belongs to whoever typed the command.
 		if _, err := tx.Exec(`INSERT INTO runs
 (id, job_name, job_version_id, origin, state, available_at, params_json,
- concurrency_key, max_attempts, replay_of, created_at, updated_at)
-VALUES (?, ?, ?, 'replay', 'queued', ?, ?, ?, 1, ?, ?, ?)`,
+ concurrency_key, max_attempts, replay_of, created_at, updated_at, max_parallel)
+VALUES (?, ?, ?, 'replay', 'queued', ?, ?, ?, 1, ?, ?, ?, ?)`,
 			newID, src.JobName, src.JobVersionID, now.UnixMilli(), src.ParamsJSON,
-			nullIfEmpty(src.ConcurrencyKey), nullIfEmpty(src.ID), now.UnixMilli(), now.UnixMilli()); err != nil {
+			nullIfEmpty(src.ConcurrencyKey), nullIfEmpty(src.ID), now.UnixMilli(), now.UnixMilli(),
+			runMaxParallel(job)); err != nil {
 			return fmt.Errorf("create the replay of run %s: %w", srcRunID, err)
 		}
 

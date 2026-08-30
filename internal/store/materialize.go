@@ -162,12 +162,13 @@ VALUES (?, ?, ?, ?, ?, 'accepted')`, triggerID, tickID, in.JobName, params, at);
 		concKey := resolvedConcurrencyKey(job, params, "")
 		result, err := tx.Exec(`INSERT INTO runs
 		(id, job_name, job_version_id, trigger_id, origin, state, available_at,
-		params_json, max_attempts, created_at, updated_at, concurrency_key)
-		VALUES (?, ?, ?, ?, 'manual', 'queued', ?, ?, 1, ?, ?, ?)
+		params_json, max_attempts, created_at, updated_at, concurrency_key, max_parallel)
+		VALUES (?, ?, ?, ?, 'manual', 'queued', ?, ?, 1, ?, ?, ?, ?)
 		ON CONFLICT (concurrency_key) WHERE concurrency_key IS NOT NULL
 		AND state IN ('queued', 'running') DO NOTHING`,
 			run.ID, run.JobName, run.JobVersionID, nullIfEmpty(run.TriggerID),
-			run.AvailableAt.UnixMilli(), run.ParamsJSON, at, at, nullIfEmpty(concKey))
+			run.AvailableAt.UnixMilli(), run.ParamsJSON, at, at, nullIfEmpty(concKey),
+			runMaxParallel(job))
 		if err != nil {
 			return fmt.Errorf("create a run of job %s: %w", run.JobName, err)
 		}
@@ -200,6 +201,22 @@ VALUES (?, ?, ?, ?, ?, 'accepted')`, triggerID, tickID, in.JobName, params, at);
 		return ManualTriggerResult{}, err
 	}
 	return out, nil
+}
+
+// runMaxParallel is the step budget a run of this frozen spec is born with.
+// Every path that creates a run from a job version writes it into the run
+// row, because the claim predicate reads the budget off that row and has no
+// other way to learn what the file asked for.
+//
+// The clamp covers a spec_json the canonical writer did not produce: FromIR
+// already defaults an absent key, and the decoder refuses anything under the
+// floor, so a value below one means the document is not ours. Writing it
+// would trip the column's CHECK and lose the whole materialisation.
+func runMaxParallel(job *spec.Job) int {
+	if job == nil || job.MaxParallel < 1 {
+		return spec.DefaultMaxParallel
+	}
+	return job.MaxParallel
 }
 
 // insertSteps writes one pending step per spec step, in spec order, together
