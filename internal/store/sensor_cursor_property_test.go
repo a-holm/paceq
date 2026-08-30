@@ -136,9 +136,10 @@ func (m *propModel) commit(keys []int, after int) (newKeys, dups int) {
 	return newKeys, dups
 }
 
-// skip records a skipped tick: the cursor does not move and the cursor is
-// still owned by the last writer of the sensor, which was a committed tick or
-// an operator, so the manual flag is left as it was.
+// skip records a skipped tick: the cursor does not move, whatever watermark the
+// sensor reported along with its skip, and the cursor is still owned by the last
+// writer of the sensor, which was a committed tick or an operator, so the manual
+// flag is left as it was.
 func (m *propModel) skip() {}
 
 // advance grows the world by n monotone keys, stopping at the cap. A sensor
@@ -363,13 +364,16 @@ func sensorPropSkip(t *testing.T, ctx context.Context, sut *propSUT, m *propMode
 		SensorName:    propName,
 		JobName:       sensorJob,
 		CursorVersion: begin.CursorVersion,
-		CursorAfter:   keyStr(m.cursorKey),
-		DedupEpoch:    m.epoch,
-		Outcome:       OutcomeSkipped,
-		ReasonCode:    reason.TICKSkippedSensor,
-		ReasonText:    "nothing new in the property world",
-		NextEvalAt:    sut.now().UnixMilli() + 60000,
-		Now:           sut.now(),
+		// The sensor reports how far it looked. It elected nothing there, so
+		// the cursor may not follow it: every key between the cursor and the
+		// watermark would be stepped over with no run behind it.
+		CursorAfter: keyStr(m.worldMax),
+		DedupEpoch:  m.epoch,
+		Outcome:     OutcomeSkipped,
+		ReasonCode:  reason.TICKSkippedSensor,
+		ReasonText:  "nothing new in the property world",
+		NextEvalAt:  sut.now().UnixMilli() + 60000,
+		Now:         sut.now(),
 	})
 	if err != nil {
 		t.Fatalf("commit sensor skip: %v", err)

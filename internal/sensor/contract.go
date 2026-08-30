@@ -68,8 +68,10 @@ type Result struct {
 
 	// CursorBefore is the cursor the evaluation started from; CursorAfter is
 	// the value the sensor reported, or nil when the sensor did not move it.
-	// An error leaves CursorAfter nil, which is the guarantee that a failed
-	// tick never advances the cursor (G4).
+	// An error leaves CursorAfter nil. What the commit does with a reported
+	// cursor is the store's decision, not this package's: only a triggered
+	// evaluation commits one, so a failed or skipped tick never advances the
+	// cursor (G4).
 	CursorBefore *string
 	CursorAfter  *string
 

@@ -2,7 +2,10 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -219,5 +222,119 @@ func TestSensorSinkBeginFailureStopsTheEvaluation(t *testing.T) {
 	}
 	if f.commits != 0 {
 		t.Errorf("committed %d times after a failed Begin, want 0", f.commits)
+	}
+}
+
+// TestSensorSkipWithAWatermarkLeavesTheCursorAlone is the end to end
+// reproduction over a real store and a real sensor program: the sensor prints a
+// cursor next to its skip reason and exits 0, which is how the out contract
+// invites a sensor to say "I looked this far and found nothing". Nothing about
+// that evaluation may move the sensor on, because no run was elected for the
+// window it claims to have read.
+func TestSensorSkipWithAWatermarkLeavesTheCursorAlone(t *testing.T) {
+	ctx := t.Context()
+	dir := t.TempDir()
+	st, err := store.Open(ctx, filepath.Join(dir, "state.db"), store.Options{})
+	if err != nil {
+		t.Fatalf("open the store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if _, _, err := st.UpsertJobVersion(ctx, store.JobVersionInput{
+		JobName:       "drop",
+		SpecHash:      "sha256:cursor-skip",
+		SpecJSON:      `{"schema":"paceq.job.v1","name":"drop","steps":[{"name":"collect","run":["true"]}]}`,
+		MaxConcurrent: 1,
+	}); err != nil {
+		t.Fatalf("seed the job: %v", err)
+	}
+
+	script := filepath.Join(dir, "watermark-skip.sh")
+	if err := os.WriteFile(script,
+		[]byte("#!/bin/sh\nprintf '{\"cursor\":\"zzz-new-cursor\",\"triggers\":[],\"skip_reason\":\"nothing new\"}\\n'\n"),
+		0o700); err != nil {
+		t.Fatalf("write the sensor program: %v", err)
+	}
+	execJSON, err := json.Marshal(map[string]any{"run": []string{"/bin/sh", script}})
+	if err != nil {
+		t.Fatalf("build the exec spec: %v", err)
+	}
+	if err := st.UpsertSensor(ctx, store.SensorSeedInput{
+		Name: "dropzone", JobName: "drop", ExecJSON: string(execJSON),
+	}); err != nil {
+		t.Fatalf("seed the sensor: %v", err)
+	}
+	if err := st.SetSensorCursor(ctx, store.CursorInput{Name: "dropzone", Cursor: "a"}); err != nil {
+		t.Fatalf("place the sensor at its cursor: %v", err)
+	}
+
+	sink := sensorSink{st: st, clk: clock.System(), session: "serve:test"}
+
+	// One whole evaluation, the way the runtime does it: read the row, build
+	// the spec from it, run the sensor, open the tick, close it. It reports
+	// the cursor the evaluation started from and the tick it wrote.
+	evaluate := func() (before, tickID string) {
+		t.Helper()
+		row, err := st.GetSensor(ctx, "dropzone")
+		if err != nil {
+			t.Fatalf("read the sensor row: %v", err)
+		}
+		spec, err := SensorSpecFromRow(row)
+		if err != nil {
+			t.Fatalf("build the sensor spec: %v", err)
+		}
+		now := time.Now().UTC()
+		res := sensor.NewEvaluator(sensor.Config{}, clock.System()).Evaluate(ctx, spec, sensor.Input{
+			Sensor: spec.Name, Job: spec.Job, Cursor: spec.Cursor,
+			Now: now.UnixMilli(), MaxTriggers: spec.MaxTriggers,
+			DeadlineMS: now.Add(spec.Timeout).UnixMilli(),
+		})
+		// The reproduction is worth nothing unless the sensor really did
+		// report a watermark while skipping.
+		if res.Outcome != sensor.Skipped {
+			t.Fatalf("outcome = %v, want a skip (stderr: %s)", res.Outcome, res.StderrExcerpt)
+		}
+		if res.CursorAfter == nil || *res.CursorAfter != "zzz-new-cursor" {
+			t.Fatalf("the evaluation carried cursor %v, want the reported watermark", res.CursorAfter)
+		}
+		tk, err := sink.Begin(ctx, spec)
+		if err != nil {
+			t.Fatalf("Begin: %v", err)
+		}
+		if err := sink.Commit(ctx, spec, tk, res); err != nil {
+			t.Fatalf("Commit: %v", err)
+		}
+		return sensorCursorValue(spec.Cursor), tk.ID
+	}
+
+	first, firstTick := evaluate()
+	second, secondTick := evaluate()
+
+	after, err := st.GetSensor(ctx, "dropzone")
+	if err != nil {
+		t.Fatalf("re-read the sensor row: %v", err)
+	}
+	if got := sensorCursorValue(after.Cursor); got != "a" {
+		t.Errorf("sensors.cursor = %q, want a: the skip stepped over unevaluated work", got)
+	}
+	// The timeline an operator reads has no jump in it: the second evaluation
+	// starts where the first one did, because no tick between them moved
+	// anything.
+	if first != "a" || second != "a" {
+		t.Errorf("evaluations started from %q then %q, want a then a", first, second)
+	}
+	for _, id := range []string{firstTick, secondTick} {
+		tick, ok, err := st.ExplainTickByID(ctx, id)
+		if err != nil || !ok {
+			t.Fatalf("read tick %s back: %v (found %v)", id, err, ok)
+		}
+		if tick.CursorBefore != "a" {
+			t.Errorf("tick %s cursor_before = %q, want a", id, tick.CursorBefore)
+		}
+		if tick.CursorAfter != "" {
+			t.Errorf("tick %s cursor_after = %q, want none recorded", id, tick.CursorAfter)
+		}
 	}
 }
