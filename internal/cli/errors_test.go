@@ -27,6 +27,7 @@ func TestEveryErrorCarriesAllThreeParts(t *testing.T) {
 	ctx := context.Background()
 	locked := &store.LockedError{Path: "/tmp/x/.paceq/paceq.lock"}
 	perm := &store.PermissionError{Path: "/tmp/x/.paceq", Got: 0o755, Want: store.DirMode}
+	refused := peerVerdict("/run/user/1000/paceq.sock", 0, true, 1000)
 
 	built := map[string]*Error{
 		"usageError":       usageError("the flag --nope is not a paceq flag", "paceq --help lists every flag"),
@@ -40,6 +41,9 @@ func TestEveryErrorCarriesAllThreeParts(t *testing.T) {
 			"the state before the cutover is in .paceq/crontab.backup.2027-01-12T09-14-03",
 			"restore it with:  paceq cutover --rollback --from .paceq/crontab.backup.2027-01-12T09-14-03"),
 		"pathError": pathError("jobs/nightly.yaml", fs.ErrNotExist),
+
+		"socketRefusedError": socketRefusedError(refused),
+		"stopOnRefusal":      stopOnRefusal(fmt.Errorf("dial the daemon: %w", refused)),
 
 		"repairConfirmError": repairConfirmError(&store.RepairConfirmError{Critical: []store.Violation{
 			{

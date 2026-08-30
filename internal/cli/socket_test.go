@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -208,6 +209,112 @@ func TestARefusedSocketDoesNotFallBackToTheDirectPath(t *testing.T) {
 	if !strings.Contains(res.stderr, "refusing the daemon socket") {
 		t.Errorf("the user is not told why the command stopped:\n%s", res.stderr)
 	}
+}
+
+// TestSocketRefusedErrorNamesTheSocketAndTheReason reads the refusal the way
+// an operator does. It is the message somebody sees while another account may
+// be answering for their daemon, so it has to carry the three parts: which
+// file, what is wrong with it, and what to do next. The reasons come from the
+// checks themselves rather than from fixed strings, so a reworded refusal
+// cannot quietly stop naming what it found.
+func TestSocketRefusedErrorNamesTheSocketAndTheReason(t *testing.T) {
+	dir := t.TempDir()
+	mine := os.Geteuid()
+
+	world := filepath.Join(dir, "world.sock")
+	plantSocket(t, world, 0o777)
+	ours := filepath.Join(dir, "ours.sock")
+	plantSocket(t, ours, 0o600)
+
+	cases := map[string]struct {
+		path   string
+		refuse error
+		says   string
+	}{
+		"a mode that invites the machine": {path: world, refuse: verdictAsUID(t, world, mine), says: "every account on this machine"},
+		"a socket another account owns":   {path: ours, refuse: verdictAsUID(t, ours, mine+1), says: "owns it"},
+		"another account on the far end":  {path: ours, refuse: peerVerdict(ours, 1001, true, 1000), says: "listens on it"},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if tc.refuse == nil {
+				t.Fatal("the check accepted a socket it must refuse, so there is no message to read")
+			}
+			got := socketRefusedError(tc.refuse)
+			if got.code != ExitValidation {
+				t.Errorf("a refused socket exits %d, want %d", got.code, ExitValidation)
+			}
+			message := got.Error()
+			if !strings.Contains(message, tc.path) {
+				t.Errorf("the message does not name the socket:\n%s", message)
+			}
+			if !strings.Contains(message, tc.says) {
+				t.Errorf("the message does not say what was wrong (%q):\n%s", tc.says, message)
+			}
+			if len(got.next) == 0 || !strings.Contains(message, "\n  ") {
+				t.Errorf("the message leaves the operator with nothing to do about it:\n%s", message)
+			}
+			var refused *untrustedSocket
+			if !errors.As(got, &refused) {
+				t.Errorf("the refusal does not survive the wrapping, so nothing downstream can tell it from an outage: %v", got)
+			}
+		})
+	}
+}
+
+// TestStopOnRefusalTellsARefusalFromAnOutage covers the branch every dual mode
+// command takes after a socket call fails. A daemon that is not answering is
+// something the command may write around, and nil says so. A socket paceq
+// refuses never is: falling back there would turn an attempt to answer for the
+// daemon into a silent change of transport. A refusal the daemon itself sent
+// is an answer, so it passes through as well.
+func TestStopOnRefusalTellsARefusalFromAnOutage(t *testing.T) {
+	const path = "/run/user/1000/paceq.sock"
+	refusal := peerVerdict(path, 1001, true, 1000)
+	if refusal == nil {
+		t.Fatal("peerVerdict accepted a socket another account listens on")
+	}
+
+	cases := map[string]struct {
+		err  error
+		stop bool
+	}{
+		"a refusal stops the command":           {err: refusal, stop: true},
+		"a wrapped refusal stops it too":        {err: fmt.Errorf("dial the daemon: %w", refusal), stop: true},
+		"a daemon that is not there does not":   {err: errors.New("dial unix " + path + ": connect: connection refused"), stop: false},
+		"the daemon's own refusal is an answer": {err: &socketRefusal{code: "not_found", message: "no run 7"}, stop: false},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := stopOnRefusal(tc.err)
+			if tc.stop != (got != nil) {
+				t.Fatalf("stopOnRefusal(%v) = %v, want a stop: %v", tc.err, got, tc.stop)
+			}
+			if got == nil {
+				return
+			}
+			if got.code != ExitValidation {
+				t.Errorf("a refused socket exits %d, want %d", got.code, ExitValidation)
+			}
+			if !strings.Contains(got.Error(), path) {
+				t.Errorf("the message does not name the socket:\n%s", got.Error())
+			}
+		})
+	}
+}
+
+// verdictAsUID judges the file at path as the given account would see it, so a
+// socket owned by somebody else can be tested without a second account.
+func verdictAsUID(t *testing.T, path string, euid int) error {
+	t.Helper()
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	return socketVerdict(path, info, euid)
 }
 
 // TestEveryUnixDialGoesThroughTheCheckedHelper is the guard that keeps the
