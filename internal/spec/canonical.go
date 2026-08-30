@@ -269,7 +269,7 @@ func canonicalSteps(steps []Step) canonicalArray {
 		if step.Retry != nil {
 			object = append(object, canonicalMember{"retry", canonicalRetry(step.Retry)})
 		}
-		// needs is the edge set of the DAG M4-01 builds. A set has no order.
+		// needs is the edge set of the executed DAG. A set has no order.
 		if len(step.Needs) > 0 {
 			object = append(object, canonicalMember{"needs", canonicalSortedStrings(step.Needs)})
 		}

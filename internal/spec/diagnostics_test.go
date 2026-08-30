@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -370,3 +371,41 @@ func renderSource(t *testing.T, diags diag.List, src string) string {
 	}
 	return b.String()
 }
+
+// TestUnknownNeedExplainsTheGraphNotASchedule. The hint on an unresolved needs
+// target is where the reader learns what the field does. It said the field was
+// inert until a milestone landed, long after the engine started gating steps on
+// it, and the reader's reasonable response was to hand-order the steps the graph
+// exists to order for them. The hint has to name the behaviour: the wait, the
+// skip, and what written order is still good for.
+func TestUnknownNeedExplainsTheGraphNotASchedule(t *testing.T) {
+	src := "name: report\nsteps:\n  - name: extract\n    run: [\"/bin/true\"]\n" +
+		"  - name: transform\n    run: [\"/bin/true\"]\n    needs: [extrct]\n"
+
+	_, diags := spec.Parse("x.yaml", []byte(src))
+	d, ok := find(diags, spec.CodeUnknownNeed)
+	if !ok {
+		t.Fatalf("an unknown needs target was not refused:\n%s", renderSource(t, diags, src))
+	}
+
+	// The hint is hard-wrapped for the terminal, so the assertions read it
+	// unwrapped: what matters is the sentence, not where the line broke.
+	flat := strings.Join(strings.Fields(d.Hint), " ")
+	for _, want := range []string{
+		"waits until every step it names has succeeded",
+		"is skipped if one of them fails",
+		"Written order only breaks ties",
+	} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("the hint does not say %q:\n%s", want, d.Hint)
+		}
+	}
+	if milestoneInProse.MatchString(d.Hint) {
+		t.Errorf("the hint dates the behaviour to a milestone instead of describing it:\n%s", d.Hint)
+	}
+}
+
+// milestoneInProse is the shape of a milestone identifier: M4, M4-01. The
+// module-wide rule that keeps them out of operator-visible text lives in
+// internal/arch; this copy keeps the message's own test self-contained.
+var milestoneInProse = regexp.MustCompile(`\bM[0-9]+(-[0-9]+)?\b`)

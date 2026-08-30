@@ -285,10 +285,10 @@ var catalogue = map[string]explanation{
 	spec.CodeUnknownNeed: {
 		Code:  spec.CodeUnknownNeed,
 		Title: "needs names a step that does not exist",
-		Explanation: "needs lists the steps that have to succeed before this one starts. Every " +
-			"name in it is a step name in the same job. The field parses in M1 and is enforced " +
-			"in M4-01, where it becomes the dependency graph; until then the steps run in the " +
-			"order they are written.",
+		Explanation: "needs lists the steps that have to succeed before this one starts, and every " +
+			"name in it is a step name in the same job. The edges are the job's dependency " +
+			"graph: a step whose upstream fails is skipped rather than run, and written order " +
+			"only breaks ties between steps that are ready together.",
 		Next: []string{
 			"the message lists the steps this job does have, and suggests the nearest name",
 		},
@@ -466,11 +466,11 @@ var catalogue = map[string]explanation{
 		Code:  spec.CodeSensorKind,
 		Title: "only kind: exec exists",
 		Explanation: "A sensor runs a subprocess that writes JSON to stdout; that is exec, the one kind " +
-			"1.0 accepts. The built in file, http and sql sensor types are the work of M7-03 and arrive " +
-			"in v0.3, so a value that names one today means nothing a v1 runtime can do.",
+			"1.0 accepts. The built in file, http and sql sensor types arrive in v0.3, so a value " +
+			"that names one today means nothing a v1 runtime can do.",
 		Next: []string{
 			"write kind: exec and put the probe in run",
-			"the built in types arrive in v0.3 (M7-03)",
+			"the built in types arrive in v0.3",
 		},
 	},
 	spec.CodeSensorRun: {

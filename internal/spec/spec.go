@@ -25,12 +25,12 @@ const (
 	MaxAliases = 100
 	// MaxNodes is the size of the syntax tree, before any alias is resolved.
 	MaxNodes = 20000
-	// MaxSteps is the same ceiling M4-01 puts on a DAG.
+	// MaxSteps is the same ceiling the executed DAG obeys.
 	MaxSteps = 200
 	// MaxFanOut is how many steps one step may be a dependency of, or how many
 	// needs one step may name. A successor count past this is a program wearing
-	// a job's clothes, and there is no way to see what it does. Enforced in
-	// M4-01 as a semantic refusal.
+	// a job's clothes, and there is no way to see what it does. Enforced as a
+	// semantic refusal.
 	MaxFanOut = 100
 	// MaxDAGDepth is the longest run of edges from a step with no needs to the
 	// deepest step. A deeper graph is a chain no machine should wait on.
@@ -257,8 +257,8 @@ type Step struct {
 	// the job's timeout rather than by one of its own.
 	Timeout time.Duration
 	Retry   *Retry
-	// Needs is carried into the IR and means nothing yet. The cycle detection
-	// and the topological order are M4-01; in M1 the steps run in file order.
+	// Needs is this step's upstream edge set. The cycle check and the
+	// topological order are here; the engine gates each step on the edges.
 	Needs []string
 }
 
