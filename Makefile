@@ -49,7 +49,7 @@ CROSS_TARGETS := linux/amd64 linux/arm64 darwin/arm64
 
 .PHONY: all build test property gate chaos bench fuzz fmt fmt-check vet staticcheck lint gosec govulncheck \
 	tidy-check cross release-snapshot release test-scratch sensors-examples notification-examples install-script \
-	prom-check-metrics prom-check-rules prom-rules explain-checklist docs ci fixture-change hooks clean
+	prom-check-metrics prom-check-rules prom-rules explain-checklist docs ci print-ci-targets fixture-change hooks clean
 
 all: build
 
@@ -283,7 +283,30 @@ prom-rules:
 fixture-change:
 	scripts/check-fixture-change.sh origin/main HEAD
 
-ci: fmt-check vet staticcheck gosec govulncheck tidy-check test property gate fuzz build test-scratch sensors-examples notification-examples install-script prom-check-metrics prom-check-rules prom-rules explain-checklist cross
+# The gate, in the order it runs. The list lives here rather than in the `ci`
+# prerequisites so scripts/gate-run.sh can walk it one target at a time: it
+# skips a target only when this exact tree has already passed it, and records
+# the stamp itself, after make exited zero. New gate steps join this list and
+# are stamped by being on it (#176).
+CI_TARGETS := fmt-check vet staticcheck gosec govulncheck tidy-check test property gate fuzz build \
+	test-scratch sensors-examples notification-examples install-script prom-check-metrics \
+	prom-check-rules prom-rules explain-checklist cross
+
+# The variables above that the environment can override, handed to the stamp key
+# so an overridden run cannot leave a stamp a full run would honour: FUZZTIME=1s
+# proves less than FUZZTIME=60s and must not be mistaken for it. The pins that
+# are not overridable are in this file, and the key already covers its bytes.
+PACEQ_GATE_VARS := GO=$(GO) PROMTOOL=$(PROMTOOL) PROM_VERSION=$(PROM_VERSION) \
+	FUZZTIME=$(FUZZTIME) CROSS_TARGETS=$(CROSS_TARGETS)
+export PACEQ_GATE_VARS
+
+ci:
+	@scripts/gate-run.sh $(CI_TARGETS)
+
+# What the gate runs, for a person and for the guard test that keeps this list
+# and the runner in step.
+print-ci-targets:
+	@echo "$(CI_TARGETS)"
 
 hooks:
 	git config core.hooksPath .githooks
