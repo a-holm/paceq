@@ -833,7 +833,7 @@ func TestRunRefusesContractViolationsBeforeStartingAnything(t *testing.T) {
 	}{
 		{"zero timeout", func(s *Spec) { s.Timeout = 0 }},
 		{"negative timeout", func(s *Spec) { s.Timeout = -time.Second }},
-		{"timeout over the system cap", func(s *Spec) { s.Timeout = 2 * time.Hour }},
+		{"timeout over the system cap", func(s *Spec) { s.Timeout = spec.MaxJobTimeout + time.Hour }},
 		{"empty argv", func(s *Spec) { s.Argv = nil }},
 		{"relative bare argv0", func(s *Spec) { s.Argv = []string{"ls"} }},
 		{"reserved env key from job", func(s *Spec) { s.Env = map[string]string{"PACEQ_RUN_ID": "forged"} }},

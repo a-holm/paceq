@@ -12,16 +12,16 @@ import (
 	"time"
 
 	"github.com/a-holm/paceq/internal/clock"
+	"github.com/a-holm/paceq/internal/spec"
 )
 
 const (
-	// DefaultTimeout is the timeout a job gets when no layer above the runner
-	// set one. A job without a deadline is a job that hangs forever one day.
-	DefaultTimeout = time.Hour
-
-	// MaxTimeout is the hard system cap. The validator refuses anything
-	// larger; the runner repeats the check as a second line of defence.
-	MaxTimeout = DefaultTimeout
+	// MaxTimeout is the hard system cap, and it is the file validator's own:
+	// what paceq validate accepts, this package runs. A number of its own
+	// would not be a second line of defence but a second policy, and every
+	// duration between the two ceilings would be a job that passes apply and
+	// can then never start.
+	MaxTimeout = spec.MaxJobTimeout
 
 	// DefaultKillGrace is how long a job may keep running after SIGTERM
 	// before SIGKILL ends the whole group.
