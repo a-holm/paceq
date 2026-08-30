@@ -313,8 +313,9 @@ func (s *Sink) write(rec lineRecord) error {
 	// Reaching this branch means the head is full, not that anything is
 	// gone: the ring keeps what it is handed and Finish writes it out. A log
 	// that fills the head exactly enters the tail phase with an empty ring,
-	// and a log that overruns the head by a little is written whole. Only
-	// what the ring evicts is lost, and lostOutput is where that is decided.
+	// and a log that overruns the head by a little is written whole. What is
+	// lost is what the ring does not keep: the lines it evicts to make room,
+	// and a line too big for it to hold at all. lostOutput decides on that.
 	s.dropped += s.ring.push(rec.encoded, len(rec.raw))
 	return nil
 }
