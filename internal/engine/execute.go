@@ -501,7 +501,10 @@ func (e *Engine) runStep(ctx context.Context, d *drive, name string, h *heldRun)
 		return fail(fmt.Errorf("the process could not start: %w", runErr))
 	}
 
-	outcome := verdictFor(result, tail, bytes, truncated)
+	outcome, err := verdictFor(result, tail, bytes, truncated)
+	if err != nil {
+		return fail(err)
+	}
 	// The live executor just watched the process itself; whatever happens
 	// later, this row's answer to "how do you know?" is direct.
 	outcome.OutcomeSource = "direct"
@@ -709,49 +712,46 @@ func (e *Engine) finishReason(ctx context.Context, runID string, timedOut bool) 
 }
 
 // verdictFor translates what the runner observed into the step machine's
-// vocabulary. The mapping is total: every Outcome the runner can report has a
-// row here, so an unclassified result cannot reach the store. The log's
-// relative path is filled in by the caller, which is the one holding the sink.
-func verdictFor(res runner.Result, tail string, bytes int64, truncated bool) store.StepOutcome {
+// vocabulary. The judgment comes from store.StepVerdict, the same table
+// recovery reads a result file through, so an attempt cannot be read one way
+// by the executor that watched it and another way by whoever finds its file
+// afterwards (#204). What this adds is what only a live executor holds: the
+// log it just closed, the exit code, and the detail object. The log's relative
+// path is filled in by the caller, which is the one holding the sink.
+func verdictFor(res runner.Result, tail string, bytes int64, truncated bool) (store.StepOutcome, error) {
+	event, code, ok := store.StepVerdict(res.Outcome.Spool(), res.ReasonData["cancelled"] == true)
+	if !ok {
+		return store.StepOutcome{}, fmt.Errorf("the runner reported %s, which the step verdict table has no row for", res.Outcome)
+	}
 	out := store.StepOutcome{
+		Event:      event,
+		ReasonCode: code,
 		LogMeta:    store.LogMeta{Bytes: bytes, Truncated: truncated, ErrorTail: tail},
 		FinishedAt: msToTime(res.FinishedAt),
 	}
-	code := res.ExitCode
+	exit := res.ExitCode
 	switch res.Outcome {
 	case runner.Succeeded:
-		out.Event = string(model.EvStepSucceeded)
-		out.ReasonCode = reason.STEPSucceeded
-		out.ExitCode = &code
+		out.ExitCode = &exit
 	case runner.Failed:
-		out.Event = string(model.EvStepFailed)
-		out.ReasonCode = reason.STEPFailedNonzeroExit
-		out.ExitCode = &code
+		out.ExitCode = &exit
 		out.DetailJSON = detailJSON(res.ReasonData)
 	case runner.TimedOut:
-		out.Event = string(model.EvStepFailed)
-		out.ReasonCode = reason.STEPFailedTimeout
 		out.Signal = res.Signal
 		out.DetailJSON = detailJSON(res.ReasonData)
 	case runner.Signalled:
-		if res.ReasonData["cancelled"] == true {
-			// The signal came from us answering a cancellation.
-			out.Event = string(model.EvCancelObserved)
-			out.ReasonCode = reason.STEPCancelled
-		} else {
-			out.Event = string(model.EvStepFailed)
-			out.ReasonCode = reason.STEPFailedSignal
+		if event == string(model.EvStepFailed) {
+			// A cancellation names no signal: the number the kernel
+			// delivered is how the cancellation was carried out, not
+			// what happened to the step.
 			out.Signal = res.Signal
 		}
 		out.DetailJSON = detailJSON(res.ReasonData)
 	default:
-		// SpawnFailed: the process never existed, so nothing about the
-		// job failed; the launch did.
-		out.Event = string(model.EvStepFailed)
-		out.ReasonCode = reason.STEPFailedSpawn
+		// SpawnFailed: no process, so no exit code and no signal.
 		out.DetailJSON = detailJSON(res.ReasonData)
 	}
-	return out
+	return out, nil
 }
 
 // paramsMap decodes a run's parameter object for the runner's environment
