@@ -233,6 +233,26 @@ const coalesceSkipSQL = `UPDATE ticks
    AND outcome = 'skipped' AND reason_code = ? AND trigger_count = 0
 RETURNING id`
 
+// replayMissedTickSQL converts the gap walk's explanation of one fire-time
+// into this pass's claim, so a catch-up replay is not refused by evidence
+// that nothing ran. The predicate carries the whole safety argument: only a
+// row that says nobody evaluated the slot, and that owns no trigger, can be
+// taken over, so a real evaluation and a rival holder's row both keep theirs.
+// reason_data survives the conversion, because the outage it names is still
+// why this run is late.
+const replayMissedTickSQL = `UPDATE ticks
+   SET started_at = ?, last_started_at = ?, finished_at = NULL, duration_ms = NULL,
+       outcome = ?, reason_code = ?, reason_text = ?, trigger_count = ?
+ WHERE source_kind = 'schedule' AND source_name = ? AND scheduled_for = ?
+   AND outcome = 'missed' AND trigger_count = 0
+RETURNING id`
+
+// holderOfTickSQL names what owns a fire-time this pass could not claim. It
+// runs only on the loser path, so the extra read costs nothing on the way
+// that matters.
+const holderOfTickSQL = `SELECT outcome FROM ticks
+ WHERE source_kind = 'schedule' AND source_name = ? AND scheduled_for = ?`
+
 // updateProgressSQL moves the cursor to the fire-time just claimed and names
 // the moment after it as the next due instant. The predicate keeps the cursor
 // monotone: a stale pass from before a handover must never drag it back over
@@ -246,6 +266,12 @@ const (
 	OutcomeTriggered = "triggered"
 	OutcomeSkipped   = "skipped"
 	OutcomeError     = "error"
+
+	// OutcomeMissed is the gap walk's synthetic explanation of a fire-time
+	// nobody was alive to evaluate. It is written by startup reconciliation,
+	// never by the loop, and it carries no run: it is the one outcome a
+	// catch-up attempt is allowed to take the slot back from.
+	OutcomeMissed = "missed"
 
 	// OutcomeShadowTriggered records that a fire-time WOULD have started a
 	// run (#32): the decision chain ran to its triggered verdict, but shadow
@@ -300,13 +326,41 @@ type TickInput struct {
 	Shadow bool
 }
 
+// Loss names what already owned a fire-time a pass could not claim. Losing
+// to a rival holder is the ordinary follower answer and says nothing; losing
+// to the gap walk's evidence means a decision was overruled by a row that
+// only records that nobody was there, and a caller may want to say so.
+type Loss string
+
+const (
+	// LossNone is the zero value: this call lost nothing.
+	LossNone Loss = ""
+
+	// LossEvaluation says a real evaluation holds the fire-time, made by an
+	// earlier pass of this loop or by a rival holder mid handover.
+	LossEvaluation Loss = "evaluation"
+
+	// LossMissed says the gap walk's synthetic explanation holds the
+	// fire-time and would not give it up.
+	LossMissed Loss = "missed"
+)
+
 // TickResult says what one decided evaluation became.
 type TickResult struct {
 	// Claimed is true when this call recorded the evaluation: a new tick
-	// row, or an identical earlier skip absorbing it. False means the
-	// fire-time was already materialised by someone else; nothing was
-	// written and no error is reported.
+	// row, an identical earlier skip absorbing it, or a gap row replayed
+	// into it. False means the fire-time was already materialised by
+	// someone else; nothing was written and no error is reported.
 	Claimed bool
+
+	// LostTo names what held the fire-time when Claimed is false. It is
+	// LossNone whenever Claimed is true.
+	LostTo Loss
+
+	// Replayed is true when this evaluation took its fire-time back from a
+	// gap-detection 'missed' row rather than claiming a free slot: the
+	// outage is still recorded, and the run it owed exists after all.
+	Replayed bool
 
 	// Coalesced is true when an identical previous skip took this
 	// evaluation in as another repeat_count step instead of a new row.
@@ -328,6 +382,55 @@ func triggerCountOf(outcome string) int {
 		return 1
 	}
 	return 0
+}
+
+// replayMissedTick lets a catch-up attempt take a fire-time back from the gap
+// walk. Startup reconciliation fills every slot of an outage with a 'missed'
+// row before any loop runs, and those rows sit on the same slot uniqueness the
+// loop claims through, so without this an advertised catch-up would be refused
+// by the evidence that it was needed.
+//
+// Only an evaluation that would really start something may convert a row: a
+// skip explains why nothing ran, which is what 'missed' already says, and says
+// it better, because it names the outage. An empty id means the slot stands.
+func replayMissedTick(tx *sql.Tx, in TickInput, outcome string, reasonCode reason.Code,
+	sourceName string, fireAt time.Time, at int64,
+) (string, error) {
+	if outcome != OutcomeTriggered && outcome != OutcomeShadowTriggered {
+		return "", nil
+	}
+	var replayID string
+	err := tx.QueryRow(replayMissedTickSQL,
+		at, at, outcome, nullIfEmpty(string(reasonCode)), nullIfEmpty(in.ReasonText),
+		triggerCountOf(outcome), sourceName, fireAt.UnixMilli(),
+	).Scan(&replayID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("replay the missed fire-time %s of schedule %s: %w",
+			fireAt.Format(time.RFC3339), sourceName, err)
+	}
+	return replayID, nil
+}
+
+// holderOfTick names what owns a fire-time a pass could not claim, so the
+// caller can tell an overruled decision from a normal leader handover.
+func holderOfTick(tx *sql.Tx, sourceName string, fireAt time.Time) (Loss, error) {
+	var outcome string
+	err := tx.QueryRow(holderOfTickSQL, sourceName, fireAt.UnixMilli()).Scan(&outcome)
+	if errors.Is(err, sql.ErrNoRows) {
+		// Nothing there to name any more; treat it as the ordinary answer.
+		return LossEvaluation, nil
+	}
+	if err != nil {
+		return LossNone, fmt.Errorf("read what holds the fire-time %s of schedule %s: %w",
+			fireAt.Format(time.RFC3339), sourceName, err)
+	}
+	if outcome == OutcomeMissed {
+		return LossMissed, nil
+	}
+	return LossEvaluation, nil
 }
 
 // materializeTick claims one fire-time end to end. The order inside the
@@ -435,10 +538,27 @@ func (s *Store) MaterializeTick(ctx context.Context, in TickInput) (TickResult, 
 		}
 		if written == 0 {
 			// Someone already made this exact fire-time: another pass, a
-			// restart replaying the same window, or a rival holder mid
-			// handover. Abort silently; nothing about this fire-time is ours.
-			out.Claimed = false
-			return nil
+			// restart replaying the same window, a rival holder mid
+			// handover, or the gap walk explaining an outage. Only the last
+			// of those can be overruled, and only by an attempt that would
+			// really start something.
+			replayID, err := replayMissedTick(tx, in, outcome, reasonCode, sourceName, fireAt, at)
+			if err != nil {
+				return err
+			}
+			if replayID == "" {
+				lost, err := holderOfTick(tx, sourceName, fireAt)
+				if err != nil {
+					return err
+				}
+				out.Claimed = false
+				out.LostTo = lost
+				return nil
+			}
+			// The rest of the transaction works on the row that was the
+			// outage's evidence a statement ago.
+			tickID = replayID
+			out.Replayed = true
 		}
 		out.Claimed = true
 
