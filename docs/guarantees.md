@@ -11,7 +11,7 @@ Numbered G1 to G11 (plans: 02 §4.1).
 | Id | Guarantee |
 |---|---|
 | G1 | **Durable intent, within the fsync policy.** When a command returns OK, the decision is committed to the write-ahead log. Nothing is buffered in memory waiting to be written. The one window where a committed transaction can still be lost is stated in full under "What `synchronous=NORMAL` means" below, and it is a window that costs re-evaluation, never a lost decision. |
-| G2 | **At most one run per trigger identity.** For any `(source, epoch, run_key)` there is at most one run, enforced by a UNIQUE index in the database, not by application logic (plans: 00 §3.22). Combined with a trigger that is retried until it succeeds, that yields exactly one run for that identity. |
+| G2 | **At most one run per trigger identity.** For any `(source, epoch, run_key)` there is at most one run, enforced by the `run_keys` primary key in the database, not by application logic (plans: 00 §3.22). Combined with a trigger that is retried until it succeeds, that yields exactly one run for that identity. |
 | G3 | **At-least-once start of a step.** A step that reaches a terminal state has been executed at least once. In the crash window between spawning the process and committing its result, a step can be executed more than once. |
 | G4 | **No lost sensor triggers.** A sensor cursor never advances unless every trigger derived from that interval is committed in the same transaction. A crash gives replay, never loss. |
 | G5 | **Progress.** A run in a non-terminal state will, given that the daemon restarts, either make progress or reach a terminal state in finite time. No run hangs forever. Expired leases are reclaimed by the reaper, which bumps the epoch and requeues or fails the run with a reason code. |
@@ -109,10 +109,10 @@ Machine-checkable properties, enforced by `paceq fsck` as SQL and asserted conti
 |---|---|
 | I1 | No run in `running` without a lease owner and a lease that has not expired. |
 | I2 | No run in a terminal state has a step in `running`. |
-| I3 | The trigger identity is unique: `(source, epoch, run_key)` has at most one run. Enforced by the database and verified anyway. |
+| I3 | The trigger identity is unique: `(source, epoch, run_key)` has at most one run. The `run_keys` primary key enforces that direction, so `fsck` verifies the other one: no run is claimed by two identities. A run row carries its `run_key` without the source or the epoch, so two runs under one `(job, run_key)` pair is ordinary history after a reset or a pruned key, not a violation. |
 | I4 | At most one active attempt per `(run_id, step_name)`. |
 | I5 | A step's attempt counter sits inside its budget: at least one attempt behind a verdict, never past `max_attempts`. A step a replay reused counts none, because nothing ran in that run. |
-| I6 | At most one tick per `(source_kind, source_name, scheduled_for)`. Enforced by the database. |
+| I6 | At most one tick per `(source_kind, source_name, scheduled_for)`. Enforced by the `ticks` UNIQUE constraint. |
 | I7 | Every sensor cursor value has a matching finished tick whose `cursor_after` equals it. A cursor cannot have advanced without a committed tick. |
 | I8 | A step in `running` has every step it `needs` in `succeeded`. |
 | I9 | The step graph of a run is acyclic and every dependency names a step that exists in that run. |

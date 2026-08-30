@@ -170,37 +170,32 @@ WHERE state IN ('succeeded', 'failed', 'cancelled') LIMIT 1`)
 	return "run " + runID, nil
 }
 
-// InjectDuplicateRunKey plants I3: one job whose run_key names two runs.
-// There is no UNIQUE index to dodge on purpose, because this invariant lives
-// in application law, not in the schema; that is exactly why the health check
-// has to re-read it at startup.
+// InjectDuplicateRunKey plants I3: one run claimed by two dedup identities.
+// The run_keys primary key keeps identities apart, and the trigger
+// materialisation writes exactly one identity and one run inside one
+// transaction, so nothing but a hand edit or a partial write can point two
+// identities at one run. That is what the health check re-reads at startup.
+//
+// Two runs sharing a (job_name, run_key) pair is deliberately not what this
+// plants: a sensor reset and a pruned run key both produce that shape on
+// purpose.
 func (s *Store) InjectDuplicateRunKey(ctx context.Context) (string, error) {
 	var subject string
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
-		var (
-			baseID  string
-			job     string
-			version string
-			key     = "planted-duplicate-run-key"
-		)
-		if err := tx.QueryRow(`SELECT id, job_name, job_version_id FROM runs
-ORDER BY created_at LIMIT 1`).Scan(&baseID, &job, &version); err != nil {
+		const key = "planted-duplicate-run-key"
+		var runID string
+		if err := tx.QueryRow(`SELECT id FROM runs
+ORDER BY created_at LIMIT 1`).Scan(&runID); err != nil {
 			return fmt.Errorf("inject a duplicate run key: %w", err)
 		}
-		// nolint:fencing: this is fault injection for the fsck negative
-		// proof, not engine state: the planted duplicate key must exist
-		// unfenced so fsck can name it.
-		if _, err := tx.Exec(`UPDATE runs SET run_key = (SELECT ?) WHERE id = ?`, key, baseID); err != nil {
-			return fmt.Errorf("inject a duplicate run key: %w", err)
+		for _, source := range []string{"planted-source-a", "planted-source-b"} {
+			if _, err := tx.Exec(`INSERT INTO run_keys
+(source_id, epoch, run_key, first_seen_at, run_id)
+VALUES (?, 1, ?, 1, ?)`, source, key, runID); err != nil {
+				return fmt.Errorf("inject a duplicate run key: %w", err)
+			}
 		}
-		twin := baseID + "-twin"
-		if _, err := tx.Exec(`INSERT INTO runs (id, job_name, job_version_id, origin,
-state, available_at, run_key, created_at, updated_at)
-VALUES (?, ?, ?, 'manual', 'queued', 0, ?, 1, 1)`,
-			twin, job, version, key); err != nil {
-			return fmt.Errorf("inject a duplicate run key: %w", err)
-		}
-		subject = "job " + job + " run_key " + key
+		subject = "run " + runID
 		return nil
 	})
 	if err != nil {
@@ -210,15 +205,15 @@ VALUES (?, ?, ?, 'manual', 'queued', 0, ?, 1, 1)`,
 }
 
 // InjectDoubleCompletedRunKey plants the exact row invariant AC-4 of issue
-// 20 exists for: two completed runs sharing one dedup key. No live path can
-// produce this shape any more - serve refuses to start while one run_key
-// names more than one run (I3 at startup), and a key's second run cannot
-// complete behind the first - which is precisely why the state may only
-// arise from a partial or unfenced write, and why the battery must prove
-// the checker sees it. The injection twins the oldest existing run under
-// one planted key: both rows carry a real job version, real frozen steps
-// and real edges, and the base keeps whatever history execution gave it.
-// It returns the shared key.
+// 20 exists for: two completed runs sharing one dedup key. Inside one dedup
+// epoch the gate refuses the second registration, so a crash cannot leave
+// this shape, which is why the battery must plant it to prove the checker
+// sees it. Two paths reach the shape legitimately and are not corruption: an
+// operator raising the epoch with sensors reset, and a source re-presenting
+// a run key retention has pruned. The injection twins the oldest existing
+// run under one planted key: both rows carry a real job version, real frozen
+// steps and real edges, and the base keeps whatever history execution gave
+// it. It returns the shared key.
 func (s *Store) InjectDoubleCompletedRunKey(ctx context.Context) (string, error) {
 	var key string
 	err := s.withTx(ctx, func(tx *sql.Tx) error {

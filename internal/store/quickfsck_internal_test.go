@@ -35,8 +35,8 @@ func TestQuickFsckNamesDuplicateRunKeys(t *testing.T) {
 	if len(violations) != 1 || violations[0].Check != "I3" {
 		t.Fatalf("violations %+v, want exactly one I3", violations)
 	}
-	if !strings.Contains(violations[0].Subject, subject[len(subject)-len("planted-duplicate-run-key"):]) {
-		t.Errorf("the violation names %q, want it to carry the planted key", violations[0].Subject)
+	if violations[0].Subject != subject {
+		t.Errorf("the violation names %q, want the planted run %q", violations[0].Subject, subject)
 	}
 }
 

@@ -236,14 +236,11 @@ func TestServeRefusesAStateWithCriticalFindings(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed the run: %v", err)
 	}
-	// The everyday dedup gate lives in the trigger materialization, not in
-	// CreateRunWithSteps: a second create under an existing key is exactly
-	// the duplicate the sweep must catch.
-	if _, err := st.CreateRunWithSteps(ctx, store.NewRun{
-		JobName: "dup", JobVersionID: version.ID, Origin: "manual",
-		RunKey: "shared", Steps: []store.NewStep{{Name: "build"}},
-	}); err != nil {
-		t.Fatalf("plant the duplicate run: %v", err)
+	// One run claimed by two dedup identities. The trigger materialization
+	// commits exactly one identity per run, so this shape only arrives by a
+	// hand edit or a partial write, and it is what the sweep must catch.
+	if _, err := st.InjectDuplicateRunKey(ctx); err != nil {
+		t.Fatalf("plant the second dedup identity: %v", err)
 	}
 	if err := st.Close(); err != nil {
 		t.Fatalf("close: %v", err)
@@ -263,5 +260,115 @@ func TestServeRefusesAStateWithCriticalFindings(t *testing.T) {
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("Serve did not refuse within 15s")
+	}
+}
+
+// TestServeBootsAfterADocumentedSensorReset is the #200 regression guard at
+// the process level. `paceq sensors reset` raises the dedup epoch so every
+// run key the sensor ever registered fires again, and the runs that follow
+// share a (job_name, run_key) pair with the runs they replay. That is the
+// product sentence, so the boot gate must read it as replay rather than as
+// the corruption a refusal claims.
+func TestServeBootsAfterADocumentedSensorReset(t *testing.T) {
+	root := t.TempDir()
+	cfg := Config{
+		StateDir: filepath.Join(root, "state"),
+		Version:  "test",
+		JobsDir:  filepath.Join(root, "jobs"),
+		Logger:   slog.New(slog.NewTextHandler(&strings.Builder{}, nil)),
+		Owner:    "serve:test",
+	}
+	if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
+		t.Fatalf("create the state directory: %v", err)
+	}
+	if err := os.MkdirAll(cfg.JobsDir, 0o700); err != nil {
+		t.Fatalf("create the jobs directory: %v", err)
+	}
+	ctx := context.Background()
+	st, err := store.OpenState(ctx, cfg.StateDir, store.Options{})
+	if err != nil {
+		t.Fatalf("pre-open the state: %v", err)
+	}
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	const job = "polling-job"
+	const sensorName = "poller"
+	if _, _, err := st.UpsertJobVersion(ctx, store.JobVersionInput{
+		JobName:       job,
+		SpecHash:      "sha256:poller",
+		SpecJSON:      `{"schema":"paceq.job.v1","name":"polling-job","steps":[{"name":"collect","run":["true"]}]}`,
+		MaxConcurrent: 10,
+	}); err != nil {
+		t.Fatalf("seed the job: %v", err)
+	}
+	if err := st.UpsertSensor(ctx, store.SensorSeedInput{
+		Name: sensorName, JobName: job, ExecJSON: `["cat"]`,
+	}); err != nil {
+		t.Fatalf("seed the sensor: %v", err)
+	}
+
+	keys := []store.SensorTrigger{{RunKey: "file:a.csv"}, {RunKey: "file:b.csv"}}
+	evaluate := func(cursorBefore, cursorAfter string, epoch int64) store.SensorTickCommitResult {
+		t.Helper()
+		b, err := st.BeginSensorTick(ctx, store.BeginSensorTickInput{
+			SensorName: sensorName, CursorBefore: cursorBefore,
+		})
+		if err != nil {
+			t.Fatalf("begin the tick: %v", err)
+		}
+		out, err := st.CommitSensorTick(ctx, store.SensorTickCommitInput{
+			TickID:        b.TickID,
+			SensorName:    sensorName,
+			JobName:       job,
+			CursorVersion: b.CursorVersion,
+			CursorAfter:   cursorAfter,
+			DedupEpoch:    epoch,
+			Triggers:      keys,
+			Outcome:       store.OutcomeTriggered,
+			NextEvalAt:    60000,
+		})
+		if err != nil {
+			t.Fatalf("commit the tick: %v", err)
+		}
+		return out
+	}
+
+	if out := evaluate("", "a", 0); out.Accepted != len(keys) {
+		t.Fatalf("the first evaluation accepted %d, want %d", out.Accepted, len(keys))
+	}
+	reset, err := st.ResetSensor(ctx, store.ResetSensorInput{Name: sensorName})
+	if err != nil {
+		t.Fatalf("reset the sensor: %v", err)
+	}
+	if out := evaluate("a", "a", reset.NewEpoch); out.Accepted != len(keys) {
+		t.Fatalf("the replay after the reset accepted %d, want %d", out.Accepted, len(keys))
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	serveCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- Serve(serveCtx, cfg, clock.System()) }()
+
+	var serveErr error
+	stopped := false
+	select {
+	case serveErr = <-errCh:
+		stopped = true
+	case <-time.After(5 * time.Second):
+	}
+	cancel()
+	if !stopped {
+		select {
+		case serveErr = <-errCh:
+		case <-time.After(20 * time.Second):
+			t.Fatal("serve did not stop after the context was cancelled")
+		}
+	}
+	if serveErr != nil && strings.Contains(serveErr.Error(), "PSQ-FSCK-001") {
+		t.Fatalf("serve refused a database the documented reset produced:\n%v", serveErr)
 	}
 }
