@@ -251,20 +251,31 @@ func TestSymbolsFallBackToASCII(t *testing.T) {
 	}
 }
 
-// TestDataOnStdoutNotesOnStderr is what makes `paceq doctor -o json | jq`
-// work while -v is on: the document has to be the only thing on stdout.
+// TestDataOnStdoutNotesOnStderr is what makes `paceq validate -o json | jq`
+// work while -v is on: the document has to be the only thing on stdout, and a
+// verbosity flag may add nothing to it.
+//
+// The fixture is validate rather than doctor. Doctor reports readings of the
+// machine, so comparing two of its runs asserts the machine did not move
+// between them: the job process count follows whatever else on the box carries
+// PACEQ_RUN_ID (#189), and the free space, the write ahead log and the database
+// size follow the disk. validate reads the job files and nothing else. The
+// foreign job process starts between the two runs, which is how this test
+// failed, so a fixture that reads the machine fails here every time rather than
+// once in a while.
 func TestDataOnStdoutNotesOnStderr(t *testing.T) {
 	dir := t.TempDir()
 	if code := runCLI(t, dir, nil, "init").code; code != ExitOK {
 		t.Fatalf("paceq init = %d, want %d", code, ExitOK)
 	}
 
-	quiet := runCLI(t, dir, nil, "doctor")
-	loud := runCLI(t, dir, nil, "doctor", "-vv")
+	quiet := runCLI(t, dir, nil, "validate")
+	spawnForeignJobProcess(t)
+	loud := runCLI(t, dir, nil, "validate", "-vv")
 
 	quiet.json(t)
 	loud.json(t)
-	if stripVolatile(quiet.stdout) != stripVolatile(loud.stdout) {
+	if quiet.stdout != loud.stdout {
 		t.Errorf("-vv changed the data on stdout:\n%s\n%s", quiet.stdout, loud.stdout)
 	}
 	if quiet.stderr != "" {
@@ -275,23 +286,23 @@ func TestDataOnStdoutNotesOnStderr(t *testing.T) {
 	}
 }
 
-// stripVolatile erases the two fields that legitimately differ between two
-// doctor runs seconds apart: the free disk space reading and nothing else.
-// Verbosity must not change the document, but the machine is allowed to.
-func stripVolatile(s string) string {
-	start := strings.Index(s, `"disk space"`)
-	if start < 0 {
-		return s
+// TestDoctorNotesStayOffStdout keeps the same promise for the command that
+// cannot be run twice and compared: `paceq doctor -o json | jq` with -vv on.
+// One run reads the machine once, so the check is what the notes did rather
+// than whether two readings agree: stdout parses as one JSON document, which it
+// cannot if a note landed there, and the notes are on stderr instead.
+func TestDoctorNotesStayOffStdout(t *testing.T) {
+	dir := t.TempDir()
+	if code := runCLI(t, dir, nil, "init").code; code != ExitOK {
+		t.Fatalf("paceq init = %d, want %d", code, ExitOK)
 	}
-	end := strings.Index(s[start:], `"}')`)
-	if end < 0 {
-		end = strings.Index(s[start:], `"}"`)
-		if end < 0 {
-			return s
-		}
-		return s[:start] + `"disk space"` + s[start+end+len(`"}"`):]
+
+	got := runCLI(t, dir, nil, "doctor", "-vv")
+
+	got.json(t)
+	if got.stderr == "" {
+		t.Error("-vv wrote no notes to stderr")
 	}
-	return s[:start] + `"disk space"` + s[start+end:]
 }
 
 // TestQuietDropsEverythingButTheFindingsThatMatter. A report that is silent
