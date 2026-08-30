@@ -438,3 +438,172 @@ func driveChainDiamond(t *testing.T, ctx context.Context, s *store.Store,
 		t.Fatalf("finish: %v", err)
 	}
 }
+
+// retryThenShipSpec is a two step chain whose first step buys three more
+// attempts. It exists so a source run can spend two attempts on one step and
+// still leave something to rerun, which is what a --failed replay needs to
+// stay short of a fully reused run.
+const retryThenShipSpec = `{"max_concurrent":1,"name":"retryship","schema":"paceq.job.v1",` +
+	`"steps":[{"name":"build","retry":{"backoff":"fixed","initial_ms":2000,"jitter":"none","max":3,"max_delay_ms":30000},` +
+	`"run":["/bin/true"],"shell":false},` +
+	`{"name":"ship","needs":["build"],"run":["/bin/true"],"shell":false}],` +
+	`"timeout_ms":3600000}`
+
+// TestReplayThatReusesStepsSweepsClean is the sweep over the path
+// TestReplayedRunSweepsClean never reaches: that one replays with no reuse
+// rule at all, so every step is born pending and no reused row is ever
+// written. Here two steps are born as references, and fsck has to hold over
+// them the same way.
+func TestReplayThatReusesStepsSweepsClean(t *testing.T) {
+	ctx := context.Background()
+	s, clk := coreStore(t)
+	srcID := aDagRun(t, s, "replaychain", retryChainSpec)
+	driveChain(t, ctx, s, clk, srcID, "c")
+
+	out, err := s.MaterializeReplay(ctx, srcID, store.ReplayOpts{FailedOnly: true})
+	if err != nil {
+		t.Fatalf("replay --failed: %v", err)
+	}
+	if len(out.Reused) == 0 || len(out.Rerun) == 0 {
+		t.Fatalf("replay reused %v and reruns %v, want both: with nothing spared this proves nothing",
+			out.Reused, out.Rerun)
+	}
+
+	violations, err := s.Fsck(ctx)
+	if err != nil {
+		t.Fatalf("fsck: %v", err)
+	}
+	if len(violations) != 0 {
+		t.Fatalf("fsck after a replay that reused %v: %+v", out.Reused, violations)
+	}
+
+	states := stepStates(t, ctx, s, out.NewRunID)
+	for _, name := range out.Reused {
+		if states[name].attempt != 0 {
+			t.Errorf("reused step %s counts attempt %d, want 0: this run started nothing",
+				name, states[name].attempt)
+		}
+	}
+}
+
+// TestReplayFromSparesAStepThatNeverRan is the case a copied attempt number
+// cannot reach. --from spares the frozen upstream closure whatever state
+// those steps reached, so a spared step can be one the source skipped and
+// never attempted at all. Copying the source's attempt would carry a zero
+// here and leave the finding exactly where it was.
+func TestReplayFromSparesAStepThatNeverRan(t *testing.T) {
+	ctx := context.Background()
+	s, clk := coreStore(t)
+	srcID := aDagRun(t, s, "replaychain", retryChainSpec)
+	driveChain(t, ctx, s, clk, srcID, "b")
+
+	src := stepStates(t, ctx, s, srcID)
+	if src["c"].state != "skipped" || src["c"].attempt != 0 {
+		t.Fatalf("source step c is %s at attempt %d, want skipped at 0: the shape this test exists for is absent",
+			src["c"].state, src["c"].attempt)
+	}
+
+	from := "e"
+	out, err := s.MaterializeReplay(ctx, srcID, store.ReplayOpts{From: &from})
+	if err != nil {
+		t.Fatalf("replay --from e: %v", err)
+	}
+	if got := out.Reused; len(got) != 4 {
+		t.Fatalf("reused = %v, want the four steps e sits on", got)
+	}
+
+	violations, err := s.Fsck(ctx)
+	if err != nil {
+		t.Fatalf("fsck: %v", err)
+	}
+	if len(violations) != 0 {
+		t.Fatalf("fsck after a replay that reused %v: %+v", out.Reused, violations)
+	}
+}
+
+// TestAReusedStepCountsNoAttemptOfItsOwn states what the column means. The
+// source spent two attempts on build; the replay's row for build counts
+// none, because the replay started nothing. The two attempts are not lost:
+// the reused row names the run that made them, and that run still holds the
+// count.
+func TestAReusedStepCountsNoAttemptOfItsOwn(t *testing.T) {
+	ctx := context.Background()
+	s, clk := coreStore(t)
+	srcID := aDagRun(t, s, "retryship", retryThenShipSpec)
+	ref := store.LeaseRef{Owner: testOwner, Epoch: 1}
+	if _, _, err := s.ClaimRun(ctx, srcID, store.LeaseInput{Owner: testOwner, TTL: time.Hour}); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+
+	if err := s.StartStep(ctx, srcID, "build", ref); err != nil {
+		t.Fatalf("start build: %v", err)
+	}
+	clk.Advance(time.Second)
+	due := clk.Now().Add(2 * time.Second)
+	if err := s.RecordStepOutcome(ctx, srcID, "build", store.StepOutcome{
+		Event: "step_failed", ReasonCode: reason.STEPFailedNonzeroExit,
+		ExitCode: ptr(9), FinishedAt: clk.Now(),
+		Retry: &store.RetryPlan{
+			NextAttemptAt: due,
+			ReasonCode:    reason.STEPRetryScheduled,
+			DetailJSON: `{"attempt":1,"backoff_ms":2000,"next_attempt_at":` +
+				i64(due.UnixMilli()) + `,"transient":true}`,
+		},
+	}, ref); err != nil {
+		t.Fatalf("fail build: %v", err)
+	}
+	clk.Advance(3 * time.Second)
+	if err := s.StartStep(ctx, srcID, "build", ref); err != nil {
+		t.Fatalf("restart build: %v", err)
+	}
+	if err := s.RecordStepOutcome(ctx, srcID, "build", store.StepOutcome{
+		Event: "step_succeeded", ReasonCode: reason.STEPSucceeded,
+		ExitCode: ptr(0), FinishedAt: clk.Now(),
+	}, ref); err != nil {
+		t.Fatalf("succeed build: %v", err)
+	}
+	if err := s.StartStep(ctx, srcID, "ship", ref); err != nil {
+		t.Fatalf("start ship: %v", err)
+	}
+	if err := s.RecordStepOutcome(ctx, srcID, "ship", store.StepOutcome{
+		Event: "step_failed", ReasonCode: reason.STEPFailedNonzeroExit,
+		ExitCode: ptr(9), FinishedAt: clk.Now(),
+	}, ref); err != nil {
+		t.Fatalf("fail ship: %v", err)
+	}
+	if _, err := s.FinishRun(ctx, srcID, ref, store.FinishReason{
+		Code: reason.RUNFailedStep, Data: `{"step":"ship"}`,
+	}); err != nil {
+		t.Fatalf("finish the source: %v", err)
+	}
+	if got := mustStep(t, ctx, s, srcID, "build"); got.Attempt != 2 {
+		t.Fatalf("source build counts attempt %d, want 2: the history this test is about was never made", got.Attempt)
+	}
+
+	out, err := s.MaterializeReplay(ctx, srcID, store.ReplayOpts{FailedOnly: true})
+	if err != nil {
+		t.Fatalf("replay --failed: %v", err)
+	}
+	if got := out.Reused; len(got) != 1 || got[0] != "build" {
+		t.Fatalf("reused = %v, want exactly [build]", got)
+	}
+
+	reused := mustStep(t, ctx, s, out.NewRunID, "build")
+	if reused.Attempt != 0 {
+		t.Errorf("reused build counts attempt %d, want 0: the replay started nothing", reused.Attempt)
+	}
+	if reused.ReasonCode != string(reason.STEPSkippedReplayReused) {
+		t.Errorf("reused build reason = %q, want %s", reused.ReasonCode, reason.STEPSkippedReplayReused)
+	}
+	if again := mustStep(t, ctx, s, srcID, "build"); again.Attempt != 2 {
+		t.Errorf("source build counts attempt %d after the replay, want the 2 it earned", again.Attempt)
+	}
+
+	violations, err := s.Fsck(ctx)
+	if err != nil {
+		t.Fatalf("fsck: %v", err)
+	}
+	if len(violations) != 0 {
+		t.Fatalf("fsck after a replay that reused build: %+v", violations)
+	}
+}
