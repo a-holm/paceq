@@ -80,7 +80,12 @@ func (s *Store) MaterializeManualTrigger(ctx context.Context, in ManualTriggerIn
 	}
 
 	out := ManualTriggerResult{TickID: tickID, TriggerID: triggerID}
+	// The disk hold's refusal is an outcome, not a failure of the write: the
+	// rows that record it have to commit, so the refusal travels back to the
+	// caller here rather than out of the transaction body.
+	var held *HeldError
 	err = s.withTx(ctx, func(tx *sql.Tx) error {
+		held = nil
 		// The version is chosen inside the transaction, so two decisions
 		// racing an apply still each freeze one whole version rather than
 		// a mix of two.
@@ -106,7 +111,7 @@ WHERE j.name = ?`, in.JobName).Scan(&versionID, &specJSON)
 		// refusal that says why. The decision is recorded, not silent: the
 		// tick stands down and the trigger is stored rejected with the
 		// hold's code, so explain answers for the run that never happened.
-		if hold, held := s.heldRun(); held {
+		if hold, isHeld := s.heldRun(); isHeld {
 			if _, err := tx.Exec(`INSERT INTO ticks
 (id, source_kind, source_name, started_at, last_started_at, outcome, trigger_count)
 VALUES (?, 'manual', ?, ?, ?, 'triggered', 1)`, tickID, in.JobName, at, at); err != nil {
@@ -122,7 +127,12 @@ VALUES (?, ?, ?, ?, ?, 'rejected', ?, ?)`,
 			if err := s.standDownTickTx(tx, tickID, at, hold); err != nil {
 				return err
 			}
-			return &HeldError{Hold: hold}
+			// Returning the refusal as an error here would roll the two rows
+			// back with it, and the refusal would be exactly the silent gap
+			// the guard exists to prevent: explain could not answer for the
+			// run that never happened.
+			held = &HeldError{Hold: hold}
+			return nil
 		}
 
 		// One tick per decision. Manual ticks leave scheduled_for NULL,
@@ -198,6 +208,9 @@ VALUES (?, ?, ?, ?, ?, 'accepted')`, triggerID, tickID, in.JobName, params, at);
 	})
 	if err != nil {
 		return ManualTriggerResult{}, err
+	}
+	if held != nil {
+		return ManualTriggerResult{}, held
 	}
 	return out, nil
 }
