@@ -710,8 +710,8 @@ const noNotification = ""
 
 // finishReason decides why the run ended, and what that ending notifies. A
 // step failure fails the run and names the step; a spent run budget ends it
-// as TIMED_OUT; a cancelled step means the run was cancelled; otherwise the
-// run succeeded, a skip counting as success. The detail comes back too:
+// as TIMED_OUT; a cancelled step with nothing failed beside it means the run
+// was cancelled; otherwise the run succeeded, a skip counting as success. The detail comes back too:
 // notification planning (#29) reads the same rows the verdict did, so the
 // alert can never disagree with the state change it is written in.
 func (e *Engine) finishReason(ctx context.Context, runID string, timedOut bool) (runVerdict, store.RunDetail, error) {
@@ -725,6 +725,11 @@ func (e *Engine) finishReason(ctx context.Context, runID string, timedOut bool) 
 			topic:  model.TopicRunFailed,
 		}, detail, nil
 	}
+	// The steps are ranked the way model.TerminalVerdict ranks them, not read
+	// in index order: FinishRun writes the run's state from that ranking, so
+	// a reason picked by position would contradict the state it is stored
+	// beside. The named step stays the first failure in spec order.
+	cancelled := false
 	for _, s := range detail.Steps {
 		switch model.StepState(s.State) {
 		case model.StepFailed:
@@ -736,11 +741,14 @@ func (e *Engine) finishReason(ctx context.Context, runID string, timedOut bool) 
 				topic: model.TopicRunFailed,
 			}, detail, nil
 		case model.StepCancelled:
-			return runVerdict{
-				reason: store.FinishReason{Code: reason.RUNCancelledManual},
-				topic:  noNotification,
-			}, detail, nil
+			cancelled = true
 		}
+	}
+	if cancelled {
+		return runVerdict{
+			reason: store.FinishReason{Code: reason.RUNCancelledManual},
+			topic:  noNotification,
+		}, detail, nil
 	}
 	return runVerdict{
 		reason: store.FinishReason{Code: reason.RUNSucceeded},

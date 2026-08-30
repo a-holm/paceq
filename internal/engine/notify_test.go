@@ -379,3 +379,54 @@ func TestEveryRunEndingNotifiesWhatItsVerdictSays(t *testing.T) {
 		})
 	}
 }
+
+// TestAFailedStepOutranksACancelledOneAtTheFinish holds the finish verdict to
+// the order the machine ranks by. model.TerminalVerdict puts a failure above a
+// cancellation, and FinishRun writes the run's state from it, so a finish that
+// read its own reason off the first terminal step in index order would stamp
+// RUN_CANCELLED_MANUAL on a row whose state is failed. The run then notifies
+// nobody, because a cancellation carries no topic, and fsck sees nothing wrong:
+// it compares the state to the step aggregate, never to the reason.
+func TestAFailedStepOutranksACancelledOneAtTheFinish(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 9, 17, 8, 0, 0, 0, time.UTC)
+	f := newFixtureWithClock(t, clock.NewFake(now))
+	f.Engine.Notify = notify.NewPlanner(model.NotifyDefaults{
+		OnSuccess: []string{"exec:notify-me"},
+		OnFailure: []string{"exec:notify-me"},
+	}, func() time.Time { return now })
+
+	// The cancelled step sits at index 0, ahead of the step that fails.
+	runID := f.aQueuedRunWithHooks(t, "cancel-then-fail",
+		[]string{"cancelled", "reopened"}, []string{"exit 0", "exit 3"}, nil, 60000, "")
+	f.aCancelledStepSurvivingARetry(t, runID, "cancelled", "reopened")
+
+	state, err := f.Engine.ExecuteRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("the run could not finish: %v", err)
+	}
+	if state != string(model.RunFailed) {
+		t.Fatalf("run ended %s, want failed", state)
+	}
+
+	detail, err := f.Store.GetRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("read the run back: %v", err)
+	}
+	if detail.Run.ReasonCode != string(reason.RUNFailedStep) {
+		t.Errorf("a failed run reads reason_code %q, want %s: the reason and the"+
+			" state come from the same steps and cannot disagree",
+			detail.Run.ReasonCode, reason.RUNFailedStep)
+	}
+
+	rows, err := f.Store.ListNotifications(ctx, store.NotificationFilter{})
+	if err != nil {
+		t.Fatalf("list notifications: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("a failed run left %d outbox rows, want exactly 1:\n%+v", len(rows), rows)
+	}
+	if rows[0].Topic != model.TopicRunFailed || rows[0].Subject != "e2e" {
+		t.Errorf("row is %s/%s, want %s/e2e", rows[0].Topic, rows[0].Subject, model.TopicRunFailed)
+	}
+}
