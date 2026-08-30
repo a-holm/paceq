@@ -980,10 +980,18 @@ func reapToCancelledTx(tx *sql.Tx, run Run, now time.Time) (ReapedRun, error) {
 }
 
 // failRunningStepsTx closes every running step of a run the reaper is taking.
-// With a budget left the lost attempt goes back to pending for its next try
-// (parked at once, the same answer recovery gives); with terminal set, or no
-// budget left, the step fails under STEP_FAILED_EXECUTOR_LOST: the verdict
-// was lost with the executor, and recording exactly that beats inventing one.
+// With a budget left the lost attempt goes back to pending for its next try;
+// with terminal set, or no budget left, the step fails under
+// STEP_FAILED_EXECUTOR_LOST: the verdict was lost with the executor, and
+// recording exactly that beats inventing one.
+//
+// The write itself is applyStepOutcomeTx, the same one RecordStepOutcome and
+// the spool committer take, so the reaper cannot keep private answers to the
+// questions that writer already settles (#213): whether a step going back to
+// pending may carry a finish stamp, and whether a step landing on failed
+// closes its downstream in this transaction. The reaper's own facts — that
+// this ending buys no further attempt, and that the reaper wrote it — are
+// arguments, not a second copy of the rules.
 func failRunningStepsTx(tx *sql.Tx, runID string, now time.Time, terminal bool) error {
 	steps, err := readStepsTx(tx, runID)
 	if err != nil {
@@ -993,41 +1001,15 @@ func failRunningStepsTx(tx *sql.Tx, runID string, now time.Time, terminal bool) 
 		if model.StepState(step.State) != model.StepRunning {
 			continue
 		}
-		left := !terminal && step.Attempt < step.MaxAttempts
-		state, effects, err := model.NextStepState(model.StepRunning, model.EvStepFailed, model.Guards{
-			ReasonCode:   string(reason.STEPFailedExecutorLost),
-			AttemptsLeft: left,
-		})
-		if err != nil {
-			return fmt.Errorf("close the lost step %s of run %s: %w", step.Name, runID, err)
-		}
-		var nextAttempt any
-		if state == model.StepPending {
-			nextAttempt = now.UnixMilli()
-		}
 		// nolint:fencing: the sweep transaction already proved this run's
 		// lease expired past the skew; steps carry no token of their own.
-		if _, err := tx.Exec(`UPDATE steps SET
-			state = ?, reason_code = ?, reason_data = '{}',
-			finished_at = ?,
-			duration_ms = CASE WHEN started_at IS NULL THEN NULL ELSE ? - started_at END,
-			next_attempt_at = ?
-			WHERE run_id = ? AND name = ? AND state = 'running'`,
-			string(state), string(reason.STEPFailedExecutorLost), now.UnixMilli(),
-			now.UnixMilli(), nextAttempt, runID, step.Name); err != nil {
+		if err := applyStepOutcomeTx(tx, runID, step.Name, StepOutcome{
+			Event:            string(model.EvStepFailed),
+			ReasonCode:       reason.STEPFailedExecutorLost,
+			NoFurtherAttempt: terminal,
+			Actor:            "reaper",
+		}, now, "{}"); err != nil {
 			return fmt.Errorf("close the lost step %s of run %s: %w", step.Name, runID, err)
-		}
-		if err := appendRunEvent(tx, RunEvent{
-			RunID:      runID,
-			StepName:   step.Name,
-			At:         now,
-			Kind:       emitKind(effects),
-			FromState:  string(model.StepRunning),
-			ToState:    string(state),
-			ReasonCode: string(reason.STEPFailedExecutorLost),
-			Actor:      "reaper",
-		}); err != nil {
-			return err
 		}
 	}
 	return nil

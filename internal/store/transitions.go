@@ -298,6 +298,12 @@ type StepOutcome struct {
 	// result file, 'reconciled' from recovery's honest guess. Empty keeps
 	// the column NULL, the pre-shim era's shape.
 	OutcomeSource string
+
+	// Actor names who wrote this verdict on the events it produces, the
+	// step's own and the skips its failure closes. Empty is the run's
+	// holder, which is what every event carried before a writer other
+	// than the executor took the same path (#213).
+	Actor string
 }
 
 // RecordStepOutcome applies one event to one step. The machine decides
@@ -426,6 +432,7 @@ func applyStepOutcomeTx(tx *sql.Tx, runID, name string, out StepOutcome, finishe
 		FromState: string(cur), ToState: string(state),
 		ReasonCode: string(rowReason),
 		DetailJSON: rowDetail,
+		Actor:      out.Actor,
 	}); err != nil {
 		return err
 	}
@@ -433,9 +440,10 @@ func applyStepOutcomeTx(tx *sql.Tx, runID, name string, out StepOutcome, finishe
 	// whole graph that depended on it. The skip is part of THIS
 	// transaction, committed atomically with the failure, so no
 	// observer ever sees the failed step with its dependants still
-	// pending.
+	// pending. It holds for every writer that lands a step on failed,
+	// because every one of them comes through here (#213).
 	if state == model.StepFailed {
-		if err := propagateSkipTx(tx, runID, name, step.Attempt, finishedAt); err != nil {
+		if err := propagateSkipTx(tx, runID, name, step.Attempt, finishedAt, out.Actor); err != nil {
 			return fmt.Errorf("propagate the failure of %s of run %s: %w", name, runID, err)
 		}
 	}
@@ -465,7 +473,7 @@ func applyStepOutcomeTx(tx *sql.Tx, runID, name string, out StepOutcome, finishe
 // STEP_SKIPPED_UPSTREAM_SKIPPED, because the skip closed it, not the
 // failure. Both carry the failed step in reason_data so explain can walk
 // straight back to the root.
-func propagateSkipTx(tx *sql.Tx, runID, failedStep string, attempt int, now time.Time) error {
+func propagateSkipTx(tx *sql.Tx, runID, failedStep string, attempt int, now time.Time, actor string) error {
 	// The crash windows of the closure itself (#20): one before any
 	// pending dependant is computed or written, one after every write.
 	// Both sit inside the caller's verdict transaction, so a kill in
@@ -538,6 +546,7 @@ func propagateSkipTx(tx *sql.Tx, runID, failedStep string, attempt int, now time
 			FromState: string(model.StepPending), ToState: string(to),
 			ReasonCode: string(code),
 			DetailJSON: detail,
+			Actor:      actor,
 		}); err != nil {
 			return err
 		}
