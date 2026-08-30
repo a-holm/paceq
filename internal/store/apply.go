@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"github.com/a-holm/paceq/internal/id"
 )
@@ -121,17 +122,38 @@ func (s *Store) ApplyJobs(ctx context.Context, inputs []JobVersionInput) ([]JobA
 		// The transaction can run more than once on a snapshot conflict, so
 		// the batch starts from zero every time.
 		results = results[:0]
+
+		versions := make([]JobVersion, len(inputs))
+		created := make([]bool, len(inputs))
 		for i, in := range inputs {
-			version, created, err := writeJobVersion(tx, ids[i], at, in)
-			if err != nil {
+			var err error
+			if versions[i], created[i], err = writeJobVersion(tx, ids[i], at, in); err != nil {
 				return err
 			}
-			work := plans[i]
-			if len(work.sensors.plan) > 0 {
-				if err := syncSensorsTx(tx, at, in.JobName, work.sensors.plan, work.sensors.eventIDs); err != nil {
-					return err
-				}
+		}
+
+		// Sensors go in three passes over the batch rather than one pass per
+		// job, because sensor names are unique across every job and the passes
+		// are what keeps the answer independent of how the operator split
+		// their files. Every removal first, so a name this apply gives up is
+		// free; then the ownership check against what is left; then the
+		// upserts.
+		for i, in := range inputs {
+			if err := syncSensorsTx(tx, at, in.JobName, plans[i].sensors.plan, plans[i].sensors.eventIDs, sensorRemovals); err != nil {
+				return err
 			}
+		}
+		if err := refuseTakenSensorNames(tx, inputs); err != nil {
+			return err
+		}
+		for i, in := range inputs {
+			if err := syncSensorsTx(tx, at, in.JobName, plans[i].sensors.plan, plans[i].sensors.eventIDs, sensorUpserts); err != nil {
+				return err
+			}
+		}
+
+		for i, in := range inputs {
+			work := plans[i]
 			// The schedule rows come after the job version because they
 			// reference jobs (name), so the job has to exist first.
 			if len(work.schedules.plan) > 0 {
@@ -141,9 +163,9 @@ func (s *Store) ApplyJobs(ctx context.Context, inputs []JobVersionInput) ([]JobA
 			}
 			results = append(results, JobApplyResult{
 				JobName:   in.JobName,
-				VersionID: version.ID,
-				Version:   version.Version,
-				Created:   created,
+				VersionID: versions[i].ID,
+				Version:   versions[i].Version,
+				Created:   created[i],
 				Sensors:   work.sensorRes,
 				Schedules: work.scheduleRes,
 			})
@@ -154,6 +176,64 @@ func (s *Store) ApplyJobs(ctx context.Context, inputs []JobVersionInput) ([]JobA
 		return nil, err
 	}
 	return results, nil
+}
+
+// refuseTakenSensorNames stops a batch that declares a sensor name a job
+// outside it owns. A sensor name is the primary key its row lives under across
+// every job, and the cursor, the dedup epoch and the breaker counters live on
+// that row, so a name moving job would hand the old owner's evaluation
+// position to the new one.
+//
+// It runs inside the write transaction, after the batch's own removals, which
+// is what makes one apply and two applies agree: a name this batch gives up is
+// already gone from the table, and a name nobody gave up is still owned. Doing
+// it under the write lock also means a concurrent apply cannot slip between
+// the check and the upserts.
+func refuseTakenSensorNames(tx *sql.Tx, inputs []JobVersionInput) error {
+	declaredBy := map[string]string{}
+	args := make([]any, 0, len(inputs))
+	for _, in := range inputs {
+		for _, sensor := range in.Sensors {
+			if sensor.Name == "" {
+				continue
+			}
+			if _, seen := declaredBy[sensor.Name]; seen {
+				continue
+			}
+			declaredBy[sensor.Name] = in.JobName
+			args = append(args, sensor.Name)
+		}
+	}
+	if len(args) == 0 {
+		return nil
+	}
+
+	rows, err := tx.Query(`SELECT name, job_name FROM sensors WHERE name IN (`+
+		strings.TrimSuffix(strings.Repeat("?, ", len(args)), ", ")+`) ORDER BY name`, args...)
+	if err != nil {
+		return fmt.Errorf("read who owns the declared sensor names: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	// The scan runs to the end and reports the first conflict by name, so a
+	// batch with several of them always refuses on the same one.
+	var taken *SensorNameTakenError
+	for rows.Next() {
+		var name, owner string
+		if err := rows.Scan(&name, &owner); err != nil {
+			return fmt.Errorf("read who owns the declared sensor names: %w", err)
+		}
+		if taker := declaredBy[name]; owner != taker && taken == nil {
+			taken = &SensorNameTakenError{Sensor: name, Owner: owner, Taker: taker}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read who owns the declared sensor names: %w", err)
+	}
+	if taken != nil {
+		return taken
+	}
+	return nil
 }
 
 // resultOf folds a sensor plan into the SyncResult that reports it.

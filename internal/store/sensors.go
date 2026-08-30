@@ -31,12 +31,46 @@ type SyncResult struct {
 	Removed   []string
 }
 
+// SensorNameTakenError is an apply that would move a sensor row from the job
+// that owns it to a different job. The name is the row's primary key across
+// every job, and the cursor, the dedup epoch and the breaker counters live on
+// that row, so a name that changes hands takes the old owner's evaluation
+// position with it. It is a distinct type so the CLI can report it as the
+// validation refusal it is, under the diagnostic code the in-batch check
+// already uses, rather than as an internal failure.
+type SensorNameTakenError struct {
+	// Sensor is the contested name.
+	Sensor string
+	// Owner is the job whose row holds the name today.
+	Owner string
+	// Taker is the job whose spec declares the name.
+	Taker string
+}
+
+func (e *SensorNameTakenError) Error() string {
+	return fmt.Sprintf("the sensor %s belongs to the job %s, so the job %s cannot declare it",
+		e.Sensor, e.Owner, e.Taker)
+}
+
 // The lifecycle kinds recorded in sensor_events. Removed is the definition
 // side's analogue of run_events: the act of a sensor leaving the spec.
 const (
 	lifecycleCreated     = "created"
 	lifecycleSpecChanged = "spec_changed"
 	lifecycleRemoved     = "removed"
+)
+
+// sensorPhase selects which half of a plan one syncSensorsTx call performs.
+// Every removal in an apply runs before every upsert in it, so a name one job
+// gives up is free before another job's spec claims it, whatever order the job
+// files arrived in. A name that changes hands that way goes through a delete
+// and an insert, so its new owner starts with cursor NULL and dedup_epoch 0
+// rather than inheriting the position the old owner's evaluations left.
+type sensorPhase int
+
+const (
+	sensorRemovals sensorPhase = iota
+	sensorUpserts
 )
 
 // sensorExecJSON is the exec adapter's configuration: the subprocess and the
@@ -135,7 +169,10 @@ func (s *Store) SyncSensors(ctx context.Context, job string, sensors []spec.Sens
 	}
 
 	err = s.withTx(ctx, func(tx *sql.Tx) error {
-		return syncSensorsTx(tx, at, job, plan, eventIDs)
+		if err := syncSensorsTx(tx, at, job, plan, eventIDs, sensorRemovals); err != nil {
+			return err
+		}
+		return syncSensorsTx(tx, at, job, plan, eventIDs, sensorUpserts)
 	})
 	if err != nil {
 		return SyncResult{}, err
@@ -145,6 +182,11 @@ func (s *Store) SyncSensors(ctx context.Context, job string, sensors []spec.Sens
 
 // currentSensorSpecs reads the names and frozen definitions of one job's
 // sensor rows, outside any write transaction.
+//
+// The scope is deliberate. A sync plans against the rows its own job holds, so
+// a name another job owns is absent and the plan calls it a creation; the
+// upsert then refuses it, which is where that answer belongs. Widening the read
+// would let the plan describe a row this job may not touch.
 type sensorReader interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
@@ -196,13 +238,16 @@ func buildSensorPlan(job string, sensors []spec.Sensor, existing map[string]stri
 	return plan
 }
 
-// syncSensorsTx performs the plan inside a transaction the caller owns. Every
-// upsert and delete lands with its lifecycle event in the same transaction, so
-// a reader never sees the sensor rows half way to the spec.
-func syncSensorsTx(tx *sql.Tx, at int64, job string, plan []syncPlanItem, eventIDs []string) error {
+// syncSensorsTx performs one phase of the plan inside a transaction the caller
+// owns. Every upsert and delete lands with its lifecycle event in the same
+// transaction, so a reader never sees the sensor rows half way to the spec.
+func syncSensorsTx(tx *sql.Tx, at int64, job string, plan []syncPlanItem, eventIDs []string, phase sensorPhase) error {
 	for i, item := range plan {
 		switch item.kind {
 		case lifecycleCreated, lifecycleSpecChanged:
+			if phase != sensorUpserts {
+				continue
+			}
 			sensor := item.sensor
 			if sensor == nil {
 				return fmt.Errorf("sync %s: a %s plan item carries no sensor", job, item.kind)
@@ -213,14 +258,17 @@ func syncSensorsTx(tx *sql.Tx, at int64, job string, plan []syncPlanItem, eventI
 			}
 			// The drift columns are named in the INSERT only, never in the
 			// conflict branch: a re-apply must not move the cursor or the
-			// epoch, whatever the definition becomes.
-			if _, err := tx.Exec(`INSERT INTO sensors
+			// epoch, whatever the definition becomes. job_name is not in the
+			// conflict branch either, and the WHERE says why: a row another
+			// job holds updates nothing, so no caller can move a sensor name,
+			// and with it a cursor, an epoch and a breaker count, away from
+			// the job that owns it. The zero rows that leaves are the refusal.
+			res, err := tx.Exec(`INSERT INTO sensors
 (name, job_name, kind, exec_json, spec_json, interval_ms, min_interval_ms,
  timeout_ms, max_triggers_per_tick, paused, cursor, dedup_epoch,
  consecutive_failures, next_eval_at, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, 0, ?, ?, ?)
 ON CONFLICT(name) DO UPDATE SET
-    job_name              = excluded.job_name,
     kind                  = excluded.kind,
     exec_json             = excluded.exec_json,
     spec_json             = excluded.spec_json,
@@ -228,21 +276,39 @@ ON CONFLICT(name) DO UPDATE SET
     min_interval_ms       = excluded.min_interval_ms,
     timeout_ms            = excluded.timeout_ms,
     max_triggers_per_tick = excluded.max_triggers_per_tick,
-    updated_at            = excluded.updated_at`,
+    updated_at            = excluded.updated_at
+  WHERE sensors.job_name = excluded.job_name`,
 				sensor.Name, job, sensor.Kind, sensorExecJSON(*sensor), sensorSpecJSON(*sensor),
 				sensor.Interval.Milliseconds(), sensor.MinInterval.Milliseconds(),
 				sensor.Timeout.Milliseconds(), sensor.MaxTriggersPerTick, paused,
-				at, at, at); err != nil {
+				at, at, at)
+			if err != nil {
 				return fmt.Errorf("sync sensor %s/%s: %w", job, sensor.Name, err)
+			}
+			written, err := res.RowsAffected()
+			if err != nil {
+				return fmt.Errorf("count the sync of sensor %s/%s: %w", job, sensor.Name, err)
+			}
+			if written == 0 {
+				return sensorNameTaken(tx, sensor.Name, job)
 			}
 			if err := writeSensorEvent(tx, eventIDs[i], sensor.Name, job, item.kind, at); err != nil {
 				return err
 			}
 		case lifecycleRemoved:
+			if phase != sensorRemovals {
+				continue
+			}
 			// run_keys carries no foreign key to sensors: deleting the row
 			// leaves the dedup table alone, so a re-added sensor of the same
 			// name does not replay a burst of old keys.
-			if _, err := tx.Exec(`DELETE FROM sensors WHERE name = ?`, item.name); err != nil {
+			//
+			// The delete names the job for the same reason the upsert does. A
+			// plan is built against one job's rows, and a plan item that
+			// reaches a row another job now holds must miss rather than take
+			// somebody else's sensor away.
+			if _, err := tx.Exec(`DELETE FROM sensors WHERE name = ? AND job_name = ?`,
+				item.name, job); err != nil {
 				return fmt.Errorf("delete sensor %s: %w", item.name, err)
 			}
 			if err := writeSensorEvent(tx, eventIDs[i], item.name, job, lifecycleRemoved, at); err != nil {
@@ -251,6 +317,18 @@ ON CONFLICT(name) DO UPDATE SET
 		}
 	}
 	return nil
+}
+
+// sensorNameTaken reads back the job holding a contested sensor name, so the
+// refusal names what the operator has to go and look at. It is only reached
+// when the upsert changed nothing, which means the row is there and somebody
+// else owns it.
+func sensorNameTaken(tx *sql.Tx, name, taker string) error {
+	var owner string
+	if err := tx.QueryRow(`SELECT job_name FROM sensors WHERE name = ?`, name).Scan(&owner); err != nil {
+		return fmt.Errorf("find the job owning sensor %s: %w", name, err)
+	}
+	return &SensorNameTakenError{Sensor: name, Owner: owner, Taker: taker}
 }
 
 // writeSensorEvent records one lifecycle change in sensor_events.
