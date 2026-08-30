@@ -49,16 +49,16 @@ func BreakerExempt(kind FailureKind) bool {
 	return kind == FailureTransient || kind == FailureConfig
 }
 
-// BackoffCap is the ceiling on the permanent-failure backoff. The formula is
+// BackoffCap is the ceiling on the permanent-failure backoff, and the default
+// cooldown a tripped sensor waits out before a probe. The backoff formula is
 // interval times 2^min(n,6) capped at one hour (plan 05 section 6.2); a sensor
 // that keeps failing past the sixth consecutive failure waits no longer than
 // one hour between attempts.
+//
+// The trip threshold it is paired with is model.SensorBreakerThreshold, which
+// lives there because the runtime, the status report and the shipped alert
+// rule all read it.
 const BackoffCap = time.Hour
-
-// MaxConsecutiveFailures is the breaker threshold: ten consecutive permanent
-// failures pause the sensor, after which only an operator resumes it (plan 05
-// section 6.2 / plan 02 section 5.5).
-const MaxConsecutiveFailures = 10
 
 // nextEvalAt computes when a failed sensor becomes due again. base is the
 // sensor's own interval, n is the consecutive-failure count feeding the

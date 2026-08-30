@@ -368,6 +368,10 @@ func buildSensorSubject(ctx context.Context, st *store.Store, rep *RefReport, na
 	if err != nil {
 		return nil, err
 	}
+	// NextEvalAt is when the row is next due, not when the sensor is next
+	// evaluated: while BreakerOpen holds it, the stamp passes into the past
+	// and stays there until a probe commits. BreakerOpen is the field that
+	// answers whether it will run.
 	facts := &SensorFacts{
 		IntervalMS:          row.IntervalMS,
 		ConsecutiveFailures: row.ConsecutiveFailures,
