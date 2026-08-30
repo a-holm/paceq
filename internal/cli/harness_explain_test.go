@@ -227,8 +227,8 @@ func cmdPlantOutage(ts *testscript.TestScript, neg bool, args []string) {
 
 // cmdPlantSensorSkip records one finished-but-empty sensor evaluation through
 // the real begin/commit path, so `explain sensor` has the same rows a daemon
-// would have written. Each call is one tick row; sensors do not fold skips in
-// this milestone, and the golden shows them as separate lines.
+// would have written, folding included: repeating an identical skip on a
+// rising -at leaves ONE row with repeat_count N.
 //
 //	plantsensorskip SENSOR "no new files since 04:00" [-at=-3m]
 //

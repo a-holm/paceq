@@ -252,11 +252,13 @@ func runSensorsShow(ctx context.Context, env Env, g *globals, out *ui, name stri
 
 	if out.mode == modeJSON {
 		type tickJSON struct {
-			StartedAt    string `json:"started_at"`
-			Outcome      string `json:"outcome"`
-			ReasonCode   string `json:"reason_code,omitempty"`
-			TriggerCount int    `json:"trigger_count"`
-			DedupedCount int    `json:"deduped_count"`
+			StartedAt     string `json:"started_at"`
+			LastStartedAt string `json:"last_started_at"`
+			RepeatCount   int    `json:"repeat_count"`
+			Outcome       string `json:"outcome"`
+			ReasonCode    string `json:"reason_code,omitempty"`
+			TriggerCount  int    `json:"trigger_count"`
+			DedupedCount  int    `json:"deduped_count"`
 		}
 		type showJSON struct {
 			Name                string     `json:"name"`
@@ -296,11 +298,13 @@ func runSensorsShow(ctx context.Context, env Env, g *globals, out *ui, name stri
 		}
 		for _, t := range ticks {
 			doc.Ticks = append(doc.Ticks, tickJSON{
-				StartedAt:    t.StartedAt.UTC().Format(time.RFC3339),
-				Outcome:      t.Outcome,
-				ReasonCode:   t.ReasonCode,
-				TriggerCount: t.TriggerCount,
-				DedupedCount: t.DedupedCount,
+				StartedAt:     t.StartedAt.UTC().Format(time.RFC3339),
+				LastStartedAt: t.LastStartedAt.UTC().Format(time.RFC3339),
+				RepeatCount:   t.RepeatCount,
+				Outcome:       t.Outcome,
+				ReasonCode:    t.ReasonCode,
+				TriggerCount:  t.TriggerCount,
+				DedupedCount:  t.DedupedCount,
 			})
 		}
 		return out.json(doc)
@@ -328,10 +332,17 @@ func runSensorsShow(ctx context.Context, env Env, g *globals, out *ui, name stri
 	if len(ticks) > 0 {
 		out.print("recent ticks:")
 		for _, t := range ticks {
-			out.print("  %s  %s  %s  triggers %d  deduped %d",
+			line := fmt.Sprintf("  %s  %s  %s  triggers %d  deduped %d",
 				t.StartedAt.UTC().Format("2006-01-02 15:04:05"),
 				pad(sensorOutcomeText(t.Outcome), 10),
 				t.ReasonCode, t.TriggerCount, t.DedupedCount)
+			// A folded row stands for a stretch of time, not an instant, so
+			// the line has to name both ends or the limit reads as N ticks.
+			if t.RepeatCount > 1 {
+				line += fmt.Sprintf("  x%d through %s", t.RepeatCount,
+					t.LastStartedAt.UTC().Format("2006-01-02 15:04:05"))
+			}
+			out.print("%s", line)
 		}
 	}
 	return nil

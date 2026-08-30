@@ -122,23 +122,27 @@ func (s *Store) ListSensors(ctx context.Context) ([]SensorSummary, error) {
 // SensorTickView is one recorded sensor tick as the CLI shows it: what
 // happened, when, and how many runs it produced.
 type SensorTickView struct {
-	StartedAt    time.Time
-	Outcome      string
-	ReasonCode   string
-	TriggerCount int
-	DedupedCount int
+	StartedAt     time.Time
+	LastStartedAt time.Time
+	RepeatCount   int
+	Outcome       string
+	ReasonCode    string
+	TriggerCount  int
+	DedupedCount  int
 }
 
 // SensorTicks lists the last N ticks of one sensor, newest first. This is the
 // coalesced history `sensors show --limit N` reads; ticks were coalesced onto
 // one row at write time, so repetition shows as a grow of repeat_count rather
-// than a second row.
+// than a second row. RepeatCount and LastStartedAt travel with every row,
+// because a limit over folded rows spans an amount of time only the count can
+// tell the reader.
 func (s *Store) SensorTicks(ctx context.Context, name string, limit int) ([]SensorTickView, error) {
 	if limit <= 0 {
 		limit = 20
 	}
-	rows, err := s.r.QueryContext(ctx, `SELECT started_at, outcome,
-COALESCE(reason_code, ''), trigger_count, deduped_count
+	rows, err := s.r.QueryContext(ctx, `SELECT started_at, last_started_at, repeat_count,
+outcome, COALESCE(reason_code, ''), trigger_count, deduped_count
 FROM ticks WHERE source_kind = 'sensor' AND source_name = ?
 ORDER BY started_at DESC LIMIT ?`, name, limit)
 	if err != nil {
@@ -149,11 +153,13 @@ ORDER BY started_at DESC LIMIT ?`, name, limit)
 	var out []SensorTickView
 	for rows.Next() {
 		var v SensorTickView
-		var at int64
-		if err := rows.Scan(&at, &v.Outcome, &v.ReasonCode, &v.TriggerCount, &v.DedupedCount); err != nil {
+		var at, lastAt int64
+		if err := rows.Scan(&at, &lastAt, &v.RepeatCount, &v.Outcome, &v.ReasonCode,
+			&v.TriggerCount, &v.DedupedCount); err != nil {
 			return nil, fmt.Errorf("scan a sensor tick for %s: %w", name, err)
 		}
 		v.StartedAt = time.UnixMilli(at).UTC()
+		v.LastStartedAt = time.UnixMilli(lastAt).UTC()
 		out = append(out, v)
 	}
 	if err := rows.Err(); err != nil {

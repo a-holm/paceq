@@ -54,6 +54,13 @@ grep 'no sensor matches' p_err.txt
 wantexit 2 r.json r_err.txt sensors reset dropzone --forget-run-keys
 grep 'needs confirmation' r_err.txt
 
+# Repeated identical skips are one row, and the line has to say how many, or a
+# --limit of 20 silently spans a different stretch of time per sensor.
+plantsensorskip dropzone 'no new files' -at=1m
+plantsensorskip dropzone 'no new files' -at=2m
+exec paceq sensors show dropzone -o text
+stdout 'x2 through 2026-09-24 09:02:00'
+
 -- expected_list.json --
 [
   {
@@ -91,7 +98,9 @@ grep 'needs confirmation' r_err.txt
   "ticks": [
     {
       "deduped_count": 0,
+      "last_started_at": "2026-09-24T09:00:00Z",
       "outcome": "triggered",
+      "repeat_count": 1,
       "started_at": "2026-09-24T09:00:00Z",
       "trigger_count": 1
     }
