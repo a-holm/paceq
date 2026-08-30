@@ -448,10 +448,12 @@ func (c *Collector) writeNotificationFamilies(ctx context.Context, w *Writer) bo
 	return false
 }
 
-// writeIntegrityFamilies emits what the newest fsck sweep recorded (M6-06).
-// The gauge carries one series per invariant that had findings, labelled with
-// the grade, and the timestamp family says when that sweep ran. A store with
-// no recorded sweep emits neither: no series without truth.
+// writeIntegrityFamilies emits what the newest fsck sweep found (M6-06). The
+// gauge carries one series per invariant that had findings, labelled with the
+// grade, and the timestamp family says when that sweep ran. A sweep that
+// found nothing leaves the gauge family absent and still moves the timestamp,
+// so a repaired invariant stops reporting and a staleness alert has something
+// to arm on. A store nobody has swept emits neither: no series without truth.
 func (c *Collector) writeIntegrityFamilies(ctx context.Context, w *Writer) bool {
 	findings, err := c.src.MetricsIntegrityViolations(ctx)
 	if err != nil {
@@ -470,7 +472,7 @@ func (c *Collector) writeIntegrityFamilies(ctx context.Context, w *Writer) bool 
 		return true
 	}
 	if ok {
-		w.Help("pulseq_fsck_last_run_timestamp_seconds", "Unix time of the newest recorded fsck sweep.", "gauge")
+		w.Help("pulseq_fsck_last_run_timestamp_seconds", "Unix time of the newest completed fsck sweep, whether or not it found anything.", "gauge")
 		w.Metric("pulseq_fsck_last_run_timestamp_seconds", nil, float64(last.Unix()))
 	}
 	return false

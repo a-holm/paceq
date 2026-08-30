@@ -46,7 +46,7 @@ type runQueue interface {
 // time, or the integrity log would tell every finding twice.
 type fsckSweeper interface {
 	Fsck(ctx context.Context) ([]store.Violation, error)
-	RecordIntegrityFindings(ctx context.Context, at time.Time, findings []store.IntegrityFinding) error
+	RecordIntegritySweep(ctx context.Context, at time.Time, findings []store.IntegrityFinding) error
 }
 
 // fsckEvery is how often the maintenance leader runs the invariant sweep.
@@ -166,8 +166,8 @@ func janitorLoop(ctx context.Context, d loops, every time.Duration, j *janitor.J
 	return loop(ctx, d, "janitor", every, notify.TopicScheduleChanged, func(ctx context.Context) error {
 		// The hourly invariant sweep (M6-06) rides the same leadership and
 		// the same wake as the nightly cycle. The startup sweep is the first
-		// fact in the log; each hourly sweep appends only what it finds, so
-		// a clean hour costs one cheap read and writes nothing.
+		// fact in the log; each hourly sweep records that it ran and appends
+		// what it found, so a clean hour costs one cheap read and one stamp.
 		if sweeper != nil && (!haveFscked || d.clk.Since(lastFsck) >= fsckEvery) {
 			if err := sweepIntegrity(ctx, d, sweeper); err != nil {
 				return err
@@ -205,19 +205,19 @@ func janitorLoop(ctx context.Context, d loops, every time.Duration, j *janitor.J
 	})
 }
 
-// sweepIntegrity runs one fsck sweep and lands what it found in the
-// integrity event log and on the health surface. Findings never fail the
-// loop: a broken invariant is exactly the state the operator must be able to
-// watch through /metrics and /livez, and a loop that died on its own finding
-// would stop reporting it.
+// sweepIntegrity runs one fsck sweep and lands the sweep and what it found in
+// the integrity event log and on the health surface. A clean sweep is
+// recorded too: the gauges are asked when the state was last looked at, and
+// silence cannot answer that. Findings never fail the loop: a broken
+// invariant is exactly the state the operator must be able to watch through
+// /metrics and /livez, and a loop that died on its own finding would stop
+// reporting it. A sweep that errors records nothing, because it did not
+// finish looking.
 func sweepIntegrity(ctx context.Context, d loops, sweeper fsckSweeper) error {
 	d.status.mark("fsck")
 	violations, err := sweeper.Fsck(ctx)
 	if err != nil {
 		return fmt.Errorf("the integrity sweep failed: %w", err)
-	}
-	if len(violations) == 0 {
-		return nil
 	}
 	at := d.clk.Now().UTC()
 	subjects := map[string][]string{}
@@ -241,8 +241,8 @@ func sweepIntegrity(ctx context.Context, d loops, sweeper fsckSweeper) error {
 			Subjects:   subjects[check],
 		})
 	}
-	if err := sweeper.RecordIntegrityFindings(ctx, at, findings); err != nil {
-		return fmt.Errorf("record the integrity findings: %w", err)
+	if err := sweeper.RecordIntegritySweep(ctx, at, findings); err != nil {
+		return fmt.Errorf("record the integrity sweep: %w", err)
 	}
 	for _, f := range findings {
 		d.log.Warn("integrity violation",

@@ -15,8 +15,8 @@ import (
 	"github.com/a-holm/paceq/internal/store"
 )
 
-// The integrity surface (M6-06): the hourly sweep records what it finds, the
-// health line moves, and a clean hour writes nothing.
+// The integrity surface (M6-06): the hourly sweep records that it ran and
+// what it found, and the health line moves with it.
 
 type fsckStubSweeper struct {
 	violations []store.Violation
@@ -30,7 +30,7 @@ func (s *fsckStubSweeper) Fsck(context.Context) ([]store.Violation, error) {
 	return s.violations, nil
 }
 
-func (s *fsckStubSweeper) RecordIntegrityFindings(_ context.Context, at time.Time, findings []store.IntegrityFinding) error {
+func (s *fsckStubSweeper) RecordIntegritySweep(_ context.Context, at time.Time, findings []store.IntegrityFinding) error {
 	s.stamps = append(s.stamps, at)
 	s.recorded = append(s.recorded, findings)
 	return nil
@@ -138,7 +138,7 @@ func (f *erroringSweeper) Fsck(context.Context) ([]store.Violation, error) {
 	return nil, errors.New("database is busy")
 }
 
-func (f *erroringSweeper) RecordIntegrityFindings(context.Context, time.Time, []store.IntegrityFinding) error {
+func (f *erroringSweeper) RecordIntegritySweep(context.Context, time.Time, []store.IntegrityFinding) error {
 	return nil
 }
 
@@ -183,7 +183,7 @@ func TestStartupSweepRecordsFindingsAndRefusesCriticals(t *testing.T) {
 		{Check: "I1", Subject: "run 01A", Detail: "no live lease"},
 		{Check: "I1", Subject: "run 01B", Detail: "no live lease"},
 	}
-	if err := recordStartupFindings(context.Background(), st, clk, logger, violations); err != nil {
+	if err := recordStartupSweep(context.Background(), st, clk, logger, violations); err != nil {
 		t.Fatalf("record the startup findings: %v", err)
 	}
 	read, err := st.MetricsIntegrityViolations(context.Background())
@@ -191,7 +191,7 @@ func TestStartupSweepRecordsFindingsAndRefusesCriticals(t *testing.T) {
 		t.Fatalf("the event log holds %+v (err=%v)", read, err)
 	}
 	// A clean startup writes nothing.
-	if err := recordStartupFindings(context.Background(), st, clk, logger, nil); err != nil {
+	if err := recordStartupSweep(context.Background(), st, clk, logger, nil); err != nil {
 		t.Fatalf("record a clean startup: %v", err)
 	}
 	read2, err := st.MetricsIntegrityViolations(context.Background())

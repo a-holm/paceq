@@ -138,7 +138,7 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 		_ = st.Close()
 		return startupRefusal(critical)
 	}
-	if err := recordStartupFindings(sweepCtx, st, clk, log, sweepViolations); err != nil {
+	if err := recordStartupSweep(sweepCtx, st, clk, log, sweepViolations); err != nil {
 		_ = st.Close()
 		return fmt.Errorf("serve: %w", err)
 	}

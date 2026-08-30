@@ -43,15 +43,19 @@ func firstCriticalSummary(violations []store.Violation) string {
 	return ""
 }
 
-// recordStartupFindings writes the startup sweep's findings into the
-// integrity event log, one row per invariant, and says so in the log. A clean
-// sweep writes nothing, which is what makes the log's silence meaningful.
-func recordStartupFindings(ctx context.Context, st *store.Store, clk clock.Clock,
+// integrityRecorder is the sweep-recording half of the store, narrowed so the
+// boot path's own accounting can be held to its promise without a database.
+type integrityRecorder interface {
+	RecordIntegritySweep(ctx context.Context, at time.Time, findings []store.IntegrityFinding) error
+}
+
+// recordStartupSweep writes the startup sweep into the integrity event log:
+// that it ran, and one row per invariant it found something in. A clean sweep
+// records itself with no findings, which is what lets the gauges tell a sound
+// database from one nobody has swept.
+func recordStartupSweep(ctx context.Context, st integrityRecorder, clk clock.Clock,
 	log *slog.Logger, violations []store.Violation,
 ) error {
-	if len(violations) == 0 {
-		return nil
-	}
 	at := clk.Now().UTC()
 	counts := map[string]int{}
 	subjects := map[string][]string{}
@@ -74,7 +78,7 @@ func recordStartupFindings(ctx context.Context, st *store.Store, clk clock.Clock
 			Subjects:   subjects[check],
 		})
 	}
-	if err := st.RecordIntegrityFindings(ctx, at, findings); err != nil {
+	if err := st.RecordIntegritySweep(ctx, at, findings); err != nil {
 		return fmt.Errorf("record the startup sweep: %w", err)
 	}
 	for _, f := range findings {
