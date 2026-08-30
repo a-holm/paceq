@@ -80,6 +80,8 @@ const (
 	// CodeUnknownTimezone is a schedule zone the time zone database does not
 	// have.
 	CodeUnknownTimezone = "PQ2010"
+	// CodeBadCron is a schedule expression the cron parser cannot read.
+	CodeBadCron = "PQ2011"
 	// CodeShell is the warning that a step's command reaches a shell.
 	CodeShell = "W1001"
 	// CodeInheritEnv is the warning that a job takes variables from the
@@ -159,6 +161,7 @@ func Codes() []string {
 		CodeFanOutLimit,
 		CodeDAGDepthLimit,
 		CodeUnknownTimezone,
+		CodeBadCron,
 		CodeShell,
 		CodeInheritEnv,
 		CodeConcurrencyParamUnresolved,

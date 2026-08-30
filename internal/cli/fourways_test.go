@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -21,6 +22,11 @@ import (
 // they are not allowed to disagree about the file. A file validate takes must
 // be a file apply takes, and a row apply writes must be a row the other two
 // can read without an internal error.
+
+// placeInTheFile matches the file, line and column a refusal has to name. A
+// refusal an editor cannot jump to costs the reader the search this whole
+// package exists to save them.
+var placeInTheFile = regexp.MustCompile(`job\.yaml:[0-9]+:[0-9]+`)
 
 // scheduleJob is a job with one cron schedule, spelled by the caller.
 func scheduleJob(name, cron, timezone string) string {
@@ -137,6 +143,11 @@ func TestFourJudgementsAgreeOnOneJobFile(t *testing.T) {
 			accepted: false,
 		},
 		{
+			name:     "an expression nothing can parse",
+			job:      scheduleJob("typo", "not a cron expression at all", "UTC"),
+			accepted: false,
+		},
+		{
 			name:        "an expression whose matches have run out",
 			job:         scheduleJob("exhausted", "0 0 30 2 *", "UTC"),
 			accepted:    true,
@@ -174,12 +185,20 @@ func TestFourJudgementsAgreeOnOneJobFile(t *testing.T) {
 				if got := scheduleRowCount(t, dir, job); got != 0 {
 					t.Fatalf("the refused file left %d schedule rows behind", got)
 				}
+				report := runCLI(t, dir, nil, "validate", "-o", "text")
+				if !placeInTheFile.MatchString(report.stdout) {
+					t.Fatalf("the refusal names no place in the file, so there is nothing to open\n%s%s",
+						report.stdout, report.stderr)
+				}
 				return
 			}
 
 			if validated.code != ExitOK {
 				t.Fatalf("both judges exited %d, want %d\n%s%s",
 					validated.code, ExitOK, validated.stdout, applied.stdout)
+			}
+			if got := scheduleRowCount(t, dir, job); got != 1 {
+				t.Fatalf("the accepted file left %d schedule rows behind, want 1", got)
 			}
 
 			codes := schedulerTicks(t, dir, job, "nightly")
