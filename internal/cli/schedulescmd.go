@@ -362,7 +362,11 @@ func runSchedulesPreview(ctx context.Context, env Env, g *globals, out *ui, ref 
 	for i := 0; i < f.count; i++ {
 		occ, err := parsed.Next(cursor, tz, pol)
 		if err != nil {
-			if strings.Contains(err.Error(), "no more occurrences") {
+			// An expression with nothing left inside the search horizon ends
+			// the series; the scheduler reads the same sentinel and records
+			// the rot as a tick. Preview's answer is the series it found,
+			// which for such an expression is an empty one.
+			if errors.Is(err, cronx.ErrNoOccurrence) {
 				break
 			}
 			return internalError("could not compute the next occurrence", err)
