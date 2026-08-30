@@ -4,6 +4,8 @@ Thank you for working on paceq. The short version:
 
 1. `make ci` is the whole gate; every PR runs it. `make test` alone is not
    enough for changes that touch store schemas, reason codes or CLI surfaces.
+   A second `make ci` on an unchanged tree skips what it already proved and
+   returns in under a second; `PACEQ_GATE_STAMP=0 make ci` runs everything.
 2. Commit subjects follow `#<issue>: <lower-case phrase>`, matching the log.
 
 ## The explain checklist rule
