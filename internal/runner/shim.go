@@ -544,12 +544,14 @@ func SpawnViaShim(ctx context.Context, s Spec, t ShimTarget) (Result, error) {
 	esc := newEscalation(nil, grace, clk)
 	defer esc.stop()
 	cmd.Cancel = func() error {
-		// This process is the sender, and this is the moment it knows
-		// the kill answers a cancellation. The mark goes down before
-		// the signal goes out, so the shim can stamp the reason into
-		// the result file that outlives this process (#204). A mark
-		// that could not be written degrades to the verdict a bare
-		// signal earns, exactly as a missing spool file does.
+		// The step's context is done, so this kill answers a
+		// cancellation or a lost lease — the same event the classifier
+		// reads off ctx.Err() on the direct path. This process is the
+		// sender and knows it now; the mark goes down before the signal
+		// goes out, so the shim can stamp the reason into the result
+		// file that outlives this process (#204). A mark that could not
+		// be written degrades to the verdict a bare signal earns,
+		// exactly as a missing spool file does.
 		_ = spool.MarkCancel(t.SpoolDir, s.Ctx.RunID, s.Ctx.Step, s.Ctx.Attempt)
 		return esc.fire()
 	}
