@@ -308,6 +308,17 @@ func TestEveryRunLevelPromiseIsKeptOnItsRow(t *testing.T) {
 					t.Errorf("run %s carries %s with reason_data %q, which is missing the promised %v",
 						runID, entry.Code, run.Run.ReasonData, missing)
 				}
+
+				// The production sweep, not a copy of it: a payload written
+				// under a verdict its own row contradicts is worse than a
+				// missing key.
+				violations, err := s.Fsck(context.Background())
+				if err != nil {
+					t.Fatalf("Fsck: %v", err)
+				}
+				if len(violations) > 0 {
+					t.Errorf("the seam left fsck violations behind: %+v", violations)
+				}
 			})
 		}
 	}
