@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 
 	"github.com/a-holm/paceq/internal/store"
@@ -22,7 +24,9 @@ func handlePauseSensor(w http.ResponseWriter, r *http.Request, st *store.Store) 
 	var body struct {
 		Reason string `json:"reason"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	if !decodeSensorBody(w, r, &body, "a pause") {
+		return
+	}
 	if err := st.PauseSensor(r.Context(), name, body.Reason); err != nil {
 		writeStoreErr(w, err)
 		return
@@ -53,7 +57,9 @@ func handleResetSensor(w http.ResponseWriter, r *http.Request, st *store.Store) 
 		Cursor        *string `json:"cursor"`
 		ForgetRunKeys bool    `json:"forget_run_keys"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	if !decodeSensorBody(w, r, &body, "a reset") {
+		return
+	}
 	out, err := st.ResetSensor(r.Context(), store.ResetSensorInput{
 		Name: name, SetCursor: body.Cursor, ForgetRunKeys: body.ForgetRunKeys,
 	})
@@ -73,14 +79,26 @@ func handleSetSensorCursor(w http.ResponseWriter, r *http.Request, st *store.Sto
 		return
 	}
 	name := r.PathValue("name")
+	// A pointer, because a plain string cannot tell a request that named no
+	// cursor from one that named the empty string, and both used to be
+	// written verbatim over whatever the sensor had reached (#207). Refusing
+	// is what makes an old client safe against a new daemon: its request
+	// fails, and it falls back to the path that still carries the value
+	// rather than quietly wiping the cursor.
 	var body struct {
-		Cursor string `json:"cursor"`
+		Cursor *string `json:"cursor"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeHealth(w, http.StatusBadRequest, map[string]any{"error": "missing cursor"})
+	if !decodeSensorBody(w, r, &body, "a cursor move") {
 		return
 	}
-	if err := st.SetSensorCursor(r.Context(), store.CursorInput{Name: name, Cursor: body.Cursor}); err != nil {
+	if body.Cursor == nil || *body.Cursor == "" {
+		writeHealth(w, http.StatusBadRequest, map[string]any{
+			"code":  "bad_request",
+			"error": "missing cursor: a cursor move has to name where the sensor goes",
+		})
+		return
+	}
+	if err := st.SetSensorCursor(r.Context(), store.CursorInput{Name: name, Cursor: *body.Cursor}); err != nil {
 		writeStoreErr(w, err)
 		return
 	}
@@ -105,6 +123,26 @@ func handleSensorTick(w http.ResponseWriter, r *http.Request, st *store.Store) {
 		return
 	}
 	writeHealth(w, http.StatusOK, map[string]any{"status": "tick_requested", "sensor": name})
+}
+
+// decodeSensorBody reads one sensor request body, answering false once it has
+// written the refusal. No body at all is not an error: every sensor route has
+// a meaning without arguments, and the routes that need one check for it
+// themselves. A body that is not JSON is refused rather than swallowed, so a
+// client whose request never arrived intact hears about it instead of watching
+// the daemon do the default thing.
+func decodeSensorBody(w http.ResponseWriter, r *http.Request, into any, what string) bool {
+	if r.Body == nil {
+		return true
+	}
+	if err := json.NewDecoder(r.Body).Decode(into); err != nil && !errors.Is(err, io.EOF) {
+		writeHealth(w, http.StatusBadRequest, map[string]any{
+			"code":  "bad_request",
+			"error": "the body is not JSON " + what + " can read: " + err.Error(),
+		})
+		return false
+	}
+	return true
 }
 
 // writeStoreErr maps a store error onto an HTTP response. Every store write

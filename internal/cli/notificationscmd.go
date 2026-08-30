@@ -241,7 +241,8 @@ func runNotificationsRetry(ctx context.Context, env Env, g *globals, out *ui, id
 		return socketRefusedError(err)
 	}
 	if socketPath != "" {
-		serr := sockPost(ctx, socketPath, "/v1/notifications/"+strconv.FormatInt(id, 10)+"/retry")
+		serr := sockPostJSON(ctx, socketPath,
+			"/v1/notifications/"+strconv.FormatInt(id, 10)+"/retry", noBody{})
 		if serr == nil {
 			out.note(1, "notification %d handed back to the daemon for delivery", id)
 			return nil

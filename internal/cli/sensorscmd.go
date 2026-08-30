@@ -570,7 +570,7 @@ func runSensorsTick(ctx context.Context, env Env, g *globals, out *ui, name stri
 		return socketRefusedError(err)
 	}
 	if socketPath != "" {
-		if err := sensorTickViaSocket(ctx, socketPath, name); err == nil {
+		if err := sockPostJSON(ctx, socketPath, sensorTickRoute.url(name), noBody{}); err == nil {
 			if f.wait {
 				out.print("%s tick of %s requested; the daemon is evaluating it", out.symbols.ok, name)
 			} else {
@@ -715,9 +715,11 @@ func runSensorsPause(ctx context.Context, env Env, g *globals, out *ui, name, re
 	if err := requireSensor(ctx, env, g, name); err != nil {
 		return err
 	}
-	return writeSensorOp(ctx, env, g, out, name,
-		func(s *store.Store) error { return s.PauseSensor(ctx, name, reason) },
-		"paused", sensorPauseSocketPath)
+	return writeSensorOp(ctx, env, g, out, sensorWrite{
+		name: name, verb: "paused", route: sensorPauseRoute,
+		body:   sensorPauseBody{Reason: reason},
+		direct: func(s *store.Store) error { return s.PauseSensor(ctx, name, reason) },
+	})
 }
 
 func newSensorsResumeCmd(env Env, g *globals) *cobra.Command {
@@ -738,24 +740,84 @@ func runSensorsResume(ctx context.Context, env Env, g *globals, out *ui, name st
 	if err := requireSensor(ctx, env, g, name); err != nil {
 		return err
 	}
-	return writeSensorOp(ctx, env, g, out, name,
-		func(s *store.Store) error { return s.ResumeSensor(ctx, name) },
-		"resumed", sensorResumeSocketPath)
+	return writeSensorOp(ctx, env, g, out, sensorWrite{
+		name: name, verb: "resumed", route: sensorResumeRoute,
+		body:   noBody{},
+		direct: func(s *store.Store) error { return s.ResumeSensor(ctx, name) },
+	})
+}
+
+// ------------------- the dual-mode sensor write -------------------
+
+// sensorRoute is one of the daemon's sensor write routes: the last segment of
+// /v1/sensors/{name}/... .
+type sensorRoute string
+
+const (
+	sensorPauseRoute     sensorRoute = "pause"
+	sensorResumeRoute    sensorRoute = "resume"
+	sensorResetRoute     sensorRoute = "reset"
+	sensorCursorSetRoute sensorRoute = "cursor"
+	sensorTickRoute      sensorRoute = "tick"
+)
+
+// sensorRoutes is every sensor write route the CLI dials. The daemon's
+// registrations are the list this one has to match, and a test compares them.
+var sensorRoutes = []sensorRoute{
+	sensorPauseRoute, sensorResumeRoute, sensorResetRoute,
+	sensorCursorSetRoute, sensorTickRoute,
+}
+
+// url is the daemon path this route takes for one sensor.
+func (r sensorRoute) url(name string) string {
+	return "/v1/sensors/" + name + "/" + string(r)
+}
+
+// The request bodies the sensor routes take. The field names are the daemon's:
+// these types and the structs the handlers decode into are two halves of one
+// wire contract, and a name that stops matching drops an argument silently.
+type (
+	sensorPauseBody struct {
+		Reason string `json:"reason"`
+	}
+	sensorResetBody struct {
+		Cursor        *string `json:"cursor"`
+		ForgetRunKeys bool    `json:"forget_run_keys"`
+	}
+	sensorCursorBody struct {
+		Cursor *string `json:"cursor"`
+	}
+)
+
+// sensorWrite is one sensor write described once: the route and body a daemon
+// gets, and the store call this process makes when no daemon answers. Both are
+// built from the same parsed flags, which is what stops the two paths
+// disagreeing about what the operator asked for.
+//
+// The shape matters more than the fix. A callback taking a context, a socket
+// path and a name had nowhere to put an argument, so every sensor command sent
+// the daemon its name and an empty object, and the argument was lost with no
+// error anywhere (#207). Here a route without its body is a field somebody has
+// to leave out on purpose.
+type sensorWrite struct {
+	name   string
+	verb   string
+	route  sensorRoute
+	body   any
+	direct func(*store.Store) error
 }
 
 // writeSensorOp is the dual-mode write path: try the daemon socket first, fall
-// back to flock + direct through the same store code. socket is a function so
-// the CLI does not need the daemon route names spelled out twice.
-func writeSensorOp(ctx context.Context, env Env, g *globals, out *ui, name string,
-	direct func(*store.Store) error, verb string, viaSocket func(context.Context, string, string) error,
-) error {
+// back to flock + direct through the same store code.
+func writeSensorOp(ctx context.Context, env Env, g *globals, out *ui, op sensorWrite) error {
+	name := op.name
 	socketPath, err := daemonSocket(env, g)
 	if err != nil {
 		return socketRefusedError(err)
 	}
 	if socketPath != "" {
-		if err := viaSocket(ctx, socketPath, name); err == nil {
-			out.print("%s %s %s", out.symbols.ok, verb, name)
+		if err := sockPostJSON(ctx, socketPath, op.route.url(name), op.body); err == nil {
+			out.print("%s %s %s", out.symbols.ok, op.verb, name)
 			return nil
 		} else if stop := stopOnRefusal(err); stop != nil {
 			return stop
@@ -775,10 +837,10 @@ func writeSensorOp(ctx context.Context, env Env, g *globals, out *ui, name strin
 	}
 	defer func() { _ = s.Close() }()
 
-	if err := direct(s); err != nil {
+	if err := op.direct(s); err != nil {
 		return classifySensorWrite(name, err)
 	}
-	out.print("%s %s %s", out.symbols.ok, verb, name)
+	out.print("%s %s %s", out.symbols.ok, op.verb, name)
 	return nil
 }
 
@@ -848,15 +910,16 @@ func runSensorsReset(ctx context.Context, env Env, g *globals, out *ui, name str
 	if f.cursor != "" {
 		setCursor = &f.cursor
 	}
+	in := store.ResetSensorInput{Name: name, SetCursor: setCursor, ForgetRunKeys: f.forgetRunKeys}
 
-	return writeSensorOp(ctx, env, g, out, name,
-		func(s *store.Store) error {
-			_, err := s.ResetSensor(ctx, store.ResetSensorInput{
-				Name: name, SetCursor: setCursor, ForgetRunKeys: f.forgetRunKeys,
-			})
+	return writeSensorOp(ctx, env, g, out, sensorWrite{
+		name: name, verb: "reset", route: sensorResetRoute,
+		body: sensorResetBody{Cursor: in.SetCursor, ForgetRunKeys: in.ForgetRunKeys},
+		direct: func(s *store.Store) error {
+			_, err := s.ResetSensor(ctx, in)
 			return err
 		},
-		"reset", sensorResetSocketPath)
+	})
 }
 
 // confirmTTY asks the operator to type the sensor name. It returns false when
@@ -951,11 +1014,24 @@ func runSensorsCursorSet(ctx context.Context, env Env, g *globals, out *ui, name
 		return err
 	}
 	_ = yes // cursor set is not destructive; the flag is accepted for symmetry
-	return writeSensorOp(ctx, env, g, out, name,
-		func(s *store.Store) error {
+
+	// An empty value is refused rather than stored. Starting over is what
+	// reset means, and an empty argument is a shell that expanded to nothing
+	// far more often than an intention. It also keeps the empty string out of
+	// a column where NULL is the no-cursor form, so cursor get has one answer
+	// for a sensor that has not been anywhere.
+	if value == "" {
+		return usageError(fmt.Sprintf("cursor set %s needs a cursor value", name),
+			"paceq sensors reset "+name+"  is how a sensor starts over")
+	}
+
+	return writeSensorOp(ctx, env, g, out, sensorWrite{
+		name: name, verb: "cursor set", route: sensorCursorSetRoute,
+		body: sensorCursorBody{Cursor: &value},
+		direct: func(s *store.Store) error {
 			return s.SetSensorCursor(ctx, store.CursorInput{Name: name, Cursor: value})
 		},
-		"cursor set", sensorCursorSetSocketPath)
+	})
 }
 
 // ------------------- helpers -------------------
@@ -1005,29 +1081,6 @@ func classifySensorWrite(name string, err error) error {
 		return notFoundError(fmt.Sprintf("no sensor matches %q", name), name)
 	}
 	return internalError("could not write the sensor state for "+name, err)
-}
-
-// sensorPauseSocketPath etc. name the daemon routes the socket write helper
-// calls. They are separated so a later M3 issue (the daemon's sensor routes,
-// #14/#16) can register them without touching the CLI.
-func sensorPauseSocketPath(ctx context.Context, socketPath, name string) error {
-	return sockPost(ctx, socketPath, "/v1/sensors/"+name+"/pause")
-}
-
-func sensorResumeSocketPath(ctx context.Context, socketPath, name string) error {
-	return sockPost(ctx, socketPath, "/v1/sensors/"+name+"/resume")
-}
-
-func sensorResetSocketPath(ctx context.Context, socketPath, name string) error {
-	return sockPost(ctx, socketPath, "/v1/sensors/"+name+"/reset")
-}
-
-func sensorCursorSetSocketPath(ctx context.Context, socketPath, name string) error {
-	return sockPost(ctx, socketPath, "/v1/sensors/"+name+"/cursor")
-}
-
-func sensorTickViaSocket(ctx context.Context, socketPath, name string) error {
-	return sockPost(ctx, socketPath, "/v1/sensors/"+name+"/tick")
 }
 
 // derefString returns the string a pointer points at, or "".

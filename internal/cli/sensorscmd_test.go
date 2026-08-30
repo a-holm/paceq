@@ -14,8 +14,14 @@ import (
 // The sensors CLI unit tests drive the direct (no-daemon) write path and the
 // dry-run bit-identity guarantee, both of which need a real store rather than
 // the golden script's planted rows. pause/resume/reset/cursor set all fall
-// back to flock + direct when there is no socket, which is exactly what these
+// back to flock + direct when there is no socket, which is what these
 // exercises cover.
+//
+// The socket path is the other half and has its own tests. sensorsocket_test.go
+// proves each command sends the daemon what the operator typed, and
+// internal/daemon compares the row the two paths leave behind. Covering one
+// path here and calling it done is how the socket came to send the sensor name
+// and nothing else for as long as it did (#207).
 
 // seedSensorCLI writes a sensor row plus its job directly, so the command
 // under test has something to operate on without the apply seam (M3-01).
