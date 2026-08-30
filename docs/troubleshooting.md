@@ -44,8 +44,10 @@ trigger down (with `defer`, the default, it queues instead). The trigger's
 ### The daemon was down at the fire time
 
 `TICK_MISSED_DAEMON_DOWN`: gap detection noticed no daemon was running and
-recorded the window as missed. If catchup should have replayed it, see the
-catchup settings below.
+recorded the window as missed. Catchup then decides what happens to those
+slots: `last` replays the newest one in the window, `all` replays every one,
+and a replayed slot becomes a run instead of carrying this code. A row that
+still carries it is a moment nothing ran.
 
 ### The clock jumped past the fire time
 
@@ -59,6 +61,13 @@ newest replays) and `TICK_SKIPPED_CATCHUP_WINDOW` (the due tick is older than
 the window; `reason_data` carries `scheduled_for` and `window_ms`). Which one
 applies is a configuration choice you make explicitly - paceq never invents
 one.
+
+These three explain a schedule that fell behind while the daemon was up. When
+gap detection already explained the window, the slots catchup declines keep
+their `TICK_MISSED_DAEMON_DOWN` rows instead: the outage is the better
+explanation, because it names why nobody was there. The daemon log says which
+way each schedule went, one line per wake per schedule, counting the slots it
+replayed and the slots it left to the outage.
 
 ### DST did something to the local time
 
