@@ -345,6 +345,7 @@ func TestSixtyFourMiBStaysInsideTheQuota(t *testing.T) {
 	if len(lines) == 0 {
 		t.Fatal("the log is empty")
 	}
+	assertSeqAgrees(t, lines, truncated)
 	newest := fmt.Sprintf("|%06d", totalChunks-1)
 	if !strings.HasSuffix(lines[0].Line, "|000000") {
 		t.Fatalf("the head is gone: first line ends %q", truncate(lines[0].Line))
@@ -530,10 +531,12 @@ func TestTruncationWritesMarkerBeforeTail(t *testing.T) {
 			t.Fatalf("write: %v", err)
 		}
 	}
-	if _, _, _, err := s.Finish(); err != nil {
+	_, _, truncated, err := s.Finish()
+	if err != nil {
 		t.Fatalf("finish: %v", err)
 	}
 	lines := readLines(t, sinkPath(t, root, "01K5ZQ8V3M7X", "spew", 1, clk))
+	assertSeqAgrees(t, lines, truncated)
 
 	markerAt := -1
 	for i, line := range lines {
