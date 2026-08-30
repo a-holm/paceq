@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
-
-	"github.com/a-holm/paceq/internal/model"
 )
 
 // fsck: the invariant sweep. Each check here is one SQL statement or one
@@ -574,16 +572,4 @@ func (s *Store) Fsck(ctx context.Context) ([]Violation, error) {
 	}
 
 	return tagViolations(out), nil
-}
-
-// unclaimedWork is the one shape the aggregate cannot name: steps that are
-// still pending describe both a run nobody has claimed yet (queued) and a
-// claimed run whose first step has not started (running). Both are correct,
-// so the aggregate saying running is allowed to sit beside either stored
-// state. Everything else must match exactly: a failed or cancelled aggregate
-// under a succeeded row is the drift this check exists to catch. The crash
-// harness (#75) holds the queued half of this: a run materialised and not yet
-// claimed must sweep clean.
-func unclaimedWork(want model.RunState, have string) bool {
-	return want == model.RunRunning && have == "queued"
 }

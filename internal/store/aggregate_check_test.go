@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -172,5 +173,92 @@ func TestRunLevelReasonCodesOnlyLiveOnFailedRuns(t *testing.T) {
 		if v.Check == "I10" {
 			t.Errorf("fsck I10 on %s after the repair: %s", v.Subject, v.Detail)
 		}
+	}
+}
+
+// TestRunAggregateMismatchesLeavesTheQueueAtRestAlone is the store half of the
+// agreement rule, in both directions on one run. A materialised run nobody has
+// claimed reads queued over pending steps, which is the resting state of every
+// row in the queue and of every row a requeue puts back; the sweep must stay
+// silent on it. Drive the same run's steps to succeeded and nothing legitimately
+// leaves the row queued any more, so the sweep must name it and fsck must say
+// I10.
+func TestRunAggregateMismatchesLeavesTheQueueAtRestAlone(t *testing.T) {
+	ctx := context.Background()
+	s, runID := plantSeededRun(t)
+
+	mismatches, err := s.RunAggregateMismatches(ctx)
+	if err != nil {
+		t.Fatalf("sweep the queue at rest: %v", err)
+	}
+	if len(mismatches) != 0 {
+		t.Fatalf("a queued run over pending steps reported %v; that is the whole "+
+			"queue at rest, not a mismatch", mismatches)
+	}
+	for _, v := range mustFsck(t, s) {
+		if v.Check == "I10" {
+			t.Fatalf("fsck I10 on %s while it waits to start: %s", v.Subject, v.Detail)
+		}
+	}
+
+	// The same row with its work done: queued no longer has an excuse.
+	now := time.Now().UTC().UnixMilli()
+	if _, err := s.w.ExecContext(ctx, `UPDATE steps SET
+state = 'succeeded', reason_code = 'STEP_SUCCEEDED', started_at = ?, finished_at = ?
+WHERE run_id = ?`, now, now, runID); err != nil {
+		t.Fatalf("finish the step rows: %v", err)
+	}
+
+	mismatches, err = s.RunAggregateMismatches(ctx)
+	if err != nil {
+		t.Fatalf("sweep a queued run with no work left: %v", err)
+	}
+	var found *AggregateMismatch
+	for i := range mismatches {
+		if mismatches[i].RunID == runID {
+			found = &mismatches[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("the sweep reported %v, want %s named: it is queued with every step "+
+			"succeeded", mismatches, runID)
+	}
+	if found.State != string(model.RunQueued) || found.Aggregate != model.RunSucceeded {
+		t.Errorf("the sweep reports state %q against aggregate %q, want queued against succeeded",
+			found.State, found.Aggregate)
+	}
+	if !hasCheck(mustFsck(t, s), "I10") {
+		t.Error("the sweep named the run and fsck did not report I10")
+	}
+}
+
+// TestRunAggregateMismatchesRefusesAnUnknownStoredState pins what the sweep
+// does with a state the model cannot read. Comparing it would silently report a
+// mismatch and invite an operator to repair a row nothing here understands, so
+// the sweep stops instead. The schema's CHECK refuses the plant at write time,
+// which is why it is lifted for it: fsck exists for rows that arrived around or
+// before such a constraint.
+func TestRunAggregateMismatchesRefusesAnUnknownStoredState(t *testing.T) {
+	ctx := context.Background()
+	s, runID := plantSeededRun(t)
+
+	if _, err := s.w.ExecContext(ctx, `PRAGMA ignore_check_constraints = 1`); err != nil {
+		t.Fatalf("defer the check constraints: %v", err)
+	}
+	_, err := s.w.ExecContext(ctx, `UPDATE runs SET state = 'deferred' WHERE id = ?`, runID)
+	if _, err2 := s.w.ExecContext(ctx, `PRAGMA ignore_check_constraints = 0`); err2 != nil {
+		t.Fatalf("restore the check constraints: %v", err2)
+	}
+	if err != nil {
+		t.Fatalf("plant the unknown state: %v", err)
+	}
+
+	mismatches, err := s.RunAggregateMismatches(ctx)
+	if !errors.Is(err, model.ErrUnknownState) {
+		t.Fatalf("the sweep returned (%v, %v), want an unknown state error", mismatches, err)
+	}
+	if !strings.Contains(err.Error(), runID) {
+		t.Errorf("the refusal reads %q and does not name the run", err)
 	}
 }

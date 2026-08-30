@@ -48,3 +48,27 @@ func RunAggregate(steps []StepState, runLevelFailure bool) RunState {
 		return RunSucceeded
 	}
 }
+
+// RunStateAgrees reports whether a stored run state is one its steps allow. It
+// is the checker's half of the fold: a writer asks RunAggregate what to write,
+// fsck asks this whether what is already written is permitted.
+//
+// The two are not the same question, because the relation between a step set
+// and a run state is a function in one direction only. A run with work
+// outstanding reads running once an executor has claimed it and queued until
+// then, and its steps read the same either way: a step row cannot see the
+// claim. So the one aggregate that means work outstanding, RunRunning, has two
+// correct stored states, and that is the whole of the one-to-many region. Every
+// terminal aggregate has exactly one correct stored state, which is what makes
+// a failed aggregate under a succeeded row the drift I10 exists to catch.
+//
+// runLevelFailure enters through RunAggregate and is not excused here: a run
+// that failed for a reason no step can express is failed, and a queued row
+// carrying such a reason is reported.
+func RunStateAgrees(have RunState, steps []StepState, runLevelFailure bool) bool {
+	want := RunAggregate(steps, runLevelFailure)
+	if want == have {
+		return true
+	}
+	return want == RunRunning && have == RunQueued
+}
