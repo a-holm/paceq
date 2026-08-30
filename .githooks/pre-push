@@ -50,11 +50,24 @@ fi
 # It moves where the output lands and nothing else: the gate still runs and
 # still decides the push.
 log="${PACEQ_GATE_LOG:-$(git rev-parse --git-path pre-push-gate.log)}"
+
+# The gate skips a target when this exact tree has already passed it (#176), and
+# a skip that nobody is told about is how a gate stops guarding. Every push says
+# how many targets it skipped, green or red, before anything else it has to say.
+announce_skips() {
+	summary=$(sed -n 's/^gate-summary: //p' "$log" | tail -n 1)
+	if [ -n "$summary" ]; then
+		echo "pre-push: $summary"
+	fi
+}
+
 if ! make ci <"$refs" >"$log" 2>&1; then
+	announce_skips >&2
 	echo "pre-push: 'make ci' failed. Fix it before pushing." >&2
 	echo "pre-push: the whole gate is in $log" >&2
 	echo "pre-push: its last 30 lines:" >&2
 	tail -n 30 "$log" >&2
 	exit 1
 fi
+announce_skips
 echo "pre-push: gate green, $(grep -c '' "$log") lines in $log"
