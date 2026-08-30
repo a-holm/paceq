@@ -688,12 +688,16 @@ DELETE FROM outbox
 // PruneOrphanedWindowsBatch drops throttle bookkeeping whose opener row
 // retention has taken away. Cheap: bounded by the windows table itself.
 func (s *Store) PruneOrphanedWindowsBatch(ctx context.Context) (int64, error) {
+	// The window's identity is its primary key; opener_id is a pointer into
+	// another table's id space and must never select rows here.
 	const q = `
 DELETE FROM outbox_windows
- WHERE opener_id IN (
-   SELECT w.rowid FROM outbox_windows w
+ WHERE (topic, target, group_key) IN (
+   SELECT w.topic, w.target, w.group_key
+     FROM outbox_windows w
      LEFT JOIN outbox o ON o.id = w.opener_id
     WHERE o.id IS NULL
+    ORDER BY w.topic, w.target, w.group_key
     LIMIT ?
  )`
 	return s.runPruneBatch(ctx, q, PruneBatchLimit)

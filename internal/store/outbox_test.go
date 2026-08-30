@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -499,4 +500,245 @@ func seedRunForNotify(t *testing.T, s *Store, fail bool) Run {
 		t.Fatalf("record outcome: %v", oerr)
 	}
 	return run
+}
+
+// seedOutboxRow inserts one outbox row with an explicit id so a window has a
+// real opener to join against. state is pending, delivered or failed.
+func seedOutboxRow(t *testing.T, s *Store, id int64, state string) {
+	t.Helper()
+	var delivered, failed any
+	switch state {
+	case "delivered":
+		delivered = int64(2_000_000)
+	case "failed":
+		failed = int64(2_000_000)
+	}
+	if _, err := s.w.ExecContext(context.Background(),
+		`INSERT INTO outbox(id, topic, subject, target, payload, dedup_key,
+			created_at, available_at, delivered_at, failed_at)
+		 VALUES (?, 'run.failed', 'job', 'vakt', '{}', ?, 1000, 1000, ?, ?)`,
+		id, fmt.Sprintf("dedup-%d", id), delivered, failed); err != nil {
+		t.Fatalf("seed %s outbox row %d: %v", state, id, err)
+	}
+}
+
+// seedWindow inserts one throttle window and reports the rowid it landed on,
+// which is what the prune's subquery selects.
+func seedWindow(t *testing.T, s *Store, group string, openerID, suppressed int64) int64 {
+	t.Helper()
+	res, err := s.w.ExecContext(context.Background(),
+		`INSERT INTO outbox_windows(topic, target, group_key, opener_id, opened_at, suppressed)
+		 VALUES ('run.failed', 'vakt', ?, ?, 1000, ?)`, group, openerID, suppressed)
+	if err != nil {
+		t.Fatalf("seed window %s: %v", group, err)
+	}
+	rowid, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("window rowid for %s: %v", group, err)
+	}
+	return rowid
+}
+
+func countWindows(t *testing.T, s *Store) int64 {
+	t.Helper()
+	var n int64
+	if err := s.withRead(context.Background(), func(ctx context.Context, r reader) error {
+		return r.QueryRowContext(ctx, `SELECT COUNT(*) FROM outbox_windows`).Scan(&n)
+	}); err != nil {
+		t.Fatalf("count windows: %v", err)
+	}
+	return n
+}
+
+// TestPruneOrphanedWindowsRemovesTheOrphanNotTheLiveWindow is the collision
+// case: a live window whose opener_id equals the orphan's rowid. The sweep
+// must delete the row its own subquery selected, and nothing else.
+func TestPruneOrphanedWindowsRemovesTheOrphanNotTheLiveWindow(t *testing.T) {
+	s := migratedStore(t)
+	ctx := context.Background()
+
+	orphanRowid := seedWindow(t, s, "job=nightly", 900, 7)
+	seedOutboxRow(t, s, orphanRowid, "pending")
+	liveRowid := seedWindow(t, s, "job=hourly", orphanRowid, 3)
+	if orphanRowid == liveRowid {
+		t.Fatalf("both windows landed on rowid %d; the case needs two rows", orphanRowid)
+	}
+
+	n, err := s.PruneOrphanedWindowsBatch(ctx)
+	if err != nil {
+		t.Fatalf("prune orphaned windows: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("the sweep deleted %d rows, want exactly 1", n)
+	}
+	if _, _, _, ok := rawWindow(t, s, "run.failed", "vakt", "job=nightly"); ok {
+		t.Error("the orphaned window survived the sweep")
+	}
+	opener, _, suppressed, ok := rawWindow(t, s, "run.failed", "vakt", "job=hourly")
+	if !ok {
+		t.Fatal("the live window is gone; its opener row is still in outbox")
+	}
+	if opener != orphanRowid || suppressed != 3 {
+		t.Errorf("live window is opener_id=%d suppressed=%d, want opener_id=%d suppressed=3",
+			opener, suppressed, orphanRowid)
+	}
+}
+
+// TestPruneOrphanedWindowsKeepsEveryOpenerState pins that only a missing
+// opener row makes a window an orphan. Delivered and failed openers are still
+// rows in outbox.
+func TestPruneOrphanedWindowsKeepsEveryOpenerState(t *testing.T) {
+	s := migratedStore(t)
+	ctx := context.Background()
+
+	states := []string{"pending", "delivered", "failed"}
+	for i, state := range states {
+		id := int64(10 + i)
+		seedOutboxRow(t, s, id, state)
+		seedWindow(t, s, "job="+state, id, 1)
+	}
+	seedWindow(t, s, "job=gone", 999, 5)
+
+	n, err := s.PruneOrphanedWindowsBatch(ctx)
+	if err != nil {
+		t.Fatalf("prune orphaned windows: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("the sweep deleted %d rows, want exactly the 1 orphan", n)
+	}
+	for _, state := range states {
+		if _, _, _, ok := rawWindow(t, s, "run.failed", "vakt", "job="+state); !ok {
+			t.Errorf("the window whose opener is %s was deleted", state)
+		}
+	}
+	if _, _, _, ok := rawWindow(t, s, "run.failed", "vakt", "job=gone"); ok {
+		t.Error("the orphaned window survived the sweep")
+	}
+}
+
+// TestPruneOrphanedWindowsDrainsToTheLiveSet drives the sweep the way
+// janitor.drainWindows does: batch after batch until one comes back empty.
+// Each batch is capped, and what is left standing is exactly the live set.
+func TestPruneOrphanedWindowsDrainsToTheLiveSet(t *testing.T) {
+	s := migratedStore(t)
+	ctx := context.Background()
+
+	const live = 4
+	orphans := 3 * PruneBatchLimit
+	err := s.withTx(ctx, func(tx *sql.Tx) error {
+		for i := range live {
+			id := int64(1 + i)
+			if _, err := tx.Exec(
+				`INSERT INTO outbox(id, topic, subject, target, payload, dedup_key,
+					created_at, available_at)
+				 VALUES (?, 'run.failed', 'job', 'vakt', '{}', ?, 1000, 1000)`,
+				id, fmt.Sprintf("dedup-live-%d", i)); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(
+				`INSERT INTO outbox_windows(topic, target, group_key, opener_id, opened_at, suppressed)
+				 VALUES ('run.failed', 'vakt', ?, ?, 1000, 0)`,
+				fmt.Sprintf("job=live-%d", i), id); err != nil {
+				return err
+			}
+		}
+		for i := range orphans {
+			if _, err := tx.Exec(
+				`INSERT INTO outbox_windows(topic, target, group_key, opener_id, opened_at, suppressed)
+				 VALUES ('run.failed', 'vakt', ?, ?, 1000, 0)`,
+				fmt.Sprintf("job=orphan-%04d", i), int64(1_000_000+i)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("seed windows: %v", err)
+	}
+
+	first, err := s.PruneOrphanedWindowsBatch(ctx)
+	if err != nil {
+		t.Fatalf("first batch: %v", err)
+	}
+	if first != PruneBatchLimit {
+		t.Fatalf("first batch deleted %d rows, want the limit %d", first, PruneBatchLimit)
+	}
+	total := first
+	for {
+		n, perr := s.PruneOrphanedWindowsBatch(ctx)
+		if perr != nil {
+			t.Fatalf("batch: %v", perr)
+		}
+		if n > PruneBatchLimit {
+			t.Fatalf("a batch deleted %d rows, over the limit %d", n, PruneBatchLimit)
+		}
+		if n == 0 {
+			break
+		}
+		total += n
+	}
+	if total != int64(orphans) {
+		t.Errorf("the drain deleted %d rows, want %d orphans", total, orphans)
+	}
+	if left := countWindows(t, s); left != live {
+		t.Errorf("%d windows left, want the %d live ones", left, live)
+	}
+}
+
+// TestPruneOrphanedWindowsLeavesTheThrottleIntact runs the sweep between the
+// window's opening and the event it must collapse. A sweep that took the live
+// window would let the second event through as a second delivery.
+func TestPruneOrphanedWindowsLeavesTheThrottleIntact(t *testing.T) {
+	s := migratedStore(t)
+	ctx := context.Background()
+
+	opener := aNote(model.TopicRunFailed, "job", "vakt", "d1")
+	opener.GroupKey = "job=job"
+	opener.Throttle = time.Hour
+	if err := s.RecordOpsNotifications(ctx, []model.Notification{opener}); err != nil {
+		t.Fatalf("record the opener: %v", err)
+	}
+	seedWindow(t, s, "job=orphan", 900, 4)
+
+	n, err := s.PruneOrphanedWindowsBatch(ctx)
+	if err != nil {
+		t.Fatalf("prune orphaned windows: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("the sweep deleted %d rows, want exactly the 1 orphan", n)
+	}
+
+	collapsed := aNote(model.TopicRunFailed, "job", "vakt", "d2")
+	collapsed.GroupKey = "job=job"
+	collapsed.Throttle = time.Hour
+	collapsed.CreatedAt = opener.CreatedAt.Add(time.Minute)
+	collapsed.AvailableAt = collapsed.CreatedAt
+	if err := s.RecordOpsNotifications(ctx, []model.Notification{collapsed}); err != nil {
+		t.Fatalf("record the collapsed event: %v", err)
+	}
+
+	if got := countOutbox(t, s); got != 1 {
+		t.Fatalf("outbox holds %d rows, want 1: the second event was delivered instead of collapsed", got)
+	}
+	_, _, suppressed, ok := rawWindow(t, s, model.TopicRunFailed, "vakt", "job=job")
+	if !ok {
+		t.Fatal("the live window is gone; the throttle has nothing to count into")
+	}
+	if suppressed != 1 {
+		t.Errorf("suppressed is %d, want 1", suppressed)
+	}
+
+	msgs, err := s.ClaimOutbox(ctx, 10, opener.CreatedAt.Add(2*time.Minute), time.Minute)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("claimed %d messages, want 1", len(msgs))
+	}
+	if msgs[0].Suppressed != 1 {
+		t.Errorf("claimed message carries Suppressed=%d, want 1", msgs[0].Suppressed)
+	}
+	if msgs[0].WindowOpenedAt.IsZero() {
+		t.Error("claimed message carries a zero WindowOpenedAt")
+	}
 }
