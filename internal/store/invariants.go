@@ -184,3 +184,22 @@ func severityOf(id string) Severity {
 func SeverityOf(id string) Severity {
 	return severityOf(id)
 }
+
+// CriticalViolations returns the findings the catalogue grades Critical: the
+// subset whose presence refuses a startup. Every surface that answers "does
+// this state refuse a boot" reads it from here, so the boot gate and the
+// health report cannot answer differently, and regrading an invariant moves
+// both at once.
+//
+// The grade comes from the catalogue rather than the Violation's own field,
+// because an untagged finding carries the zero Severity and would otherwise
+// downgrade itself to a warning on the way past.
+func CriticalViolations(all []Violation) []Violation {
+	var out []Violation
+	for _, v := range all {
+		if severityOf(v.Check) == Critical {
+			out = append(out, v)
+		}
+	}
+	return out
+}

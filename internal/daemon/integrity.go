@@ -32,13 +32,13 @@ func startupRefusal(summary string) error {
 		"    or restore the state from its last verified backup", summary)
 }
 
-// firstCriticalSummary names the first critical finding of a sweep, empty when
-// there is none.
+// firstCriticalSummary names the first finding of a sweep that refuses a
+// start, empty when there is none. The grade comes from the catalogue through
+// store.CriticalViolations, the same reading the quick boot gate and doctor
+// take.
 func firstCriticalSummary(violations []store.Violation) string {
-	for _, v := range violations {
-		if v.Severity == store.Critical {
-			return v.Check + " (" + v.Subject + ": " + v.Detail + ")"
-		}
+	for _, v := range store.CriticalViolations(violations) {
+		return v.Check + " (" + v.Subject + ": " + v.Detail + ")"
 	}
 	return ""
 }
