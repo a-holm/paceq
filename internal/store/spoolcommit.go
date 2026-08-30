@@ -124,19 +124,21 @@ func (s *Store) CommitSpooledOutcome(ctx context.Context, in SpoolOutcome) error
 	})
 }
 
-// SpoolVerdict translates a spool result into the verdict the step machine
-// takes. The mapping mirrors the daemon-side classifier's table exactly — the
-// same exit fact must read the same way whether the executor saw it itself or
-// read it back from the file after a crash — so it lives beside the other
-// verdict vocabulary, in the store. Log facts stay empty on purpose: the
-// shim cannot know how the log ended, and recovery does not guess.
+// SpoolVerdict reads one result file as the verdict the step machine takes.
+// The judgment itself is not made here: it comes from StepVerdict, the table
+// the live executor reads too, so the same exit fact cannot read one way when
+// the executor saw it and another way when this file is all that is left of
+// it. What this function adds is what only a file can say — its stamps, its
+// exit code, and that the verdict was read rather than watched. Log facts
+// stay empty on purpose: the shim cannot know how the log ended, and recovery
+// does not guess.
 //
 // An outcome word the format does not define is an admission error; the
 // caller archives the file rather than guessing.
 func SpoolVerdict(res spool.Result) (StepOutcome, error) {
-	event, code, err := res.EventAndReason()
-	if err != nil {
-		return StepOutcome{}, err
+	event, code, ok := StepVerdict(res.Outcome, res.KilledBy == spool.KilledByCancel)
+	if !ok {
+		return StepOutcome{}, fmt.Errorf("%w: unknown outcome %q", spool.ErrFormat, res.Outcome)
 	}
 	out := StepOutcome{
 		Event:         event,
@@ -145,7 +147,10 @@ func SpoolVerdict(res spool.Result) (StepOutcome, error) {
 		DetailJSON:    string(res.ReasonData),
 		OutcomeSource: "spool",
 	}
-	if res.Signal != "" {
+	if event != string(model.EvCancelObserved) {
+		// A cancellation names no signal on either path: the number the
+		// kernel delivered is how the cancellation was carried out, not
+		// what happened to the step.
 		out.Signal = res.Signal
 	}
 	switch res.Outcome {

@@ -29,7 +29,7 @@ var allowedImports = map[string][]string{
 	"spec":    {"diag"},
 	"retry":   {},
 	"procfs":  {},
-	"spool":   {"model", "reason"},
+	"spool":   {},
 	"runner":  {"clock", "faults", "procfs", "spool"},
 	"sensor":  {"runner", "clock", "reason"},
 	"logsink": {"clock"},

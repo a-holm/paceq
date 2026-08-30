@@ -208,37 +208,80 @@ func TestCommitSpooledOutcomeIsIdempotentThroughRefusal(t *testing.T) {
 	}
 }
 
-func TestSpoolVerdictMirrorsTheClassifier(t *testing.T) {
+// What a result file is read as. Two rows carry the same outcome word and
+// differ only in what the file says about why the signal was sent: that is
+// the whole of the cancellation fact, and the file is the only place it can
+// still be found once the executor is gone (#204).
+func TestSpoolVerdictReadsTheFile(t *testing.T) {
 	for _, tc := range []struct {
-		outcome  string
+		name     string
+		res      spool.Result
 		event    string
 		code     reason.Code
+		signal   string
 		exitCode int
 		wantExit bool
 	}{
-		{spool.OutcomeSucceeded, "step_succeeded", reason.STEPSucceeded, 0, true},
-		{spool.OutcomeFailed, "step_failed", reason.STEPFailedNonzeroExit, 3, true},
-		{spool.OutcomeTimedOut, "step_failed", reason.STEPFailedTimeout, 0, false},
-		{spool.OutcomeSignalled, "step_failed", reason.STEPFailedSignal, 0, false},
-		{spool.OutcomeSpawnFailed, "step_failed", reason.STEPFailedSpawn, 127, false},
+		{
+			name:  "succeeded",
+			res:   spool.Result{Outcome: spool.OutcomeSucceeded},
+			event: "step_succeeded", code: reason.STEPSucceeded, wantExit: true,
+		},
+		{
+			name:  "a nonzero exit",
+			res:   spool.Result{Outcome: spool.OutcomeFailed, ExitCode: 3},
+			event: "step_failed", code: reason.STEPFailedNonzeroExit, exitCode: 3, wantExit: true,
+		},
+		{
+			name:  "a timeout",
+			res:   spool.Result{Outcome: spool.OutcomeTimedOut, Signal: "SIGKILL", KilledBy: "timeout"},
+			event: "step_failed", code: reason.STEPFailedTimeout, signal: "SIGKILL",
+		},
+		{
+			// No killed_by at all is also what a file written
+			// before the mark existed looks like: it commits, and
+			// it commits as the failure it always did.
+			name:  "a signal from outside",
+			res:   spool.Result{Outcome: spool.OutcomeSignalled, Signal: "SIGTERM"},
+			event: "step_failed", code: reason.STEPFailedSignal, signal: "SIGTERM",
+		},
+		{
+			name: "a signal that answered a cancellation",
+			res: spool.Result{
+				Outcome: spool.OutcomeSignalled, Signal: "SIGTERM",
+				KilledBy: spool.KilledByCancel,
+			},
+			event: "cancel_observed", code: reason.STEPCancelled,
+		},
+		{
+			name:  "a spawn that never happened",
+			res:   spool.Result{Outcome: spool.OutcomeSpawnFailed, ExitCode: 127},
+			event: "step_failed", code: reason.STEPFailedSpawn,
+		},
 	} {
-		res := spool.Result{Outcome: tc.outcome, ExitCode: tc.exitCode, EndedAt: 1767512400000}
-		out, err := SpoolVerdict(res)
-		if err != nil {
-			t.Fatalf("%s: %v", tc.outcome, err)
-		}
-		if out.Event != tc.event || out.ReasonCode != tc.code {
-			t.Fatalf("%s: event/reason = %s/%s, want %s/%s", tc.outcome, out.Event, out.ReasonCode, tc.event, tc.code)
-		}
-		if tc.wantExit && (out.ExitCode == nil || *out.ExitCode != tc.exitCode) {
-			t.Fatalf("%s: exit code %v, want %d", tc.outcome, out.ExitCode, tc.exitCode)
-		}
-		if !tc.wantExit && out.ExitCode != nil {
-			t.Fatalf("%s: exit code %v, want none", tc.outcome, out.ExitCode)
-		}
-		if out.OutcomeSource != "spool" {
-			t.Fatalf("%s: source %q, want spool", tc.outcome, out.OutcomeSource)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			res := tc.res
+			res.EndedAt = 1767512400000
+			out, err := SpoolVerdict(res)
+			if err != nil {
+				t.Fatalf("%v", err)
+			}
+			if out.Event != tc.event || out.ReasonCode != tc.code {
+				t.Fatalf("event/reason = %s/%s, want %s/%s", out.Event, out.ReasonCode, tc.event, tc.code)
+			}
+			if out.Signal != tc.signal {
+				t.Fatalf("signal = %q, want %q", out.Signal, tc.signal)
+			}
+			if tc.wantExit && (out.ExitCode == nil || *out.ExitCode != tc.exitCode) {
+				t.Fatalf("exit code %v, want %d", out.ExitCode, tc.exitCode)
+			}
+			if !tc.wantExit && out.ExitCode != nil {
+				t.Fatalf("exit code %v, want none", out.ExitCode)
+			}
+			if out.OutcomeSource != "spool" {
+				t.Fatalf("source %q, want spool", out.OutcomeSource)
+			}
+		})
 	}
 	if _, err := SpoolVerdict(spool.Result{Outcome: "mystery"}); !errors.Is(err, spool.ErrFormat) {
 		t.Fatalf("an unknown outcome was accepted: %v", err)

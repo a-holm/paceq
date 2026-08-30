@@ -219,3 +219,63 @@ func TestWriteRefusesAFileItCouldNotStamp(t *testing.T) {
 		t.Fatal("a result without a version was written")
 	}
 }
+
+// The cancel mark (#204) is a note to the shim, never a result: List must
+// not offer one, and it must not outlive the result it explains.
+func TestTheCancelMarkIsANoteAndNotAResult(t *testing.T) {
+	dir := t.TempDir()
+	r := aResult()
+	if err := WriteResult(dir, r); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := MarkCancel(dir, r.RunID, r.Step, r.Attempt); err != nil {
+		t.Fatalf("mark: %v", err)
+	}
+	if !CancelMarked(dir, r.RunID, r.Step, r.Attempt) {
+		t.Fatal("the mark this test just wrote does not read back")
+	}
+	paths, err := List(dir)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(paths) != 1 || filepath.Base(paths[0]) != FileName(r.RunID, r.Step, r.Attempt) {
+		t.Fatalf("List offered %v, want the result file alone", paths)
+	}
+
+	if err := Remove(filepath.Join(dir, FileName(r.RunID, r.Step, r.Attempt))); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if CancelMarked(dir, r.RunID, r.Step, r.Attempt) {
+		t.Fatal("the mark outlived the result it explained")
+	}
+}
+
+// A rejected result takes its whole attempt out of the letterbox.
+func TestArchiveTakesTheCancelMarkWithIt(t *testing.T) {
+	dir := t.TempDir()
+	r := aResult()
+	if err := WriteResult(dir, r); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := MarkCancel(dir, r.RunID, r.Step, r.Attempt); err != nil {
+		t.Fatalf("mark: %v", err)
+	}
+	if err := Archive(dir, filepath.Join(dir, FileName(r.RunID, r.Step, r.Attempt))); err != nil {
+		t.Fatalf("archive: %v", err)
+	}
+	if CancelMarked(dir, r.RunID, r.Step, r.Attempt) {
+		t.Fatal("the mark stayed behind in the attempts directory")
+	}
+}
+
+// Clearing a mark that is not there is not a failure: a mark has done its
+// work the moment the reason reached the result file.
+func TestClearCancelMarkIsIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	r := aResult()
+	for i := 0; i < 2; i++ {
+		if err := ClearCancelMark(dir, r.RunID, r.Step, r.Attempt); err != nil {
+			t.Fatalf("clear %d: %v", i, err)
+		}
+	}
+}
