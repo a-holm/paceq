@@ -144,8 +144,9 @@ type SensorTickCommitInput struct {
 	// the transaction; a stale value refuses the commit.
 	CursorVersion int64
 
-	// CursorAfter moves the sensor cursor when Outcome is triggered. It is
-	// the value the whole evaluation built towards.
+	// CursorAfter is the cursor the evaluation reported. cursorAdvanceOf
+	// decides whether this outcome commits it; a value reported by an
+	// evaluation that elected nothing is not written anywhere.
 	CursorAfter string
 
 	// DedupEpoch is the sensor's dedup epoch, the same value BeginSensorTick
@@ -242,6 +243,8 @@ func (s *Store) CommitSensorTick(ctx context.Context, in SensorTickCommitInput) 
 	// counter records what committed (#40).
 	finalOutcome, finalReason := in.Outcome, string(in.ReasonCode)
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
+		cursorAfter := cursorAdvanceOf(in.Outcome, in.CursorAfter)
+
 		// Step 0: the cursor CAS guard. The evaluation whose result we are
 		// committing read this version at start; if the sensor moved since,
 		// nothing here may write. Zero rows means the guard is stale.
@@ -252,7 +255,7 @@ SET cursor = COALESCE(?, cursor),
     next_eval_at = ?,
     updated_at = ?
 WHERE name = ? AND cursor_version = ?`,
-			nullIfEmpty(in.CursorAfter), nullIfEmpty(in.CursorAfter), at, in.NextEvalAt, at, in.SensorName, in.CursorVersion)
+			nullIfEmpty(cursorAfter), nullIfEmpty(cursorAfter), at, in.NextEvalAt, at, in.SensorName, in.CursorVersion)
 		if err != nil {
 			return fmt.Errorf("advance the cursor of sensor %s: %w", in.SensorName, err)
 		}
@@ -277,7 +280,7 @@ WHERE name = ? AND cursor_version = ?`,
 		// concurrently committed evaluation's replay.
 		if in.Outcome != OutcomeTriggered {
 			return closeSensorTickTx(tx, in.TickID, at, in.Outcome,
-				in.ReasonCode, in.DurationMs, "", 0, 0, in.ReasonText)
+				in.ReasonCode, in.DurationMs, cursorAfter, 0, 0, in.ReasonText)
 		}
 
 		// The current version of the job is chosen inside the transaction, so
@@ -337,7 +340,7 @@ WHERE j.name = ?`, in.JobName).Scan(&versionID, &specJSON); err != nil {
 		}
 
 		return closeSensorTickTx(tx, in.TickID, at, OutcomeTriggered,
-			in.ReasonCode, in.DurationMs, in.CursorAfter, out.Accepted, out.Deduped, in.ReasonText)
+			in.ReasonCode, in.DurationMs, cursorAfter, out.Accepted, out.Deduped, in.ReasonText)
 	})
 	if err != nil {
 		return SensorTickCommitResult{}, err
@@ -503,6 +506,27 @@ VALUES (?, ?, ?, ?, 'sensor', ?, 'queued', ?, ?, ?, ?, ?, 0, 1, ?, ?, NULL)`,
 		return false, false, err
 	}
 	return true, false, nil
+}
+
+// cursorAdvanceOf returns the cursor an evaluation with this outcome commits,
+// or "" when it commits none. Two writers inside one commit answer "did the
+// cursor move": the UPDATE on sensors and the cursor_after of the tick row. Both
+// take this value, so the position the sensor resumes from and the position its
+// own tick reports cannot disagree.
+//
+// Only a triggered evaluation moves the cursor, which is what the out contract
+// promises a sensor author (docs/reference/sensor-contract.md). A skip may still
+// report a watermark, and the report is dropped: the sensor elected no run for
+// the window it read, so keeping the old cursor costs a re-read that the
+// run_keys dedup gate folds into no-ops, while honouring the watermark would
+// step the sensor over work nothing ever evaluated. applyLimit makes the same
+// trade for a truncated batch. An error carries no cursor at all (G4), and this
+// is where that holds even if an evaluator ever starts feeding one.
+func cursorAdvanceOf(outcome, reported string) string {
+	if outcome != OutcomeTriggered {
+		return ""
+	}
+	return reported
 }
 
 // closeSensorTickTx writes a tick's outcome. It is the only place a sensor tick

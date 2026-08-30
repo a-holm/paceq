@@ -70,6 +70,18 @@ func readSensor(t *testing.T, s *Store, name string) (cursor string, version int
 	return c.String, version
 }
 
+// sensorCursorStamped reports whether cursor_updated_at is set. A seeded row
+// leaves it NULL, so a stamp means the commit under test wrote one.
+func sensorCursorStamped(t *testing.T, s *Store, name string) bool {
+	t.Helper()
+	var at sql.NullInt64
+	if err := s.r.QueryRowContext(context.Background(),
+		"SELECT cursor_updated_at FROM sensors WHERE name = ?", name).Scan(&at); err != nil {
+		t.Fatalf("read cursor_updated_at of %s: %v", name, err)
+	}
+	return at.Valid
+}
+
 // tickOutcome reads the outcome, cursor_after, trigger_count and deduped_count
 // of one tick.
 func tickOutcome(t *testing.T, s *Store, tickID string) (outcome, cursorAfter string, triggers, deduped int) {
@@ -157,42 +169,124 @@ func TestSensorCommitWritesAllRowsInOneTransaction(t *testing.T) {
 	assertOneQueuedEvent(t, s, out.RunIDs[0])
 }
 
-// TestSensorCommitSkipLeavesCursorUntouched covers the "skipped" outcome: the
-// tick closes with the sensor's own reason, and the cursor does not move.
-func TestSensorCommitSkipLeavesCursorUntouched(t *testing.T) {
-	s := migratedStore(t)
-	seedSensorJob(t, s)
-	seedSensor(t, s, sensorName, "a", 0)
-
-	begin, err := s.BeginSensorTick(context.Background(), BeginSensorTickInput{
-		SensorName: sensorName, CursorBefore: "a",
-	})
-	if err != nil {
-		t.Fatalf("begin sensor tick: %v", err)
+// TestSensorCommitCursorMovesOnlyOnATriggeredEvaluation pins the two writers of
+// one fact to one answer. sensors.cursor and ticks.cursor_after are written by
+// the same commit, so a row that holds a cursor no tick recorded is work that
+// nothing will ever evaluate: the window between the two cursors is skipped
+// silently, and the tick says the cursor stood still. The case that opens it is
+// a sensor reporting a watermark while it skips, which is what the out contract
+// invites a sensor to do.
+func TestSensorCommitCursorMovesOnlyOnATriggeredEvaluation(t *testing.T) {
+	cases := []struct {
+		name       string
+		outcome    string
+		code       reason.Code
+		reported   string
+		triggers   []SensorTrigger
+		wantCursor string
+		wantRuns   int
+	}{
+		{
+			name:       "triggered with a cursor moves it",
+			outcome:    OutcomeTriggered,
+			reported:   "b",
+			triggers:   []SensorTrigger{{RunKey: "file:1"}},
+			wantCursor: "b",
+			wantRuns:   1,
+		},
+		{
+			name:       "triggered without a cursor keeps the old one",
+			outcome:    OutcomeTriggered,
+			triggers:   []SensorTrigger{{RunKey: "file:1"}},
+			wantCursor: "a",
+			wantRuns:   1,
+		},
+		{
+			name:       "skipped with a reported watermark keeps the old cursor",
+			outcome:    OutcomeSkipped,
+			code:       reason.TICKSkippedSensor,
+			reported:   "zzz-new-cursor",
+			wantCursor: "a",
+		},
+		{
+			name:       "skipped without a cursor keeps the old one",
+			outcome:    OutcomeSkipped,
+			code:       reason.TICKSkippedSensor,
+			wantCursor: "a",
+		},
+		{
+			name:       "errored keeps the old cursor whatever it carries",
+			outcome:    OutcomeError,
+			code:       reason.TICKErrorSensorFailed,
+			reported:   "zzz-new-cursor",
+			wantCursor: "a",
+		},
 	}
 
-	out, err := s.CommitSensorTick(context.Background(), SensorTickCommitInput{
-		TickID:        begin.TickID,
-		SensorName:    sensorName,
-		JobName:       sensorJob,
-		CursorVersion: begin.CursorVersion,
-		Outcome:       OutcomeSkipped,
-		ReasonCode:    reason.TICKSkippedSensor,
-		ReasonText:    "no new files",
-		NextEvalAt:    60000,
-	})
-	if err != nil {
-		t.Fatalf("commit skip: %v", err)
-	}
-	if out.Accepted != 0 || out.Deduped != 0 || out.Fenced {
-		t.Fatalf("skip result = accepted %d deduped %d fenced %v, want all zero", out.Accepted, out.Deduped, out.Fenced)
-	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := migratedStore(t)
+			seedSensorJob(t, s)
+			seedSensor(t, s, sensorName, "a", 0)
+			ctx := context.Background()
 
-	if curs, version := readSensor(t, s, sensorName); curs != "a" || version != 1 {
-		t.Errorf("sensor cursor after skip = %q version %d, want a (moved) / 1 (bumped)", curs, version)
-	}
-	if got := countSensorRuns(t, s); got != 0 {
-		t.Errorf("sensor runs after skip = %d, want 0", got)
+			begin, err := s.BeginSensorTick(ctx, BeginSensorTickInput{
+				SensorName: sensorName, CursorBefore: "a",
+			})
+			if err != nil {
+				t.Fatalf("begin sensor tick: %v", err)
+			}
+			out, err := s.CommitSensorTick(ctx, SensorTickCommitInput{
+				TickID:        begin.TickID,
+				SensorName:    sensorName,
+				JobName:       sensorJob,
+				CursorVersion: begin.CursorVersion,
+				CursorAfter:   tc.reported,
+				Triggers:      tc.triggers,
+				Outcome:       tc.outcome,
+				ReasonCode:    tc.code,
+				ReasonText:    "nothing new",
+				NextEvalAt:    60000,
+			})
+			if err != nil {
+				t.Fatalf("commit sensor tick: %v", err)
+			}
+			if out.Fenced {
+				t.Fatalf("a fresh commit was fenced; there is no concurrent writer")
+			}
+
+			cursor, version := readSensor(t, s, sensorName)
+			outcome, cursorAfter, _, _ := tickOutcome(t, s, begin.TickID)
+
+			// The agreement, whichever way the rule goes: a tick that
+			// recorded a move names the cursor the row now holds, and a tick
+			// that recorded none left the row where it was.
+			switch {
+			case cursorAfter == "" && cursor != "a":
+				t.Errorf("sensors.cursor = %q but the tick recorded no move", cursor)
+			case cursorAfter != "" && cursorAfter != cursor:
+				t.Errorf("ticks.cursor_after = %q but sensors.cursor = %q", cursorAfter, cursor)
+			}
+
+			// Which way it goes: only a triggered evaluation moves it.
+			if cursor != tc.wantCursor {
+				t.Errorf("sensors.cursor = %q, want %q", cursor, tc.wantCursor)
+			}
+			if outcome != tc.outcome {
+				t.Errorf("ticks.outcome = %q, want %q", outcome, tc.outcome)
+			}
+			// The fence is unconditional: every decided evaluation bumps it.
+			if version != 1 {
+				t.Errorf("sensors.cursor_version = %d, want 1", version)
+			}
+			// The timestamp mirrors the cursor, never the commit.
+			if stamped := sensorCursorStamped(t, s, sensorName); stamped != (cursor != "a") {
+				t.Errorf("cursor_updated_at stamped = %v, want %v", stamped, cursor != "a")
+			}
+			if got := countSensorRuns(t, s); got != tc.wantRuns {
+				t.Errorf("sensor runs = %d, want %d", got, tc.wantRuns)
+			}
+		})
 	}
 }
 
