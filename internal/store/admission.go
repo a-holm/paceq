@@ -100,12 +100,18 @@ func overlapOf(overlap string) string {
 // which run held the slot, how many slots were held, and what the ceiling
 // was. The difference between a useless explanation and a useful one is one
 // id, so the id always rides along when there is one.
+//
+// scope is the promised key of both RUN_QUEUED_CONCURRENCY and
+// TICK_SKIPPED_CONCURRENCY (#191), and it is a constant here because this
+// writer knows exactly one ceiling: the job's max_concurrent. A key hold is a
+// different decision under a different code, and there is no global ceiling
+// to reach yet; either would arrive as another scope beside this one.
 func deferDataJSON(blocking string, active, limit int) string {
 	data := fmt.Sprintf(`{"active":%d,"limit":%d`, active, limit)
 	if blocking != "" {
 		data += fmt.Sprintf(`,"blocking_run_id":%q`, blocking)
 	}
-	return data + "}"
+	return data + `,"scope":"job"}`
 }
 
 // skipCodeFor picks the reason code a stand-down records. One held slot

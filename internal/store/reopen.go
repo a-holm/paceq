@@ -141,7 +141,7 @@ func (s *Store) ReopenTerminalRunByOperator(ctx context.Context, runID string, a
 				duration_ms = NULL,
 				error = NULL,
 				reason_code = ?,
-				reason_data = '{}',
+				reason_data = ?,
 				defer_reason = NULL,
 				cancel_requested_at = NULL,
 				cancel_requested_by = NULL,
@@ -149,7 +149,8 @@ func (s *Store) ReopenTerminalRunByOperator(ctx context.Context, runID string, a
 				available_at = ?,
 				updated_at = ?
 				WHERE id = ? AND state = ? AND lease_epoch = ?`,
-				string(reason.RUNReopenedOperator), run.CreatedAt.UnixMilli(), now.UnixMilli(),
+				string(reason.RUNReopenedOperator), reopenDataJSON(opt),
+				run.CreatedAt.UnixMilli(), now.UnixMilli(),
 				runID, run.State, run.LeaseEpoch)
 			if err != nil {
 				return err
@@ -300,6 +301,20 @@ func reopenTargetsTx(tx *sql.Tx, runID string, onlyStep *string) ([]reopenTarget
 
 // reopenDetail renders the facts the operator's decision rode on, without the
 // token; mergeEpochDetail folds that in.
+// reopenDataJSON is the payload RUN_REOPENED_OPERATOR promises: which step
+// was singled out, and whether the operator went past the unknown outcome
+// warning. Both keys are always present, unlike the event detail below, which
+// carries only what was asked for: a promised key that is sometimes absent is
+// a promise a reader cannot rely on (#191). An empty only_step is the whole
+// run, which is what a reopen without --step means.
+func reopenDataJSON(opt ReopenOpts) string {
+	only := ""
+	if opt.OnlyStep != nil {
+		only = *opt.OnlyStep
+	}
+	return fmt.Sprintf(`{"forced":%t,"only_step":%q}`, opt.Forced, only)
+}
+
 func reopenDetail(opt ReopenOpts) string {
 	detail := map[string]any{}
 	if opt.OnlyStep != nil {
