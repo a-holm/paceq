@@ -1040,6 +1040,24 @@ func cancelRunningStepsTx(tx *sql.Tx, runID string, now time.Time) error {
 	return nil
 }
 
+// leaseHeldBy is the one answer to "does this ref still hold this run", and
+// the only source of model.Guards.LeaseValid on a holder's write. Owner and
+// epoch are the whole fence: the epoch rises on every claim and every reap, so
+// a writer whose lease was taken over can never match, and the CAS on every
+// terminal UPDATE carries both.
+//
+// The deadline is not a term. It says when the reaper may take the run, not
+// who owns it, and until the reaper acts the row still names this holder at
+// this token. Refusing a rightful owner's verdict because a renewal ran late
+// buys nothing and costs a duplicate execution (#202).
+//
+// The zero ref speaks for recovery and holds nothing. Recovery is admitted the
+// other way round, by checkLeaseTx proving the lease is already dead.
+func leaseHeldBy(run Run, ref LeaseRef) bool {
+	return ref.held() && run.State == string(model.RunRunning) &&
+		run.LeaseOwner == ref.Owner && run.LeaseEpoch == ref.Epoch
+}
+
 // checkLeaseTx is the fence every holder write crosses, inside the caller's
 // transaction: the run must still be running and still belong to the writer
 // at the writer's token. A ref with no owner speaks for recovery, and that
@@ -1058,7 +1076,7 @@ func checkLeaseTx(tx *sql.Tx, runID string, ref LeaseRef, now time.Time) error {
 		return fmt.Errorf("write run %s: %w (it is %s)", runID, ErrLeaseLost, run.State)
 	}
 	if ref.held() {
-		if run.LeaseOwner != ref.Owner || run.LeaseEpoch != ref.Epoch {
+		if !leaseHeldBy(run, ref) {
 			return fmt.Errorf("write run %s: %w (held by %q at epoch %d)",
 				runID, ErrLeaseLost, run.LeaseOwner, run.LeaseEpoch)
 		}

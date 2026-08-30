@@ -201,24 +201,37 @@ func TestDrainRunHandsTheRunBackWithoutACrash(t *testing.T) {
 	}
 }
 
-func TestDrainRunRefusesAnExpiredLease(t *testing.T) {
+// TestDrainRunHandsBackALapsedDeadlineItStillOwns: the deadline is when the
+// reaper may take the run, not who owns it (#202). Until the reaper acts the
+// row still names this daemon at this token, so a clean stop hands the work
+// back instead of leaving it running with nobody driving it.
+func TestDrainRunHandsBackALapsedDeadlineItStillOwns(t *testing.T) {
 	s := openTestStore(t, Options{Clock: clock.NewFake(time.Now())})
 	runID := seedDrainRun(t, s)
 
-	// The lease lapses: from here the run belongs to the reaper's
-	// lease_expired path, not to a clean drain.
 	s.clk.(*clock.Fake).Advance(6 * time.Minute)
 
-	if _, err := s.DrainRun(context.Background(), runID,
-		LeaseRef{Owner: "exec-drained", Epoch: 1}, reason.RUNInterruptedShutdown); err == nil {
-		t.Fatal("a drain succeeded on an expired lease")
+	handed, err := s.DrainRun(context.Background(), runID,
+		LeaseRef{Owner: "exec-drained", Epoch: 1}, reason.RUNInterruptedShutdown)
+	if err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	if !handed {
+		t.Fatal("DrainRun reported nothing handed back for a run its own token still holds")
 	}
 	detail, err := s.GetRun(context.Background(), runID)
 	if err != nil {
 		t.Fatalf("read the run: %v", err)
 	}
-	if detail.Run.State != "running" {
-		t.Errorf("the refusal moved the run to %s", detail.Run.State)
+	if detail.Run.State != "queued" {
+		t.Errorf("the drain left the run %s, want queued", detail.Run.State)
+	}
+	if detail.Run.LeaseEpoch != 2 {
+		t.Errorf("lease_epoch is %d, want 2: the handback still fences the drained attempt",
+			detail.Run.LeaseEpoch)
+	}
+	if detail.Run.CrashCount != 0 {
+		t.Errorf("crash_count is %d, want 0: the executor left on purpose", detail.Run.CrashCount)
 	}
 }
 
