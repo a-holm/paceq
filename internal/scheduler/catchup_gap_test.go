@@ -1,11 +1,16 @@
 package scheduler_test
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/a-holm/paceq/internal/clock"
+	"github.com/a-holm/paceq/internal/scheduler"
 	"github.com/a-holm/paceq/internal/store"
 	"github.com/a-holm/paceq/internal/testutil"
 )
@@ -231,4 +236,129 @@ func TestCatchupSkipLeavesTheOutageToTheGapWalk(t *testing.T) {
 	}
 	assertFsckClean(t, ctx, s)
 	testutil.AssertNoUnknownReasons(t, ctx, s)
+}
+
+// captureLog builds a logger a test can read back, at the level an operator
+// actually watches.
+func captureLog() (*slog.Logger, *bytes.Buffer) {
+	buf := &bytes.Buffer{}
+	return slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelInfo})), buf
+}
+
+func newSourceLogging(st scheduler.Store, clk clock.Clock, log *slog.Logger) *scheduler.Source {
+	src, err := scheduler.New(scheduler.Config{Store: st, Clock: clk, Holder: "test", Log: log})
+	if err != nil {
+		panic(err)
+	}
+	return src
+}
+
+// lossStore answers every materialisation with one fixed result, so each
+// shape of loss can be held to its own reporting contract.
+type lossStore struct {
+	*scriptedStore
+	res store.TickResult
+}
+
+func (s *lossStore) MaterializeTick(ctx context.Context, in store.TickInput) (store.TickResult, error) {
+	s.materialized = append(s.materialized, in)
+	return s.res, nil
+}
+
+// backlogStore is a scripted wake owing six fire-times of one schedule.
+func backlogStore(clk clock.Clock, res store.TickResult) *lossStore {
+	now := clk.Now().UTC()
+	return &lossStore{
+		scriptedStore: &scriptedStore{
+			grants: []bool{true},
+			due: []store.ScheduleRow{{
+				ID: "01BACKLOG", JobName: "nightly", Name: "default", Kind: "cron",
+				Expr: "*/5 * * * *", Timezone: "UTC", Catchup: "all",
+				CatchupLimit: 10, CatchupWindowMS: 86_400_000,
+				NextTickAt: now.Add(-30 * time.Minute),
+			}},
+		},
+		res: res,
+	}
+}
+
+// TestALossToARivalHolderStaysSilent is the regression that keeps normal
+// leader handover out of the log. The tick gate refuses foreign fire-times
+// many times a minute in a two instance setup, and none of it is news.
+func TestALossToARivalHolderStaysSilent(t *testing.T) {
+	clk := clock.NewFake(gapDay)
+	log, buf := captureLog()
+	st := backlogStore(clk, store.TickResult{LostTo: store.LossEvaluation})
+
+	if err := newSourceLogging(st, clk, log).Tick(context.Background()); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if len(st.materialized) == 0 {
+		t.Fatal("the scenario wrote nothing; it proves nothing about silence")
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("a rival holder loss produced log output at info or above:\n%s", buf.String())
+	}
+}
+
+// TestALossToGapDetectionIsReportedOncePerSchedule is the other half. The
+// decision was overruled by a row that only says nobody was there, and that
+// used to leave no trace anywhere. One line per schedule, not one per slot:
+// a day long outage of a minute schedule must not become a day of log.
+func TestALossToGapDetectionIsReportedOncePerSchedule(t *testing.T) {
+	clk := clock.NewFake(gapDay)
+	log, buf := captureLog()
+	st := backlogStore(clk, store.TickResult{LostTo: store.LossMissed})
+
+	if err := newSourceLogging(st, clk, log).Tick(context.Background()); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	lines := strings.Count(strings.TrimSpace(buf.String()), "\n") + 1
+	if buf.Len() == 0 {
+		t.Fatal("losing every fire-time to gap detection produced no log line at all")
+	}
+	if lines != 1 {
+		t.Fatalf("%d log lines for one schedule's outage, want exactly one:\n%s", lines, buf.String())
+	}
+	got := buf.String()
+	for _, want := range []string{
+		"schedule=nightly/default",
+		"replayed=0",
+		"left_as_missed=" + strconv.Itoa(len(st.materialized)),
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("the report is missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// TestAReplayIsReportedBesideWhatItLeftBehind is the line an operator
+// following the troubleshooting page needs: the catch-up ran one fire-time
+// and left the rest to the outage that explains them.
+func TestAReplayIsReportedBesideWhatItLeftBehind(t *testing.T) {
+	ctx := context.Background()
+	s := testutil.TempStore(t)
+	clk := clock.NewFake(gapDay)
+
+	primeCursor(t, ctx, s, clk, "last", 10)
+	clk.Set(at(32))
+	stageOutage(t, ctx, s, at(1), at(32), at(5), at(10), at(15), at(20), at(25), at(30))
+
+	log, buf := captureLog()
+	if err := newSourceLogging(s, clk, log).Tick(ctx); err != nil {
+		t.Fatalf("the catch-up tick: %v", err)
+	}
+	got := buf.String()
+	for _, want := range []string{
+		"catch-up met gap detection's evidence at the tick gate",
+		"schedule=nightly/default",
+		"replayed=1",
+		"left_as_missed=5",
+		"oldest=2026-05-01T10:05:00Z",
+		"newest=2026-05-01T10:30:00Z",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("the report is missing %q:\n%s", want, got)
+		}
+	}
 }
