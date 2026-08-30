@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/a-holm/paceq/internal/obs"
+	"github.com/a-holm/paceq/internal/sockpath"
 	"github.com/a-holm/paceq/internal/store"
 )
 
@@ -23,26 +25,36 @@ import (
 // degraded (#44) is the disk-guard's state: only /readyz degrades with the
 // disk. /livez must not - a full disk that restarted the daemon would kill
 // the very loops that are cleaning up (06 §7.1, 06 §15 risiko 4).
-func startHealthEndpoint(cfg Config, st *statuses, log *slog.Logger, store *store.Store, collector *obs.Collector, degraded func() bool) (stop func(context.Context)) {
+//
+// A configured socket that cannot be established is an error, never a quiet
+// nil (#234). The caller asked for a health surface and a write API; a daemon
+// that comes up without either, while its probes read as a dead process and
+// every CLI write silently takes the direct path, is worse than one that
+// refuses to start. socket is the path actually being served, so the caller
+// reports the listener rather than the configuration.
+func startHealthEndpoint(cfg Config, st *statuses, log *slog.Logger, store *store.Store, collector *obs.Collector, degraded func() bool) (stop func(context.Context), socket string, err error) {
 	if cfg.SocketPath == "" {
-		return nil
+		return nil, "", nil
 	}
 	path := cfg.SocketPath
+	// The length is knowable from the string, and the kernel's own refusal
+	// names neither the length nor the limit, so it is measured here rather
+	// than left to read as "bind: invalid argument" (#234).
+	if err := sockpath.Validate(path); err != nil {
+		return nil, "", err
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		log.Error("the socket directory could not be created", "dir", filepath.Dir(path), "error", err)
-		return nil
+		return nil, "", fmt.Errorf("the socket directory %s could not be created: %w", filepath.Dir(path), err)
 	}
 	// A socket left behind by a crash would make Listen fail with "address
 	// already in use" for a daemon that does not exist. The state lock is
 	// what proves nobody else is serving; the file is just its litter.
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		log.Error("a stale socket file could not be removed", "path", path, "error", err)
-		return nil
+		return nil, "", fmt.Errorf("a stale socket file at %s could not be removed: %w", path, err)
 	}
 	l, err := net.Listen("unix", path)
 	if err != nil {
-		log.Error("the health socket could not listen", "path", path, "error", err)
-		return nil
+		return nil, "", fmt.Errorf("the health socket could not listen on %s: %w", path, err)
 	}
 	// The state directory is 0700; the socket follows suit rather than the
 	// process umask, so nothing about it depends on the environment.
@@ -144,7 +156,7 @@ func startHealthEndpoint(cfg Config, st *statuses, log *slog.Logger, store *stor
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			log.Warn("the socket file could not be removed", "path", path, "error", err)
 		}
-	}
+	}, path, nil
 }
 
 // loopLines is the loop snapshot as JSON sees it: an object keyed by name, so

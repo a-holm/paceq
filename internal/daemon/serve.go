@@ -397,20 +397,26 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 		},
 		filepath.Join(cfg.StateDir, logsink.LogDirName))
 	collector.DiskWatch = guard
-	stopHealth := startHealthEndpoint(cfg, statuses, log, st, collector, guard.Degraded)
-	if err := startMetricsTCP(cfg.MetricsListen, collector); err != nil {
+	// The loops are already launched; they live on the group's context, so
+	// cancelling it is what brings them down before the error propagates.
+	// Without this, a refused bind would leave a daemon-shaped process
+	// behind the failure.
+	abort := func(stopHealth func(context.Context), err error) error {
 		if stopHealth != nil {
 			stopHealth(context.Background())
 		}
-		// The loops are already launched; they live on the group's
-		// context, so cancelling it is what brings them down before the
-		// error propagates. Without this, a refused metrics bind would
-		// leave a daemon-shaped process behind the failure.
 		grp.cancel()
 		stopIntake()
 		stopExec()
 		_ = st.Close()
 		return fmt.Errorf("serve: %w", err)
+	}
+	stopHealth, healthSocket, err := startHealthEndpoint(cfg, statuses, log, st, collector, guard.Degraded)
+	if err != nil {
+		return abort(nil, err)
+	}
+	if err := startMetricsTCP(cfg.MetricsListen, collector); err != nil {
+		return abort(stopHealth, err)
 	}
 	launch(grp.ctx, nil, func(c context.Context) error {
 		return heartbeatLoop(c, d, cfg.heartbeatEvery(), st, sess.ID)
@@ -422,7 +428,7 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 		"tick", tickEvery.String(),
 		"drain_timeout", cfg.drainTimeout().String(),
 		"notify_bus", !cfg.DisableNotifyBus,
-		"socket", cfg.SocketPath != "",
+		"socket", healthSocket != "",
 	)
 
 	// The systemd readiness signal goes out after migration AND reconciliation

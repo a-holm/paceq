@@ -178,10 +178,10 @@ func runParityScenario(t *testing.T, withDaemon bool) (retryDoc, replayDoc, reop
 			Logger:     logger,
 		}
 		sts := newStatuses(func() time.Time { return time.Unix(0, 0).UTC() })
-		stop := startHealthEndpoint(cfg, sts, cfg.Logger, s, nil, nil)
-		if stop == nil {
-			t.Fatalf("the endpoints did not start on %s (%d bytes); the daemon logged:\n%s",
-				socket, len(socket), rec.text())
+		stop, _, err := startHealthEndpoint(cfg, sts, cfg.Logger, s, nil, nil)
+		if err != nil {
+			t.Fatalf("the endpoints did not start on %s (%d bytes): %v; the daemon logged:\n%s",
+				socket, len(socket), err, rec.text())
 		}
 		defer func() { stop(context.Background()) }()
 	}
