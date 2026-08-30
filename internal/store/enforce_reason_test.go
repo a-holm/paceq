@@ -63,32 +63,51 @@ func TestTerminalRowsWithoutReasonAreRefused(t *testing.T) {
 // TestEveryCatalogueCodeIsStorable is the other direction: no entry of the
 // catalogue may be refused by the schema. A code the database rejects would
 // make the model and the storage disagree about what an explanation is.
+//
+// Every code goes into every reason carrying table, rather than into the one
+// its level names. A level is the object a code explains, never the table it
+// lands in (#193): RUN_REJECTED_DISK_LOW is a run level code that only ever
+// reaches ticks and triggers, so a fixture keyed on the level asserted
+// storability about a row no producer writes and read as a mapping that does
+// not exist. Non terminal codes are covered too, because they are stored on
+// the same columns; RUN_INTERRUPTED_SHUTDOWN is one, and the old shape did not
+// reach it at all.
 func TestEveryCatalogueCodeIsStorable(t *testing.T) {
 	s := seededStore(t)
 	ctx := context.Background()
 
+	tables := []struct {
+		name   string
+		insert func(n int, code string) string
+	}{
+		{"runs", func(n int, code string) string {
+			return runInsert("01J0CODE"+itoa(n), "failed", code)
+		}},
+		{"steps", func(n int, code string) string {
+			return stepInsert("code-"+itoa(n), 100+n, "failed", code)
+		}},
+		{"ticks", func(n int, code string) string {
+			return tickInsert("01J0CODE"+itoa(n), "skipped", code)
+		}},
+		{"triggers", func(n int, code string) string {
+			return triggerInsert("01J0CODE"+itoa(n), "rejected", code)
+		}},
+		{"lease_events", func(n int, code string) string {
+			return leaseEventInsert("scheduler", "holder-"+itoa(n), 1+n, code)
+		}},
+	}
+
 	n := 0
 	for _, e := range reason.All() {
-		if !e.Terminal {
-			continue
+		for _, table := range tables {
+			n++
+			if _, err := s.w.ExecContext(ctx, table.insert(n, string(e.Code))); err != nil {
+				t.Errorf("%s: the %s table refused a catalogue code: %v", e.Code, table.name, err)
+			}
 		}
-		var stmt string
-		switch e.Level {
-		case reason.LevelRun:
-			stmt = runInsert("01J0CODE"+itoa(n), "failed", string(e.Code))
-		case reason.LevelStep:
-			stmt = stepInsert("code-"+itoa(n), 100+n, "failed", string(e.Code))
-		case reason.LevelTick:
-			stmt = tickInsert("01J0CODE"+itoa(n), "skipped", string(e.Code))
-		case reason.LevelTrigger:
-			stmt = triggerInsert("01J0CODE"+itoa(n), "rejected", string(e.Code))
-		case reason.LevelLease:
-			stmt = leaseEventInsert("scheduler", "holder-"+itoa(n), 1+n, string(e.Code))
-		}
-		if _, err := s.w.ExecContext(ctx, stmt); err != nil {
-			t.Errorf("%s: the schema refused a catalogue code: %v", e.Code, err)
-		}
-		n++
+	}
+	if n == 0 {
+		t.Fatal("the catalogue is empty, so this test proved nothing about it")
 	}
 }
 
