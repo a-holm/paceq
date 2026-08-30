@@ -101,7 +101,7 @@ func TestServeFlagsAreDeclared(t *testing.T) {
 		t.Fatalf("serve --help exited %d", res.code)
 	}
 	for _, flag := range []string{
-		"--jobs-dir", "--socket", "--workers", "--drain-timeout", "--no-notify-bus",
+		"--jobs-dir", "--socket", "--workers", "--drain-timeout", "--kill-grace", "--no-notify-bus",
 	} {
 		if !strings.Contains(res.stdout, flag) {
 			t.Errorf("serve --help does not mention %s", flag)

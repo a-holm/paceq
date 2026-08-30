@@ -54,6 +54,10 @@ type Engine struct {
 	// a timeout. Zero means runner.DefaultTimeout.
 	StepTimeoutDefault time.Duration
 
+	// KillGrace is the SIGTERM to SIGKILL gap every step's process group
+	// gets, on both spawn paths. Zero means runner.DefaultKillGrace.
+	KillGrace time.Duration
+
 	LeaseTTL time.Duration
 
 	// RenewInterval is how often held leases renew, in one batched

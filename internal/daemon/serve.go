@@ -495,12 +495,13 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 
 func newEngine(cfg Config, st *store.Store, clk clock.Clock) *engine.Engine {
 	return &engine.Engine{
-		Store:    st,
-		StateDir: cfg.StateDir,
-		LogRoot:  logsink.NewRoot(cfg.StateDir),
-		Clock:    clk,
-		Owner:    cfg.owner(),
-		LeaseTTL: cfg.leaseTTL(),
+		Store:     st,
+		StateDir:  cfg.StateDir,
+		LogRoot:   logsink.NewRoot(cfg.StateDir),
+		Clock:     clk,
+		Owner:     cfg.owner(),
+		LeaseTTL:  cfg.leaseTTL(),
+		KillGrace: cfg.killGrace(),
 		// The exec shim (issue #39): steps run through this binary's own
 		// `paceq exec`, with results spooled for the restart story.
 		Executable: shimExecutableFor(),

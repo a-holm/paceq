@@ -26,6 +26,7 @@ type serveFlags struct {
 	metricsListen string
 	workers       int
 	drainTimeout  time.Duration
+	killGrace     time.Duration
 	noNotifyBus   bool
 	shadow        bool
 	observe       string
@@ -80,6 +81,8 @@ notify_defaults on_failure targets.`,
 		"opt-in TCP bind for /metrics; loopback only, e.g. 127.0.0.1:9753 (default: unix socket only)")
 	cmd.Flags().IntVar(&f.workers, "workers", 0, "runs executed at once (0: one per CPU)")
 	cmd.Flags().DurationVar(&f.drainTimeout, "drain-timeout", 30*time.Second, "how long running steps may finish on a stop")
+	cmd.Flags().DurationVar(&f.killGrace, "kill-grace", 0,
+		"the SIGTERM to SIGKILL gap inside a step's process group (0: 10s)")
 	cmd.Flags().BoolVar(&f.noNotifyBus, "no-notify-bus", false,
 		"disable the wake-up bus and run on tickers alone (a test switch that must change nothing)")
 	cmd.Flags().BoolVar(&f.shadow, "shadow", false,
@@ -134,6 +137,7 @@ func runServe(ctx context.Context, env Env, g *globals, f serveFlags) error {
 		MetricsListen:    f.metricsListen,
 		Workers:          f.workers,
 		DrainTimeout:     f.drainTimeout,
+		KillGrace:        f.killGrace,
 		DisableNotifyBus: f.noNotifyBus,
 		Shadow:           f.shadow,
 		Observe:          f.observe,

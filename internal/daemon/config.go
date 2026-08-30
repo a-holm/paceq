@@ -10,6 +10,7 @@ import (
 	"github.com/a-holm/paceq/internal/engine"
 	"github.com/a-holm/paceq/internal/janitor"
 	"github.com/a-holm/paceq/internal/obs"
+	"github.com/a-holm/paceq/internal/runner"
 	"github.com/a-holm/paceq/internal/store"
 )
 
@@ -78,7 +79,8 @@ type Config struct {
 	DrainTimeout time.Duration
 
 	// KillGrace is the SIGTERM to SIGKILL gap inside every step's process
-	// group during the drain. Zero leaves the runner's own default.
+	// group, and the same gap the drain's own escalation waits out. Zero
+	// means the runner's default of ten seconds.
 	KillGrace time.Duration
 
 	// Shadow turns the whole instance into a recorder (#32): the scheduler
@@ -235,9 +237,15 @@ func (c Config) reconcileEvery() time.Duration {
 	return defaultReconcileEvery
 }
 
-// killGrace returns the SIGTERM to SIGKILL gap used for sensor subprocess
-// groups. Zero means the runner default, which the evaluator resolves.
-func (c Config) killGrace() time.Duration { return c.KillGrace }
+// killGrace resolves the SIGTERM to SIGKILL gap. The runner's own default is
+// the fallback, so every layer that reads this - the step spawn, the sensor
+// evaluator and the drain's own escalation - waits the same length of time.
+func (c Config) killGrace() time.Duration {
+	if c.KillGrace > 0 {
+		return c.KillGrace
+	}
+	return runner.DefaultKillGrace
+}
 
 // nightlyHour resolves the local hour the maintenance cycle aims for
 // (07 section 6.5 names 03:00). Zero means the shipped default.
