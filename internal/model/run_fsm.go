@@ -169,16 +169,24 @@ func requireReason(from State, ev Event, to State, g Guards) error {
 }
 
 // TerminalVerdict ranks a run's closed-out steps in the same order RunAggregate
-// does, from the two facts the guards carry: a failure outranks a cancellation,
-// and a cancellation outranks the plain success of steps that were all done
-// before the cancel landed. Both endings take it, the finish and the cancel, so
-// the machine holds one order rather than one per arm.
+// does, from the facts the guards carry: a run-level failure outranks the steps
+// entirely, a step failure outranks a cancellation, and a cancellation outranks
+// the plain success of steps that were all done before the cancel landed. Both
+// endings take it, the finish and the cancel, so the machine holds one order
+// rather than one per arm.
+//
+// The run-level arm emits run.failed, the name the reaper's orphan arm already
+// writes for the same ending. The reason code is what separates a quarantine
+// from a spent attempt budget, and explain reads it; a second event name for
+// one event would only give the reader two words for one thing.
 //
 // Keeping that order the same as RunAggregate's is what makes I10 hold without
 // the machine reading a step row. TestTerminalVerdictMatchesRunAggregate proves
-// the two stay in step.
+// the two stay in step, over both values of the run-level term.
 func TerminalVerdict(g Guards) (RunState, string) {
 	switch {
+	case g.RunLevelFailure:
+		return RunFailed, "run.failed"
 	case g.AnyStepFailed:
 		return RunFailed, "run.failed"
 	case g.AnyStepCancelled:
