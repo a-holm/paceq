@@ -60,7 +60,7 @@ to do:
 | `PulseqWALGrowth` | WAL over 64 MiB (checkpoint trouble) | warning |
 | `PulseqBackupStale` | last backup older than 36h | critical |
 | `PulseqBackupUnverified` | newest backup never passed verification | critical |
-| `PulseqSensorErrorRate` | a sensor's consecutive failures pass 5 | warning |
+| `PulseqSensorErrorRate` | a sensor's consecutive failures reach the breaker threshold, so it has stopped being evaluated | warning |
 | `PulseqQueueBacklog` | more than 50 queued runs | warning |
 | `PulseqDaemonFlapping` | 4+ restarts in 30 minutes | critical |
 

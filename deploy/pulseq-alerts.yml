@@ -64,12 +64,15 @@ groups:
           summary: "Siste backup bestod ikke quick_check"
           runbook: "pulseq backup --verify; se docs/drift/backup.md"
 
+      # Terskelen er breakerens egen: model.SensorBreakerThreshold. Ved denne
+      # verdien har sensoren sluttet å bli evaluert, og det er hendelsen en
+      # vakt skal vekkes av.
       - alert: PulseqSensorErrorRate
-        expr: pulseq_sensor_consecutive_failures > 5
+        expr: pulseq_sensor_consecutive_failures >= 10
         labels:
           severity: warning
         annotations:
-          summary: "Sensor {{ $labels.name }} feiler gjentatt — breaker nærmer seg"
+          summary: "Sensor {{ $labels.name }} feiler gjentatt — breakeren er åpen"
           runbook: "pulseq explain sensor {{ $labels.name }}"
 
       - alert: PulseqQueueBacklog

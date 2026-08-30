@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/a-holm/paceq/internal/clock"
+	"github.com/a-holm/paceq/internal/model"
 	"github.com/a-holm/paceq/internal/store"
 )
 
@@ -370,7 +371,7 @@ func buildSensorSubject(ctx context.Context, st *store.Store, rep *RefReport, na
 	facts := &SensorFacts{
 		IntervalMS:          row.IntervalMS,
 		ConsecutiveFailures: row.ConsecutiveFailures,
-		BreakerOpen:         row.ConsecutiveFailures >= sensorBreakerThreshold,
+		BreakerOpen:         model.SensorBreakerOpen(row.ConsecutiveFailures),
 		LastOutcome:         row.LastOutcome,
 		NextEvalAt:          rfc3339(time.UnixMilli(row.NextEvalAt)),
 		PausedReason:        row.PausedReason,
@@ -388,13 +389,6 @@ func buildSensorSubject(ctx context.Context, st *store.Store, rep *RefReport, na
 	}
 	return rep, nil
 }
-
-// sensorBreakerThreshold is where the sensor runtime opens the breaker; the
-// number lives with the evaluator, so status only borrows the observable
-// consequence (failures at or past it mean the breaker tripped). Kept loose
-// on purpose: BreakerOpen is a display hint over breaker_opened_at when the
-// column carries a stamp, not a second opinion about the mechanism.
-const sensorBreakerThreshold = 5
 
 func buildRunSubject(ctx context.Context, st *store.Store, rep *RefReport, runID string) (*RefReport, error) {
 	matches, err := st.ExplainRunsByPrefix(ctx, runID, 2)
