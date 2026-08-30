@@ -14,7 +14,7 @@ import (
 func competingWriter(t *testing.T, path string) *sql.DB {
 	t.Helper()
 
-	db, err := sql.Open("sqlite", "file:"+path+"?_txlock=immediate&_pragma=busy_timeout(200)")
+	db, err := sql.Open("sqlite", testDSN(t, path, "_txlock=immediate&_pragma=busy_timeout(200)"))
 	if err != nil {
 		t.Fatalf("open competing writer: %v", err)
 	}

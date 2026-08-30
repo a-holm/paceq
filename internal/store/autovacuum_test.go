@@ -13,7 +13,7 @@ import (
 func rawDB(t *testing.T, path string) *sql.DB {
 	t.Helper()
 
-	db, err := sql.Open(driverName, "file:"+path)
+	db, err := sql.Open(driverName, testDSN(t, path, "mode=rwc"))
 	if err != nil {
 		t.Fatalf("open %q: %v", path, err)
 	}

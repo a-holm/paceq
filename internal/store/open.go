@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -148,8 +149,19 @@ func Open(ctx context.Context, path string, opt Options) (*Store, error) {
 	if err := guardFilesystem(filepath.Dir(path), opt.AllowNetworkFS); err != nil {
 		return nil, err
 	}
+	// Both connection strings are rendered before either pool exists: the path
+	// they carry is the same, so a path no URI can carry must fail before a
+	// single file is created.
+	writerDSN, err := dsn(path, "_txlock=immediate", writerSpecs(sync))
+	if err != nil {
+		return nil, err
+	}
+	readerDSN, err := dsn(path, "mode=ro", readerSpecs(sync))
+	if err != nil {
+		return nil, err
+	}
 
-	w, err := sql.Open(driverName, dsn(path, "_txlock=immediate", writerSpecs(sync)))
+	w, err := sql.Open(driverName, writerDSN)
 	if err != nil {
 		return nil, fmt.Errorf("open writer pool: %w", err)
 	}
@@ -166,7 +178,7 @@ func Open(ctx context.Context, path string, opt Options) (*Store, error) {
 		return nil, fmt.Errorf("connect writer pool: %w", err)
 	}
 
-	r, err := sql.Open(driverName, dsn(path, "mode=ro", readerSpecs(sync)))
+	r, err := sql.Open(driverName, readerDSN)
 	if err != nil {
 		_ = w.Close()
 		return nil, fmt.Errorf("open reader pool: %w", err)
@@ -204,22 +216,26 @@ func Open(ctx context.Context, path string, opt Options) (*Store, error) {
 // driver ignored the DSN, a driver swap reads _pragma differently, or the file
 // is in a journal mode this design does not support.
 func (s *Store) verifyPragmas(ctx context.Context, sync string) error {
-	if err := verifyPool(ctx, s.w, "writer", writerSpecs(sync)); err != nil {
+	if err := verifyPool(ctx, s.w, "writer", s.path, writerSpecs(sync)); err != nil {
 		return err
 	}
-	return verifyPool(ctx, s.r, "reader", readerSpecs(sync))
+	return verifyPool(ctx, s.r, "reader", s.path, readerSpecs(sync))
 }
 
 // verifyPool checks every spec on a single connection of the pool. Pragmas are
 // per connection, so reading them from one connection at a time is the only
-// meaningful check.
-func verifyPool(ctx context.Context, db *sql.DB, pool string, specs []pragmaSpec) error {
+// meaningful check. The file the connection holds is checked first: a pragma
+// read from the wrong database proves nothing about the right one.
+func verifyPool(ctx context.Context, db *sql.DB, pool, path string, specs []pragmaSpec) error {
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return fmt.Errorf("%s pool: take connection: %w", pool, err)
 	}
 	defer func() { _ = conn.Close() }()
 
+	if err := verifyFile(ctx, conn, pool, path); err != nil {
+		return err
+	}
 	for _, spec := range specs {
 		var got string
 		if err := conn.QueryRowContext(ctx, "PRAGMA "+spec.name).Scan(&got); err != nil {
@@ -230,6 +246,36 @@ func verifyPool(ctx context.Context, db *sql.DB, pool string, specs []pragmaSpec
 				"database file does not honour the requested setting, refusing to start",
 				pool, spec.name, got, spec.want)
 		}
+	}
+	return nil
+}
+
+// verifyFile refuses a connection that holds a database other than the file it
+// was asked for. The connection string is a URI, and a mistake in rendering one
+// does not fail: SQLite opens the name the URI actually spells and creates it if
+// it has to. Identity is compared with os.SameFile, so a symlink, a relative
+// path or a "." element still counts as the same database.
+func verifyFile(ctx context.Context, conn *sql.Conn, pool, path string) error {
+	var seq int
+	var name string
+	var file sql.NullString
+	if err := conn.QueryRowContext(ctx, "PRAGMA database_list").Scan(&seq, &name, &file); err != nil {
+		return fmt.Errorf("%s pool: read PRAGMA database_list: %w", pool, err)
+	}
+	if !file.Valid || file.String == "" {
+		return fmt.Errorf("%s pool: %s opened a temporary or in-memory database rather than a file, "+
+			"refusing to start", pool, path)
+	}
+	want, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("%s pool: stat %s: %w", pool, path, err)
+	}
+	got, err := os.Stat(file.String)
+	if err != nil {
+		return fmt.Errorf("%s pool: stat the database that was opened, %s: %w", pool, file.String, err)
+	}
+	if !os.SameFile(want, got) {
+		return fmt.Errorf("%s pool: asked for %s but opened %s: refusing to start", pool, path, file.String)
 	}
 	return nil
 }
@@ -310,7 +356,11 @@ func syncReadback(sync string) string {
 // the pragmas: _txlock=immediate makes every writer transaction BEGIN
 // IMMEDIATE, which is what avoids the lock upgrade that busy_timeout cannot
 // retry; mode=ro opens the reader read-only.
-func dsn(path, first string, specs []pragmaSpec) string {
+func dsn(path, first string, specs []pragmaSpec) (string, error) {
+	name, err := uriFilename(path)
+	if err != nil {
+		return "", err
+	}
 	params := make([]string, 0, len(specs)+1)
 	params = append(params, first)
 	for _, spec := range specs {
@@ -319,5 +369,41 @@ func dsn(path, first string, specs []pragmaSpec) string {
 		}
 		params = append(params, "_pragma="+spec.name+"("+spec.arg+")")
 	}
-	return "file:" + path + "?" + strings.Join(params, "&")
+	return "file:" + name + "?" + strings.Join(params, "&"), nil
+}
+
+// uriEscaper covers the three characters SQLite reads rather than passes on
+// inside a URI filename: ? ends the filename and starts the parameters, #
+// starts the fragment, and % introduces an escape of its own. Everything else,
+// spaces and non-ASCII bytes included, reaches the VFS unchanged, so escaping
+// more would only rename directories that work today.
+var uriEscaper = strings.NewReplacer("%", "%25", "?", "%3f", "#", "%23")
+
+// uriFilename renders path as the filename part of a file: URI. The driver
+// passes a file: connection string to SQLite with SQLITE_OPEN_URI set, so the
+// path is read as a URI: an unescaped character in it names a different
+// database, which SQLite then creates rather than refuses.
+//
+// A path starting with ':' is passed through. ":memory:" is an in-memory DSN,
+// and escaping it would materialise a file with that name instead; the startup
+// verification refuses an in-memory database, which is where that refusal
+// belongs.
+func uriFilename(path string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("database path is empty: an empty file: URI opens a private temporary database")
+	}
+	if strings.ContainsRune(path, 0) {
+		return "", fmt.Errorf("database path %q contains a NUL byte, which no URI can carry", path)
+	}
+	if strings.HasPrefix(path, ":") {
+		return path, nil
+	}
+	name := uriEscaper.Replace(path)
+	// file:// opens an authority segment, which SQLite refuses unless it is
+	// empty or "localhost", and it reads that segment before decoding any
+	// escape. A path that begins with two slashes has to lose one of them here.
+	if strings.HasPrefix(name, "//") {
+		name = "%2f" + name[1:]
+	}
+	return name, nil
 }

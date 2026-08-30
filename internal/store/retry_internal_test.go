@@ -33,7 +33,7 @@ func realBusySnapshot(t *testing.T) error {
 	t.Helper()
 
 	path := filepath.Join(t.TempDir(), "state.db")
-	setup, err := sql.Open(driverName, "file:"+path+"?_pragma=journal_mode(WAL)")
+	setup, err := sql.Open(driverName, testDSN(t, path, "_pragma=journal_mode(WAL)"))
 	if err != nil {
 		t.Fatalf("open setup connection: %v", err)
 	}
@@ -45,7 +45,7 @@ func realBusySnapshot(t *testing.T) error {
 		t.Fatalf("seed row: %v", err)
 	}
 
-	deferred, err := sql.Open(driverName, "file:"+path+"?_txlock=deferred&_pragma=busy_timeout(200)")
+	deferred, err := sql.Open(driverName, testDSN(t, path, "_txlock=deferred&_pragma=busy_timeout(200)"))
 	if err != nil {
 		t.Fatalf("open deferred connection: %v", err)
 	}

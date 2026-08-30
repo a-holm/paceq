@@ -15,7 +15,7 @@ import (
 func writeDeleteModeDatabase(t *testing.T, path string) {
 	t.Helper()
 
-	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=journal_mode(DELETE)")
+	db, err := sql.Open("sqlite", testDSN(t, path, "_pragma=journal_mode(DELETE)"))
 	if err != nil {
 		t.Fatalf("open raw database: %v", err)
 	}

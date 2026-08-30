@@ -518,7 +518,7 @@ func (g *commitGate) silent() bool { return g.count() == 0 }
 func hammeringWriter(t *testing.T, path string) *sql.DB {
 	t.Helper()
 
-	db, err := sql.Open("sqlite", "file:"+path+"?_txlock=immediate&_pragma=busy_timeout(5000)")
+	db, err := sql.Open("sqlite", testDSN(t, path, "_txlock=immediate&_pragma=busy_timeout(5000)"))
 	if err != nil {
 		t.Fatalf("open the external writer: %v", err)
 	}
