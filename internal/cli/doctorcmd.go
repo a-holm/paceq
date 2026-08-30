@@ -80,7 +80,8 @@ func runDoctor(ctx context.Context, env Env, g *globals, out *ui) error {
 	} else if cfg != nil {
 		limits = cfg.Limits
 	}
-	report.Findings = append(report.Findings, doctor.Run(ctx, stateDir, doctor.Options{Status: env.Status, Limits: limits}).Findings...)
+	report.Findings = append(report.Findings,
+		doctor.Run(ctx, stateDir, doctor.Options{Status: env.Status, Procs: env.Procs, Limits: limits}).Findings...)
 	report.Findings = append(report.Findings, checkDaemonVersion(ctx, stateDir, buildinfo.Get().Version))
 	for _, finding := range report.Findings {
 		out.note(2, "%s: %s", finding.Title, finding.Level)

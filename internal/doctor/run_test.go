@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/a-holm/paceq/internal/doctor"
+	"github.com/a-holm/paceq/internal/reconcile"
 	"github.com/a-holm/paceq/internal/store"
 )
 
@@ -25,6 +26,7 @@ type fakeDB struct {
 	fsck        []store.Violation
 	unpoliced   []string
 	active      []store.AttemptProcess
+	known       []store.AttemptProcess
 	foreignKeys bool
 	sync        string
 	err         error
@@ -60,6 +62,10 @@ func (f *fakeDB) QuickFsck(context.Context) ([]store.Violation, error) {
 
 func (f *fakeDB) ActiveAttempts(context.Context) ([]store.AttemptProcess, error) {
 	return f.active, f.err
+}
+
+func (f *fakeDB) KnownAttempts(context.Context) ([]store.AttemptProcess, error) {
+	return f.known, f.err
 }
 
 func (f *fakeDB) JobsWithoutFreshnessSLA(context.Context) ([]string, error) {
@@ -118,6 +124,19 @@ func options(open doctor.Opener) doctor.Options {
 		Status: sandboxedStatus(),
 		Local:  "Europe/Oslo",
 		Free:   func(string) (uint64, error) { return 40 << 30, nil },
+		Procs:  otherInstallation(),
+	}
+}
+
+// otherInstallation is one job process belonging to a second paceq on the same
+// machine. The /proc scan is machine wide, so a report has to answer for such a
+// process, and no report may depend on whether one happens to be running: the
+// real scan would make every case below pass or fail with the machine's mood.
+func otherInstallation() doctor.ProcLister {
+	return func() ([]reconcile.Process, error) {
+		return []reconcile.Process{
+			{PID: 4242, PGID: 4242, RunID: "01OTHERPACEQINSTALLATION0", StartTicks: 900, TicksOK: true},
+		}, nil
 	}
 }
 
@@ -180,12 +199,15 @@ func TestHealthyInstallationHasNoFailures(t *testing.T) {
 	}
 	for _, want := range []string{
 		"state directory", "disk space", "sandbox", "database", "write lock",
-		"journal mode", "schema version", "auto_vacuum", "time zone",
+		"journal mode", "schema version", "auto_vacuum", "time zone", "processes",
 	} {
 		f := find(t, report, want)
 		if f.Detail == "" {
 			t.Errorf("%s reports no detail", want)
 		}
+	}
+	if got := find(t, report, "processes").Detail; !strings.Contains(got, "another installation") {
+		t.Errorf("processes detail %q never accounts for the other installation's process", got)
 	}
 	if !db.closed {
 		t.Error("Run left the database open")

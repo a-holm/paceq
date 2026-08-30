@@ -28,6 +28,7 @@ type DB interface {
 	BackupStatus(ctx context.Context) (store.BackupInfo, error)
 	QuickFsck(ctx context.Context) ([]store.Violation, error)
 	ActiveAttempts(ctx context.Context) ([]store.AttemptProcess, error)
+	KnownAttempts(ctx context.Context) ([]store.AttemptProcess, error)
 	JobsWithoutFreshnessSLA(ctx context.Context) ([]string, error)
 	Close() error
 }

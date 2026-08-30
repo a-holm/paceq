@@ -226,9 +226,20 @@ func CheckSpoolBacklog(dir string, clk clock.Clock) Finding {
 	}
 }
 
-// CheckOrphanedProcesses compares the live job processes with the attempts
-// the database calls active. A process whose run the database no longer names
-// is a process nobody will ever reap.
+// CheckOrphanedProcesses names the job processes this installation started
+// that no active attempt still owns: the processes nobody will ever reap.
+//
+// The /proc scan is machine wide, so ownership is decided afterwards through
+// reconcile.Ownership, the predicate the startup sweep itself acts on. That is
+// what keeps the finding's next steps true: the sweep signals nothing this
+// check does not call an orphan, and another installation's processes, which
+// the sweep will never signal, are counted rather than accused.
+//
+// The containment runs one way only. The sweep refuses more than the predicate
+// does: it skips its own process and group, and it re-reads the start ticks
+// immediately before signalling and stands down if they moved. So a named
+// orphan may still be left alone, and the error is a process reported that
+// nothing kills rather than a process killed that should have lived.
 func CheckOrphanedProcesses(ctx context.Context, db DB, list ProcLister) Finding {
 	const title = "processes"
 	if list == nil {
@@ -246,6 +257,15 @@ func CheckOrphanedProcesses(ctx context.Context, db DB, list ProcLister) Finding
 	if len(procs) == 0 {
 		return Finding{Level: OK, Title: title, Detail: "no job processes running"}
 	}
+	known, err := db.KnownAttempts(ctx)
+	if err != nil {
+		return Finding{
+			Level:  Warn,
+			Title:  title,
+			Detail: fmt.Sprintf("could not read the attempt baselines: %v", err),
+			Next:   []string{"run paceq doctor again once the database answers"},
+		}
+	}
 	active, err := db.ActiveAttempts(ctx)
 	if err != nil {
 		return Finding{
@@ -255,21 +275,25 @@ func CheckOrphanedProcesses(ctx context.Context, db DB, list ProcLister) Finding
 			Next:   []string{"run paceq doctor again once the database answers"},
 		}
 	}
-	live := make(map[string]bool, len(active))
-	for _, a := range active {
-		live[a.RunID] = true
-	}
-	var orphans []string
+
+	own := reconcile.NewOwnership(known, active)
+	var (
+		orphans         []string
+		mine, elsewhere int
+	)
 	for _, p := range procs {
-		if !live[p.RunID] {
+		claim, _ := own.Classify(p)
+		switch claim {
+		case reconcile.ClaimOrphan:
 			orphans = append(orphans, fmt.Sprintf("pid %d (run %s)", p.PID, p.RunID))
+		case reconcile.ClaimRunning:
+			mine++
+		default:
+			elsewhere++
 		}
 	}
 	if len(orphans) == 0 {
-		return Finding{
-			Level: OK, Title: title,
-			Detail: fmt.Sprintf("%d job processes, all named by active runs", len(procs)),
-		}
+		return Finding{Level: OK, Title: title, Detail: ownedProcessDetail(mine, elsewhere)}
 	}
 	sort.Strings(orphans)
 	return Finding{
@@ -282,6 +306,23 @@ func CheckOrphanedProcesses(ctx context.Context, db DB, list ProcLister) Finding
 			"kill one by hand only after reading its run: paceq explain run <id>",
 		},
 	}
+}
+
+// ownedProcessDetail is the healthy line. Another installation's processes are
+// counted rather than hidden, because an operator who can see them in ps needs
+// the report to account for them, and a bare count carries no advice to act on
+// a process this paceq has no business touching.
+func ownedProcessDetail(mine, elsewhere int) string {
+	detail := "no job processes of this installation"
+	more := ""
+	if mine > 0 {
+		detail = fmt.Sprintf("%d job processes, all named by active attempts", mine)
+		more = "more "
+	}
+	if elsewhere > 0 {
+		detail += fmt.Sprintf("; %d %sbelong to another installation", elsewhere, more)
+	}
+	return detail
 }
 
 // CheckFreshnessSLA names the jobs monitoring cannot alarm on (06 SLO 6): a
