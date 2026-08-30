@@ -140,7 +140,15 @@ type JobHooks struct {
 
 // Plan builds one Notification per (topic, target). An empty result simply
 // writes nothing.
+//
+// Facts without a topic or a job name are refused outright, whatever hooks
+// say. The store rejects a row missing either, and it rejects it inside
+// FinishRun's transaction, which unwinds the run's own verdict with it: a
+// notification nobody can send is worse than none at all (#194).
 func (p *Planner) Plan(f RunFacts, hooks *JobHooks) []model.Notification {
+	if f.Topic == "" || f.JobName == "" {
+		return nil
+	}
 	var targets []string
 	switch {
 	case hooks == nil:
@@ -184,6 +192,11 @@ func (p *Planner) Plan(f RunFacts, hooks *JobHooks) []model.Notification {
 // dedup key rides the breached-at millisecond, which makes each episode its
 // own event even if an old row survives retention.
 func (p *Planner) SLAPlan(job string, breachedAt time.Time, lastSuccessAt time.Time, within time.Duration, host string) []model.Notification {
+	if job == "" {
+		// The subject the store demands. Same refusal as Plan's, for the
+		// same reason (#194).
+		return nil
+	}
 	targets := p.Defaults.OnFailure
 	if len(targets) == 0 {
 		return nil
