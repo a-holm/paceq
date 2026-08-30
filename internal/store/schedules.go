@@ -459,6 +459,11 @@ func (s *Store) MaterializeTick(ctx context.Context, in TickInput) (TickResult, 
 	// transaction below and observed after it commits (#40).
 	var finalOutcome, finalReason string
 	err = s.withTx(ctx, func(tx *sql.Tx) error {
+		// withTx runs this again on a busy snapshot, so every attempt starts
+		// from nothing: a verdict reached by an attempt that rolled back must
+		// never survive into the one that commits.
+		out = TickResult{}
+
 		// Pause is re-read INSIDE the transaction. A pause applied between
 		// discovery and this instant must turn the evaluation into a
 		// recorded stand-down here, never into a run.

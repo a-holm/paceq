@@ -186,3 +186,40 @@ func countTicks(t *testing.T, s *Store) int {
 	}
 	return n
 }
+
+// TestShadowModeReplaysTheSameSlotTheRealPathWould keeps the recorder honest
+// (#32): a shadow instance must reach the same verdict about a fire-time as a
+// real one, or its report understates what catch-up would have run.
+func TestShadowModeReplaysTheSameSlotTheRealPathWould(t *testing.T) {
+	s, sched := replayFixture(t)
+	plantTick(t, s, OutcomeMissed, "TICK_MISSED_DAEMON_DOWN", 0)
+
+	res, err := s.MaterializeTick(context.Background(), TickInput{
+		Schedule:       sched,
+		ScheduledFor:   replayFire,
+		Outcome:        OutcomeTriggered,
+		RunKey:         "nightly/default:2026-05-01T10:30:00Z",
+		NextTickAt:     replayFire.Add(5 * time.Minute),
+		UpdateProgress: true,
+		Actor:          "scheduler",
+		Shadow:         true,
+	})
+	if err != nil {
+		t.Fatalf("the shadow attempt: %v", err)
+	}
+	if !res.Claimed || !res.Replayed {
+		t.Fatalf("the shadow attempt came back Claimed=%v Replayed=%v, want a replay",
+			res.Claimed, res.Replayed)
+	}
+	if res.Run.ID != "" {
+		t.Fatalf("shadow mode materialised run %s; nothing may execute", res.Run.ID)
+	}
+	var outcome string
+	if err := s.r.QueryRowContext(context.Background(),
+		`SELECT outcome FROM ticks WHERE scheduled_for = ?`, replayFire.UnixMilli()).Scan(&outcome); err != nil {
+		t.Fatalf("read the slot back: %v", err)
+	}
+	if outcome != OutcomeShadowTriggered {
+		t.Fatalf("the replayed slot is %s, want %s", outcome, OutcomeShadowTriggered)
+	}
+}
