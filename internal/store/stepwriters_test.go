@@ -42,8 +42,8 @@ func outWaitTheLease(clk interface{ Advance(time.Duration) }) {
 
 // A. A step the reaper parks back at pending never reached a finish, so it
 // must carry neither stamp. The number the unguarded writer left behind was
-// the crash-detection latency — lease TTL plus skew plus the sweep's tick —
-// and `paceq run show --json` reported it as the step's duration.
+// the crash-detection latency, lease TTL plus skew plus the sweep's tick, and
+// `paceq run show --json` reported it as the step's duration.
 func TestAReapedStepBackAtPendingCarriesNoFinishStamp(t *testing.T) {
 	ctx := context.Background()
 	s, clk := coreStore(t)
@@ -72,6 +72,7 @@ func TestAReapedStepBackAtPendingCarriesNoFinishStamp(t *testing.T) {
 		t.Errorf("duration_ms = %d on a pending step, want none: that is how long the crash took to notice, not work",
 			step.DurationMS)
 	}
+	assertFsckClean(t, ctx, s)
 }
 
 // The other half of the same rule, and the guard against over-correcting: a
@@ -129,8 +130,11 @@ func TestTheReaperClosesTheDownstreamOfAStepItFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReapExpiredRuns: %v", err)
 	}
-	if len(reaped) != 1 || reaped[0].State != string(model.RunQueued) {
-		t.Fatalf("the sweep answered %+v, want the run back in the queue", reaped)
+	// The lost step spends the only attempt it had, so the closure ends the
+	// whole graph and the run takes the verdict its steps aggregate to
+	// rather than being offered to a holder with nothing to run.
+	if len(reaped) != 1 || reaped[0].State != string(model.RunFailed) {
+		t.Fatalf("the sweep answered %+v, want the run closed as failed", reaped)
 	}
 
 	extract := mustStep(t, ctx, s, runID, "extract")
@@ -159,6 +163,9 @@ func TestTheReaperClosesTheDownstreamOfAStepItFails(t *testing.T) {
 		t.Errorf("load reads %q, want %q: its own upstream was skipped, not failed",
 			load.ReasonCode, reason.STEPSkippedUpstreamSkipped)
 	}
+	// The failure and its closure are one write, so there is no commit at
+	// which the graph disagrees with itself.
+	assertFsckClean(t, ctx, s)
 }
 
 // C. The same failing attempt, committed from the spool instead of watched,
@@ -217,6 +224,12 @@ func TestASpoolCommittedFailureTakesThePolicyBackoff(t *testing.T) {
 			t.Errorf("reason_data = %s, want it to carry %s", step.ReasonData, key)
 		}
 	}
+	// The rest of recovery: the dead lease goes, and the parked step waits
+	// out its backoff in a database the sweep has nothing to say about.
+	if _, err := s.ReapExpiredRuns(ctx, store.ReapOptions{}); err != nil {
+		t.Fatalf("ReapExpiredRuns: %v", err)
+	}
+	assertFsckClean(t, ctx, s)
 }
 
 // D. What a run-level close-out reaches is a step with no failed ancestor:
@@ -273,5 +286,19 @@ func TestTheReaperNamesARootlessSkipForWhatItIs(t *testing.T) {
 	if b.ReasonCode != string(reason.STEPSkippedRunAbandoned) {
 		t.Errorf("b reads %q, want %q: it depends on nothing, so nothing it needs failed",
 			b.ReasonCode, reason.STEPSkippedRunAbandoned)
+	}
+}
+
+// assertFsckClean holds the sweep against a database one of the step writers
+// just produced. I13 in particular now refuses a pending step with a finish
+// stamp, so a writer that fabricates one is caught here as well as on the row.
+func assertFsckClean(t *testing.T, ctx context.Context, s *store.Store) {
+	t.Helper()
+	violations, err := s.Fsck(ctx)
+	if err != nil {
+		t.Fatalf("fsck: %v", err)
+	}
+	if len(violations) != 0 {
+		t.Errorf("fsck found %+v", violations)
 	}
 }

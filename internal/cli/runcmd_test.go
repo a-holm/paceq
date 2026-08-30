@@ -579,3 +579,66 @@ func openFixtureStoreAt(t *testing.T, stateDir string, clk clock.Clock) *store.S
 	}
 	return s
 }
+
+// A step the reaper parked back at pending never ran to a finish, so the
+// machine readable surface reports no duration for it. The number it used to
+// carry was the crash-detection latency, and runs show presented it as work
+// the step had done (#213).
+func TestRunsShowReportsNoDurationForARequeuedStep(t *testing.T) {
+	dir, s, clk := unknownOutcomeProject(t)
+	ctx := context.Background()
+
+	if _, _, err := s.UpsertJobVersion(ctx, store.JobVersionInput{
+		JobName:  "requeued",
+		SpecHash: "sha256:requeued",
+		SpecJSON: `{"name":"requeued","max_concurrent":1,"timeout_ms":3600000,` +
+			`"schema":"paceq.job.v1","steps":[{"name":"build","run":["/bin/true"],` +
+			`"shell":false,"retry":{"max":2}}]}`,
+	}); err != nil {
+		t.Fatalf("record the job: %v", err)
+	}
+	queued, err := s.MaterializeManualTrigger(ctx, store.ManualTriggerInput{JobName: "requeued"})
+	if err != nil {
+		t.Fatalf("queue the run: %v", err)
+	}
+	runID := queued.Run.ID
+	if _, _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: "doomed", TTL: time.Hour}); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := s.StartStep(ctx, runID, "build", store.LeaseRef{Owner: "doomed", Epoch: 1}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	// The gap between the executor dying and the sweep noticing. It is the
+	// number the unguarded writer used to report as the step's duration.
+	clk.Advance(90 * time.Second)
+	if _, err := s.ReapExpiredRuns(ctx, store.ReapOptions{IgnoreLease: true}); err != nil {
+		t.Fatalf("reap: %v", err)
+	}
+
+	got := runCLI(t, dir, nil, "runs", "show", runID)
+	if got.code != ExitOK {
+		t.Fatalf("runs show exited %d\n%s%s", got.code, got.stdout, got.stderr)
+	}
+	var doc struct {
+		Run struct {
+			Steps []struct {
+				Name       string `json:"name"`
+				State      string `json:"state"`
+				DurationMS *int64 `json:"duration_ms"`
+			} `json:"steps"`
+		} `json:"run"`
+	}
+	if err := json.Unmarshal([]byte(got.stdout), &doc); err != nil {
+		t.Fatalf("runs show did not answer in JSON:\n%s\n%v", got.stdout, err)
+	}
+	if len(doc.Run.Steps) != 1 {
+		t.Fatalf("%d steps came back, want 1: %s", len(doc.Run.Steps), got.stdout)
+	}
+	step := doc.Run.Steps[0]
+	if step.State != "pending" {
+		t.Fatalf("the step is %s, want pending: it has two attempts left", step.State)
+	}
+	if step.DurationMS != nil {
+		t.Errorf("duration_ms = %d for a step that has not run: %s", *step.DurationMS, got.stdout)
+	}
+}

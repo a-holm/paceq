@@ -750,6 +750,22 @@ func reapToQueuedTx(tx *sql.Tx, run Run, now time.Time, backoff time.Duration) (
 	if err := failRunningStepsTx(tx, run.ID, now, false); err != nil {
 		return ReapedRun{}, err
 	}
+	// The lost step may have ended the whole graph: with no budget left it
+	// fails, and the failure closes its downstream in the same write. A run
+	// with nothing left to run is not a run to offer a new holder, it is a
+	// run whose conclusion is already on its steps, so it takes the fold
+	// #188 built for the same situation on the failure arm (#213).
+	after, err := readStepsTx(tx, run.ID)
+	if err != nil {
+		return ReapedRun{}, err
+	}
+	states, err := stepStatesOf(after)
+	if err != nil {
+		return ReapedRun{}, err
+	}
+	if allStepsTerminal(states) {
+		return reapToAggregateTx(tx, run, now, after)
+	}
 	epoch := run.LeaseEpoch + 1
 	due := now.Add(backoff)
 	if _, err := tx.Exec(`UPDATE runs SET
@@ -994,9 +1010,9 @@ func reapToCancelledTx(tx *sql.Tx, run Run, now time.Time) (ReapedRun, error) {
 // the spool committer take, so the reaper cannot keep private answers to the
 // questions that writer already settles (#213): whether a step going back to
 // pending may carry a finish stamp, and whether a step landing on failed
-// closes its downstream in this transaction. The reaper's own facts — that
-// this ending buys no further attempt, and that the reaper wrote it — are
-// arguments, not a second copy of the rules.
+// closes its downstream in this transaction. The reaper's own facts are
+// arguments rather than a second copy of the rules: that this ending buys no
+// further attempt, and that the reaper wrote it.
 func failRunningStepsTx(tx *sql.Tx, runID string, now time.Time, terminal bool) error {
 	steps, err := readStepsTx(tx, runID)
 	if err != nil {
