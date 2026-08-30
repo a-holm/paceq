@@ -29,8 +29,9 @@ import (
 //         epoch.
 //   - I12 No job runs more than max_concurrent allows (#68), and no
 //         concurrency key is held by more than one active run (#17).
-//   - I13 Timestamps are monotone: created <= started <= finished, and no
-//         stamp sits at zero where one exists at all.
+//   - I13 Timestamps are monotone: created <= started <= finished, no
+//         stamp sits at zero where one exists at all, and a step that has
+//         not ended carries no instant at which it did.
 //   - I14 A queued run held for the future carries its defer reason.
 //   - I15 The event chain is continuous: every event's from_state is the
 //         to_state of the event before it, per run and per step.
@@ -88,7 +89,8 @@ WHERE created_at <= 0
 UNION ALL
 SELECT 'step', run_id || '/' || name FROM steps
 WHERE (started_at IS NOT NULL AND started_at <= 0)
-	OR (finished_at IS NOT NULL AND started_at IS NOT NULL AND finished_at < started_at)`
+	OR (finished_at IS NOT NULL AND started_at IS NOT NULL AND finished_at < started_at)
+	OR (state = 'pending' AND finished_at IS NOT NULL)`
 
 	fsckI14SQL = `SELECT id FROM runs
 WHERE state = 'queued' AND available_at > created_at
@@ -370,7 +372,7 @@ func (s *Store) Fsck(ctx context.Context) ([]Violation, error) {
 		out = append(out, Violation{
 			Check:   "I13",
 			Subject: kind + " " + key,
-			Detail:  "timestamps are not monotone or carry zero",
+			Detail:  "timestamps are not monotone, carry zero, or stamp an ending that has not happened",
 		})
 	}
 	if err := rows.Err(); err != nil {
