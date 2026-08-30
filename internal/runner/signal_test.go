@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"os"
 	"slices"
 	"sync"
 	"syscall"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/a-holm/paceq/internal/clock"
+	"github.com/a-holm/paceq/internal/procfs"
 )
 
 // fakeKiller records signals instead of delivering them. It is the seam the
@@ -115,23 +117,59 @@ func TestEscalationStopsWhenDisarmed(t *testing.T) {
 	})
 }
 
-func TestGroupKillTargetsTheNegativePgid(t *testing.T) {
-	var captured int
-	var sig syscall.Signal
-	restore := captureGroupKill(func(pgid int, s syscall.Signal) error {
-		captured, sig = pgid, s
-		return nil
-	})
-	defer restore()
+// TestEveryGroupKillTargetsTheNegativePgid holds the invariant on the paths
+// that run: signalling the bare pid would leave grandchildren running as
+// orphans holding files and ports, which is exactly the leak Setpgid exists to
+// prevent. Both deliveries of the escalation and both of the verified kill go
+// through the package's own killer seam, so a bare pgid at any of the four
+// sites fails here.
+func TestEveryGroupKillTargetsTheNegativePgid(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var mu sync.Mutex
+		var targets []int
+		restore := captureGroupKill(func(pgid int, sig syscall.Signal) error {
+			mu.Lock()
+			defer mu.Unlock()
+			targets = append(targets, pgid)
+			return nil
+		})
+		defer restore()
+		delivered := func() []int {
+			mu.Lock()
+			defer mu.Unlock()
+			return slices.Clone(targets)
+		}
 
-	const pid = 4711
-	if err := terminateGroup(pid, syscall.SIGTERM); err != nil {
-		t.Fatalf("terminateGroup: %v", err)
-	}
-	if captured != -pid {
-		t.Errorf("signalled %d, want %d: the whole group must be addressed, not the pid", captured, -pid)
-	}
-	if sig != syscall.SIGTERM {
-		t.Errorf("signal = %v, want SIGTERM", sig)
-	}
+		// NewEscalator carries no killer of its own, so its SIGTERM and its
+		// SIGKILL take the same seam Run's do.
+		x := NewEscalator(5*time.Second, clock.System())
+		x.SetGroup(escalationTestGroup)
+		if err := x.Fire(); err != nil {
+			t.Fatalf("Fire: %v", err)
+		}
+		time.Sleep(6 * time.Second)
+		synctest.Wait()
+		x.Stop()
+
+		want := []int{-escalationTestGroup, -escalationTestGroup}
+		if got := delivered(); !slices.Equal(got, want) {
+			t.Fatalf("the escalation addressed %v, want %v: the whole group must be signalled, not the pid", got, want)
+		}
+
+		// The verified kill is the shim's route to the same groups. It
+		// refuses unless the group's recorded start ticks still match, so the
+		// target has to be a live process this reader can measure.
+		pid := os.Getpid()
+		ticks, ok := procfs.ProcStartTicks(pid)
+		if !ok {
+			return // no start-ticks reader here, so VerifiedGroupKill delivers nothing
+		}
+		if err := VerifiedGroupKill(pid, ticks, 30*time.Millisecond, nil); err != nil {
+			t.Fatalf("VerifiedGroupKill: %v", err)
+		}
+		want = append(want, -pid, -pid)
+		if got := delivered(); !slices.Equal(got, want) {
+			t.Fatalf("the verified kill addressed %v, want %v: the whole group must be signalled, not the pid", got, want)
+		}
+	})
 }
