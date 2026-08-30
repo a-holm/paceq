@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"testing"
 	"time"
@@ -88,6 +89,19 @@ func TestDrainRunRestoresTheInterruptedAttempt(t *testing.T) {
 	}
 	if st.ReasonCode != string(reason.RUNInterruptedShutdown) {
 		t.Errorf("row reason_code is %q, want %q", st.ReasonCode, reason.RUNInterruptedShutdown)
+	}
+
+	// The code is a run level code and it lands on step rows only (#193). The
+	// run row records the drain as a defer reason and carries no reason code
+	// at all, so a level cannot be read as the table the code is stored in.
+	var runCode sql.NullString
+	if err := s.r.QueryRowContext(context.Background(),
+		`SELECT reason_code FROM runs WHERE id = ?`, runID).Scan(&runCode); err != nil {
+		t.Fatalf("read the drained run row: %v", err)
+	}
+	if runCode.Valid {
+		t.Errorf("the drained run row carries reason_code %q; the drain writes its code on the "+
+			"steps it handed back and leaves the run to say why it waits", runCode.String)
 	}
 
 	events, err := s.RunEvents(context.Background(), runID)
