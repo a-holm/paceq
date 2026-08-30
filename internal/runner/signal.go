@@ -23,13 +23,6 @@ var killProcessGroup groupKiller = func(pgid int, sig syscall.Signal) error {
 	return syscall.Kill(pgid, sig)
 }
 
-// captureGroupKill replaces the killer seam for one test and restores it.
-func captureGroupKill(fake func(pgid int, sig syscall.Signal) error) (restore func()) {
-	old := killProcessGroup
-	killProcessGroup = fake
-	return func() { killProcessGroup = old }
-}
-
 // escalation owns the SIGTERM then SIGKILL sequence against one process
 // group. fire is idempotent: whichever trigger arrives first, a deadline from
 // the clock timer or a cancelled parent context through exec's Cancel hook,

@@ -13,6 +13,13 @@ import (
 	"github.com/a-holm/paceq/internal/procfs"
 )
 
+// captureGroupKill replaces the killer seam for one test and restores it.
+func captureGroupKill(fake func(pgid int, sig syscall.Signal) error) (restore func()) {
+	old := killProcessGroup
+	killProcessGroup = fake
+	return func() { killProcessGroup = old }
+}
+
 // fakeKiller records signals instead of delivering them. It is the seam the
 // plan calls a fake Killer: the signal layer's decisions get tested without a
 // process, and the real group kill is exercised by every integration test.
