@@ -65,9 +65,13 @@ JOIN runs r ON r.id = s.run_id
 WHERE s.state IN ('pending', 'running')
 	AND r.state IN ('succeeded', 'failed', 'cancelled')`
 
+	// The reuse code is spelled out because a const block cannot call
+	// reason.stepCode; TestI5NamesTheReuseCodeTheCatalogueDefines ties the
+	// literal back to the constant every writer uses.
 	fsckI5SQL = `SELECT run_id, name, state, attempt, max_attempts FROM steps
 WHERE attempt < 0 OR attempt > max_attempts
-	OR (state IN ('running', 'succeeded', 'failed') AND attempt < 1)`
+	OR (state IN ('running', 'succeeded', 'failed') AND attempt < 1
+		AND COALESCE(reason_code, '') <> 'STEP_SKIPPED_REPLAY_REUSED')`
 
 	fsckI8SQL = `SELECT s.run_id, s.name FROM steps s
 WHERE s.state = 'running'
@@ -262,6 +266,14 @@ func (s *Store) Fsck(ctx context.Context) ([]Violation, error) {
 	// purpose (05 section 3.2). This is the check a retry has to leave
 	// green: a reopen that reset attempts to zero while a verdict stood
 	// would read as an execution that never happened.
+	//
+	// The one succeeded step that began no attempt is the one a replay
+	// reused (#175). It is a skip wearing succeeded: the event is
+	// step.skipped, the reason code says so, and the state reads succeeded
+	// only because downstream readiness is expressed through step state.
+	// The exemption is that reason code, which MaterializeReplay is the
+	// only writer of, and it lifts nothing else: a reused row still has to
+	// sit inside its budget and above zero.
 	rows, cancel, err = s.fsckQuery(ctx, fsckI5SQL)
 	if err != nil {
 		return nil, fmt.Errorf("fsck I5: %w", err)

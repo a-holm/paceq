@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/a-holm/paceq/internal/reason"
 )
 
 // fsck is only as good as its ability to catch what it claims to catch. Each
@@ -143,6 +145,42 @@ reason_code = 'RUN_SUCCEEDED', finished_at = created_at + 1000 WHERE id = ?`, ru
 	if found != 2 {
 		t.Fatalf("fsck named %d attempt violations, want both planted rows: %+v",
 			found, violations)
+	}
+}
+
+// TestFsckSparesTheAttemptAReplayNeverMade is the other half of the rule: a
+// step a replay reused is born succeeded without executing, so no attempt was
+// counted and none should be. The exemption is the reason code, which
+// MaterializeReplay is the only writer of; the row planted above under
+// STEP_SUCCEEDED proves it stays that narrow.
+// TestI5NamesTheReuseCodeTheCatalogueDefines keeps the literal in the sweep's
+// SQL tied to the constant every writer spells, which a const block cannot do
+// on its own.
+func TestI5NamesTheReuseCodeTheCatalogueDefines(t *testing.T) {
+	if !strings.Contains(fsckI5SQL, string(reason.STEPSkippedReplayReused)) {
+		t.Errorf("I5 does not name %s:\n%s", reason.STEPSkippedReplayReused, fsckI5SQL)
+	}
+}
+
+func TestFsckSparesTheAttemptAReplayNeverMade(t *testing.T) {
+	ctx := context.Background()
+	s, runID := plantSeededRun(t)
+
+	if _, err := s.w.ExecContext(ctx, `UPDATE steps SET state = 'succeeded',
+reason_code = 'STEP_SKIPPED_REPLAY_REUSED', attempt = 0, max_attempts = 1,
+finished_at = 1000
+WHERE run_id = ? AND name = 'build'`, runID); err != nil {
+		t.Fatalf("plant the reused step: %v", err)
+	}
+
+	violations, err := s.Fsck(ctx)
+	if err != nil {
+		t.Fatalf("fsck: %v", err)
+	}
+	for _, v := range violations {
+		if v.Check == "I5" {
+			t.Errorf("fsck %s on %s: %s", v.Check, v.Subject, v.Detail)
+		}
 	}
 }
 
