@@ -1662,7 +1662,7 @@ Flags:
 | `--no-notify-bus` | `- ` | disable the wake-up bus and run on tickers alone (a test switch that must change nothing) |
 | `--observe` | `- ` | with --shadow, where observed cron starts come from: none, journald or file=<path> |
 | `--shadow` | `- ` | shadow mode: plan and record every schedule, execute nothing (#32) |
-| `--socket` | `- ` | unix socket for the health endpoints (empty: disabled until M2-08) |
+| `--socket` | `- ` | unix socket to listen on for client commands and health endpoints (empty: no socket, so clients write directly; they need the same path in PACEQ_SOCKET or --socket) |
 | `--workers` | `- ` | runs executed at once (0: one per CPU) |
 
 Inherited flags:

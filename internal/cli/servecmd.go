@@ -72,7 +72,9 @@ notify_defaults on_failure targets.`,
 		}),
 	}
 	cmd.Flags().StringVar(&f.jobsDir, "jobs-dir", "jobs", "directory the scheduler reads job files from")
-	cmd.Flags().StringVar(&f.socket, "socket", "", "unix socket for the health endpoints (empty: disabled until M2-08)")
+	cmd.Flags().StringVar(&f.socket, "socket", "",
+		"unix socket to listen on for client commands and health endpoints "+
+			"(empty: no socket, so clients write directly; they need the same path in PACEQ_SOCKET or --socket)")
 	cmd.Flags().StringVar(&f.metricsListen, "metrics-listen", "",
 		"opt-in TCP bind for /metrics; loopback only, e.g. 127.0.0.1:9753 (default: unix socket only)")
 	cmd.Flags().IntVar(&f.workers, "workers", 0, "runs executed at once (0: one per CPU)")

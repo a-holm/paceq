@@ -14,12 +14,11 @@ import (
 	"github.com/a-holm/paceq/internal/store"
 )
 
-// The health endpoints (06 section 7.1), served over a unix socket when
-// --socket names one. This is the lifecycle half only: /livez answers from
-// memory and never touches the database, because a health check that can hang
-// on a locked database turns one bad moment into a restart loop. M2-08 puts
-// the real protocol on this listener; the socket and the status surface it
-// will read are already here.
+// The daemon's unix socket (06 section 7.1), served when --socket names one:
+// the health endpoints and the POST /v1 routes the CLI's write commands dial.
+// /livez answers from memory and never touches the database, because a health
+// check that can hang on a locked database turns one bad moment into a
+// restart loop.
 //
 // degraded (#44) is the disk-guard's state: only /readyz degrades with the
 // disk. /livez must not - a full disk that restarted the daemon would kill
