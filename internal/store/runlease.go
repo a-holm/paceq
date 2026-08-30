@@ -111,6 +111,13 @@ type ClaimedRun struct {
 //
 // The predicate rides the partial claim index (available_at WHERE state =
 // 'queued'), which the query plan test pins.
+//
+// The three deferral columns are cleared here, exactly as the keyed start
+// clears them (#191). They describe a decision that is over the moment the run
+// starts, and leaving them standing makes a running or finished run read as
+// deferred for the rest of its life: paceq runs list takes its state column
+// from defer_reason. The schema CHECK on defer_reason binds queued rows only,
+// so clearing on the way to running cannot trip it.
 const claimRunsSQL = `UPDATE runs SET
 	state = 'running',
 	lease_owner = ?1,
@@ -118,6 +125,9 @@ const claimRunsSQL = `UPDATE runs SET
 	lease_expires_at = ?3,
 	heartbeat_at = ?2,
 	started_at = COALESCE(started_at, ?2),
+	defer_reason = NULL,
+	reason_code = NULL,
+	reason_data = NULL,
 	updated_at = ?2
 WHERE id IN (?4)
 RETURNING id, job_name, job_version_id, run_key, attempt, lease_epoch, params_json`
