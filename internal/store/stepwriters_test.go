@@ -218,3 +218,60 @@ func TestASpoolCommittedFailureTakesThePolicyBackoff(t *testing.T) {
 		}
 	}
 }
+
+// D. What a run-level close-out reaches is a step with no failed ancestor:
+// nothing it needs failed, the run simply ended around it. Calling that
+// STEP_SKIPPED_UPSTREAM_FAILED is the same lie #205 took out of the engine's
+// own sweep, under a different ending.
+func TestTheReaperNamesARootlessSkipForWhatItIs(t *testing.T) {
+	ctx := context.Background()
+	s, clk := coreStore(t)
+	runID := aDagRun(t, s, "rootless", reapRootlessSpec)
+
+	// Two crashes with a ceiling of one: the first is absorbed, the second
+	// trips the quarantine and closes the run.
+	for i := 0; i < 2; i++ {
+		if _, _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: "doomed", TTL: time.Minute}); err != nil {
+			t.Fatalf("ClaimRun %d: %v", i, err)
+		}
+		if err := s.StartStep(ctx, runID, "a", ref("doomed", int64(2*i+1))); err != nil {
+			t.Fatalf("StartStep %d: %v", i, err)
+		}
+		outWaitTheLease(clk)
+		reaped, err := s.ReapExpiredRuns(ctx, store.ReapOptions{MaxCrashCount: 1})
+		if err != nil {
+			t.Fatalf("ReapExpiredRuns %d: %v", i, err)
+		}
+		if len(reaped) != 1 {
+			t.Fatalf("sweep %d answered %+v, want the run", i, reaped)
+		}
+		clk.Advance(store.DefaultRequeueBackoff)
+	}
+
+	run := mustGetRun(t, ctx, s, runID)
+	if run.Run.State != string(model.RunFailed) || run.Run.ReasonCode != string(reason.RUNPoisoned) {
+		t.Fatalf("the run is %s/%q, want failed under %q",
+			run.Run.State, run.Run.ReasonCode, reason.RUNPoisoned)
+	}
+
+	// c hangs off the failed step, so it reads the upstream code and names
+	// the step that failed.
+	c := mustStep(t, ctx, s, runID, "c")
+	if c.ReasonCode != string(reason.STEPSkippedUpstreamFailed) {
+		t.Errorf("c reads %q, want %q", c.ReasonCode, reason.STEPSkippedUpstreamFailed)
+	}
+	if !strings.Contains(c.ReasonData, `"upstream":"a"`) {
+		t.Errorf("c reason_data = %s, want the failed step named", c.ReasonData)
+	}
+
+	// b needs nothing. Nothing upstream of it failed, because it has no
+	// upstream at all.
+	b := mustStep(t, ctx, s, runID, "b")
+	if b.State != string(model.StepSkipped) {
+		t.Fatalf("b is %s, want skipped: a terminal run has no open step", b.State)
+	}
+	if b.ReasonCode != string(reason.STEPSkippedRunAbandoned) {
+		t.Errorf("b reads %q, want %q: it depends on nothing, so nothing it needs failed",
+			b.ReasonCode, reason.STEPSkippedRunAbandoned)
+	}
+}

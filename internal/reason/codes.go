@@ -79,6 +79,7 @@ var (
 
 	STEPSucceeded              = stepCode("SUCCEEDED")
 	STEPSkippedReplayReused    = stepCode("SKIPPED_REPLAY_REUSED")
+	STEPSkippedRunAbandoned    = stepCode("SKIPPED_RUN_ABANDONED")
 	STEPSkippedRunTimedOut     = stepCode("SKIPPED_RUN_TIMED_OUT")
 	STEPSkippedUpstreamFailed  = stepCode("SKIPPED_UPSTREAM_FAILED")
 	STEPSkippedUpstreamSkipped = stepCode("SKIPPED_UPSTREAM_SKIPPED")
@@ -669,6 +670,22 @@ func newCatalog() map[Code]Entry {
 				"follow the same step on the replayed run for the log and the real duration",
 			},
 			DataKeys: []string{"replayed_from"},
+			Terminal: true,
+		},
+		{
+			Code:  STEPSkippedRunAbandoned,
+			Level: LevelStep,
+			Short: "the run was closed before this step started",
+			Explanation: "The reaper closed this run because its executor never came back: either " +
+				"repeated crashes quarantined it, or its attempt budget ran out with the work " +
+				"still unclaimed. This step was waiting its turn and never started. Nothing it " +
+				"needs failed, because a failed step closes its own dependants under the upstream " +
+				"codes; the run ended around this one.",
+			Remedy: []string{
+				"the run's own reason_code says which ending closed it: RUN_POISONED or RUN_ORPHANED_RECONCILED",
+				"the run.requeued events count the attempts that died before the reaper gave up",
+				"nothing here ran, so a fresh run of the job starts this step from the beginning",
+			},
 			Terminal: true,
 		},
 		{

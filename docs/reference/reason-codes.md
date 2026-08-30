@@ -98,6 +98,7 @@ Codes about one step of a run: why it was skipped or retried, and how it ended.
 | `STEP_RETRIES_EXHAUSTED` | failed with no retries left | yes | `attempt`, `max_attempts` |
 | `STEP_RETRY_SCHEDULED` | failed, will retry | no | `attempt`, `backoff_ms`, `next_attempt_at` |
 | `STEP_SKIPPED_REPLAY_REUSED` | reused from the replayed run, not run again | yes | `replayed_from` |
+| `STEP_SKIPPED_RUN_ABANDONED` | the run was closed before this step started | yes | - |
 | `STEP_SKIPPED_RUN_TIMED_OUT` | the run ran out of time before this step started | yes | - |
 | `STEP_SKIPPED_UPSTREAM_FAILED` | a step it needs failed | yes | `upstream` |
 | `STEP_SKIPPED_UPSTREAM_SKIPPED` | an upstream step was itself skipped | yes | `upstream` |
@@ -811,6 +812,21 @@ What to do next:
 - follow the same step on the replayed run for the log and the real duration
 
 Promised reason_data keys: replayed_from.
+
+### STEP_SKIPPED_RUN_ABANDONED
+
+the run was closed before this step started. [step level, ends the object]
+
+The reaper closed this run because its executor never came back: either
+repeated crashes quarantined it, or its attempt budget ran out with the work
+still unclaimed. This step was waiting its turn and never started. Nothing
+it needs failed, because a failed step closes its own dependants under the
+upstream codes; the run ended around this one.
+
+What to do next:
+- the run's own reason_code says which ending closed it: RUN_POISONED or RUN_ORPHANED_RECONCILED
+- the run.requeued events count the attempts that died before the reaper gave up
+- nothing here ran, so a fresh run of the job starts this step from the beginning
 
 ### STEP_SKIPPED_RUN_TIMED_OUT
 

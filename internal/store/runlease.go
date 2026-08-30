@@ -826,7 +826,12 @@ func reapToFailedTx(tx *sql.Tx, run Run, now time.Time, code reason.Code, kind, 
 	if err := failRunningStepsTx(tx, run.ID, now, true); err != nil {
 		return ReapedRun{}, err
 	}
-	if err := skipPendingStepsTx(tx, run.ID, now, string(reason.STEPSkippedUpstreamFailed)); err != nil {
+	// What is left after the lost steps closed is a step with no failed
+	// ancestor: a failure closes its own transitive dependants inside the
+	// write above, so anything still pending here was waiting its turn
+	// when the reaper ended the run around it. Calling that an upstream
+	// failure is a lie; the run's own ending is what closed it (#213).
+	if err := skipPendingStepsTx(tx, run.ID, now, string(reason.STEPSkippedRunAbandoned)); err != nil {
 		return ReapedRun{}, err
 	}
 	epoch := run.LeaseEpoch + 1
