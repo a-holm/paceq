@@ -193,15 +193,17 @@ func (d *drive) execute(ctx context.Context, e *Engine) (string, error) {
 		return "", err
 	}
 
-	finish, detail, err := e.finishReason(ctx, d.runID, timedOut)
+	verdict, detail, err := e.finishReason(ctx, d.runID, timedOut)
 	if err != nil {
 		return "", err
 	}
 	var notes []model.Notification
 	if e.Notify != nil {
-		notes = e.Notify.Plan(notifyRunFacts(detail, finish, e.Clock, e.Host), hooksFromSpec(d.job))
+		if facts, ok := notifyRunFacts(detail, verdict, e.Clock, e.Host); ok {
+			notes = e.Notify.Plan(facts, hooksFromSpec(d.job))
+		}
 	}
-	state, err := e.Store.FinishRun(ctx, d.runID, d.ref, finish, notes...)
+	state, err := e.Store.FinishRun(ctx, d.runID, d.ref, verdict.reason, notes...)
 	if errors.Is(err, store.ErrLeaseLost) {
 		return lostLease("verdict refused")
 	}
@@ -213,19 +215,28 @@ func (d *drive) execute(ctx context.Context, e *Engine) (string, error) {
 
 // notifyRunFacts picks the payload facts for one finished run out of its
 // detail: the failing step's identity, exit code and log tail ride along on
-// failures; successes carry the verdict alone. Only success and failure have
-// hooks (#29); cancelled or poisoned runs plan nothing.
-func notifyRunFacts(detail store.RunDetail, finish store.FinishReason, clk clock.Clock, host string) notify.RunFacts {
-	switch finish.Code {
-	case reason.RUNSucceeded, reason.RUNFailedStep, reason.RUNTimedOut:
+// failures; successes carry the verdict alone.
+//
+// The second result is false when the verdict has no notification, and the
+// caller has to read it. A zero RunFacts is not "nothing to send": it renders
+// as a successful run named the empty string, the store refuses that row
+// inside FinishRun's transaction, and the refusal unwinds the verdict with it
+// (#194).
+func notifyRunFacts(detail store.RunDetail, v runVerdict, clk clock.Clock, host string) (notify.RunFacts, bool) {
+	topic := v.topic
+	state := "failed"
+	switch topic {
+	case model.TopicRunSucceeded:
+		state = "succeeded"
+	case model.TopicRunFailed:
+	case noNotification:
+		return notify.RunFacts{}, false
 	default:
-		return notify.RunFacts{}
-	}
-	topic := model.TopicRunSucceeded
-	state := "succeeded"
-	if finish.Code != reason.RUNSucceeded {
-		topic = model.TopicRunFailed
-		state = "failed"
+		// An ending naming a topic this builder cannot render is a bug in
+		// finishReason, not a policy. Say so and send nothing.
+		slog.Warn("a run verdict names a notification topic nothing can render",
+			"run", detail.ID, "reason_code", v.reason.Code, "topic", topic)
+		return notify.RunFacts{}, false
 	}
 	finishedAt := detail.FinishedAt
 	if finishedAt.IsZero() {
@@ -239,7 +250,7 @@ func notifyRunFacts(detail store.RunDetail, finish store.FinishReason, clk clock
 		RunID:      detail.ID,
 		Attempt:    detail.Attempt,
 		State:      state,
-		ReasonCode: string(finish.Code),
+		ReasonCode: string(v.reason.Code),
 		StartedAt:  detail.StartedAt,
 		FinishedAt: finishedAt,
 	}
@@ -262,7 +273,7 @@ func notifyRunFacts(detail store.RunDetail, finish store.FinishReason, clk clock
 			break
 		}
 	}
-	return facts
+	return facts, true
 }
 
 // hooksFromSpec translates the frozen job's hook block into planner input;
@@ -683,32 +694,58 @@ func stepIndexOf(steps []store.Step, name string) int {
 	return 0
 }
 
-// finishReason decides why the run ended. A step failure fails the run and
-// names the step; a spent run budget ends it as TIMED_OUT; a cancelled step
-// means the run was cancelled; otherwise the run succeeded, a skip counting
-// as success. The detail comes back too: notification planning (#29) reads
-// the same rows the verdict did, so the alert can never disagree with the
-// state change it is written in.
-func (e *Engine) finishReason(ctx context.Context, runID string, timedOut bool) (store.FinishReason, store.RunDetail, error) {
+// runVerdict is one ending of a run: the reason the store records, and the
+// notification topic that ending carries. Both are named at the one place an
+// ending is decided, so nothing downstream maps a reason code back to a topic
+// and no arm anywhere has to answer for a code it does not know (#194).
+type runVerdict struct {
+	reason store.FinishReason
+	topic  string
+}
+
+// noNotification is the topic of an ending nobody subscribed to. Only success
+// and failure have hooks (#29), so a cancellation plans nothing; naming the
+// silence makes it a decision an ending states rather than one it omits.
+const noNotification = ""
+
+// finishReason decides why the run ended, and what that ending notifies. A
+// step failure fails the run and names the step; a spent run budget ends it
+// as TIMED_OUT; a cancelled step means the run was cancelled; otherwise the
+// run succeeded, a skip counting as success. The detail comes back too:
+// notification planning (#29) reads the same rows the verdict did, so the
+// alert can never disagree with the state change it is written in.
+func (e *Engine) finishReason(ctx context.Context, runID string, timedOut bool) (runVerdict, store.RunDetail, error) {
 	detail, err := e.Store.GetRun(ctx, runID)
 	if err != nil {
-		return store.FinishReason{}, store.RunDetail{}, fmt.Errorf("finish run %s: %w", runID, err)
+		return runVerdict{}, store.RunDetail{}, fmt.Errorf("finish run %s: %w", runID, err)
 	}
 	if timedOut {
-		return store.FinishReason{Code: reason.RUNTimedOut}, detail, nil
+		return runVerdict{
+			reason: store.FinishReason{Code: reason.RUNTimedOut},
+			topic:  model.TopicRunFailed,
+		}, detail, nil
 	}
 	for _, s := range detail.Steps {
 		switch model.StepState(s.State) {
 		case model.StepFailed:
-			return store.FinishReason{
-				Code: reason.RUNFailedStep,
-				Data: detailJSON(map[string]any{"step": s.Name}),
+			return runVerdict{
+				reason: store.FinishReason{
+					Code: reason.RUNFailedStep,
+					Data: detailJSON(map[string]any{"step": s.Name}),
+				},
+				topic: model.TopicRunFailed,
 			}, detail, nil
 		case model.StepCancelled:
-			return store.FinishReason{Code: reason.RUNCancelledManual}, detail, nil
+			return runVerdict{
+				reason: store.FinishReason{Code: reason.RUNCancelledManual},
+				topic:  noNotification,
+			}, detail, nil
 		}
 	}
-	return store.FinishReason{Code: reason.RUNSucceeded}, detail, nil
+	return runVerdict{
+		reason: store.FinishReason{Code: reason.RUNSucceeded},
+		topic:  model.TopicRunSucceeded,
+	}, detail, nil
 }
 
 // verdictFor translates what the runner observed into the step machine's
