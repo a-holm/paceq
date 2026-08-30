@@ -65,6 +65,13 @@ func admitFire(n int) time.Time {
 	return base.Add(time.Duration(n) * time.Minute)
 }
 
+// admitRunKey is the dedup key of the n-th tick of a test schedule. A job
+// keyed from: run_key derives its concurrency key from this exact text, so
+// both ends of such a test read the key from one function.
+func admitRunKey(sched ScheduleRow, n int) string {
+	return fmt.Sprintf("%s/nightly:%s", sched.JobName, admitFire(n).Format(time.RFC3339))
+}
+
 // admitTick materialises one fire-time through the same door the scheduler
 // loop uses. Every call gets its own fire-time, because the UNIQUE gate on
 // (source_kind, source_name, scheduled_for) is doing its job.
@@ -75,7 +82,7 @@ func admitTick(t *testing.T, s *Store, sched ScheduleRow, n int) TickResult {
 		Schedule:       sched,
 		ScheduledFor:   admitFire(n),
 		Outcome:        OutcomeTriggered,
-		RunKey:         fmt.Sprintf("%s/nightly:%s", sched.JobName, admitFire(n).Format(time.RFC3339)),
+		RunKey:         admitRunKey(sched, n),
 		NextTickAt:     time.Now().Add(2 * time.Minute),
 		UpdateProgress: true,
 		Actor:          "scheduler",

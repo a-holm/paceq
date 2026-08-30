@@ -36,9 +36,10 @@ import (
 // concurrency_key.go (M4-06, #17) is the second, same-shaped exception: its
 // keyed start has to flip a keyless deferred queued run to running in the
 // same UPDATE that atomically restores its concurrency_key, guarded by the
-// NOT EXISTS active-holder check, or the admit and the key restore split into
-// a read-then-write window exactly like the claim's. The partial unique index
-// stands behind every writer this statement does not cover. Its queued rows
+// NOT EXISTS active-holder check and the job's max_concurrent, or the admit
+// and the key restore split into a read-then-write window exactly like the
+// claim's. The partial unique index stands behind the key half for every
+// writer this statement does not cover. Its queued rows
 // hold no lease, so there is no token to fence with; the claim mints the
 // epoch, as the batch claim does (the nolint:fencing marker is required by
 // the fencing test).

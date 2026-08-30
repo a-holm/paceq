@@ -22,10 +22,11 @@ package store
 //     keyless-but-keyed-wanting row can never flip to running through the
 //     ordinary queue path. The claim pass instead tries a single guarded
 //     UPDATE per due deferral: set the key and start the run in one
-//     statement, with NOT EXISTS refusing any other active holder of the key.
-//     The index backs the same rule for every other writer. If the key is
-//     still held the row simply stays deferred and is retried next pass;
-//     correctness never depended on the wake that released it.
+//     statement, with NOT EXISTS refusing any other active holder of the key
+//     and a count refusing a job already at its max_concurrent. The index
+//     backs the key half for every other writer. If the key is still held, or
+//     the job is full, the row simply stays deferred and is retried next
+//     pass; correctness never depended on the wake that released it.
 //   - Convergence needs no bus. The ticker alone re-attempts every due
 //     deferral on each claim cycle; notify.Bus wakes are latency reductions,
 //     not dependencies. That is the same standing rule the rest of the write
@@ -176,11 +177,20 @@ ORDER BY scheduled_for, created_at, id
 LIMIT ?`
 
 // keyedStartSQL is the keyed start (#17), the only exit a keyless deferral
-// has. One statement gives the row its key back AND starts it, and the NOT
-// EXISTS guard refuses any other active holder of that key: the same atomic
-// decision shape as the step claim predicate, with the partial unique index
-// standing behind it for every writer this statement does not cover. A row
-// this statement does not touch stays exactly as it was, deferred and whole.
+// has. One statement gives the row its key back AND starts it, guarded by
+// both facts a start turns on: the NOT EXISTS refuses any other active holder
+// of the key, and the count refuses a job already running its max_concurrent
+// (#199). Same atomic decision shape as the step claim predicate, with the
+// partial unique index standing behind the key half for every writer this
+// statement does not cover. A row this statement does not touch stays exactly
+// as it was, deferred and whole.
+//
+// The ceiling is tested here rather than in the driver because the rows ARE
+// the occupancy, and reading them anywhere but inside the write is a number
+// that can have moved by the time it is used. Inside this transaction the
+// count already includes what the ordinary claim path started moments ago and
+// what earlier iterations of this same pass started, which is precisely what
+// a driver-side tally has to be told and this does not.
 //
 // nolint:fencing: queued rows hold no lease, so there is no token to fence
 // with; the claim itself mints the epoch, exactly as the batch claim does.
@@ -204,6 +214,10 @@ WHERE id = ?4
 		SELECT 1 FROM runs other
 		WHERE other.concurrency_key = ?5
 			AND other.state IN ('queued', 'running'))
+	AND (SELECT COUNT(*) FROM runs busy
+		WHERE busy.job_name = runs.job_name
+			AND busy.state = 'running')
+		< (SELECT max_concurrent FROM jobs WHERE jobs.name = runs.job_name)
 RETURNING id, job_name, job_version_id, run_key, attempt, lease_epoch, params_json`
 
 // keyDeferredOnlyClause mirrors the Only filter of ClaimSpec for deferrals:
@@ -216,9 +230,14 @@ func keyDeferredOnlyClause(only []string) string {
 }
 
 // claimKeyDeferredTx starts due key deferrals while the caller's budget lasts.
-// Each is one guarded keyed start; a start that loses (the key is still held)
-// leaves its row deferred for the next pass, which is the whole release model:
-// correctness never depended on the wake, only on the next look.
+// Each is one guarded keyed start; a start that loses, because the key is
+// still held or the job is at its ceiling, leaves its row deferred for the
+// next pass, which is the whole release model: correctness never depended on
+// the wake, only on the next look.
+//
+// The loop keeps no tally of what it has started. It does not need one: each
+// start is written before the next candidate is tried, and the guard counts
+// the rows.
 func claimKeyDeferredTx(tx *sql.Tx, spec ClaimSpec, now, expires time.Time,
 	budget int, out *[]ClaimedRun,
 ) error {

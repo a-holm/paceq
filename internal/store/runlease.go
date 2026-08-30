@@ -248,7 +248,9 @@ func claimTx(tx *sql.Tx, spec ClaimSpec, now, expires time.Time, limit int, out 
 
 	// Key deferrals come last, within whatever budget the ordinary queue
 	// left over (#17): they already waited a backoff, and the order stays
-	// deterministic for goldens and crash replays.
+	// deterministic for goldens and crash replays. Coming last is also what
+	// makes their own ceiling guard true (#199): the rows this path just
+	// flipped to running are written, so the keyed start counts them.
 	if remaining := limit - len(*out); remaining > 0 {
 		if err := claimKeyDeferredTx(tx, spec, now, expires, remaining, out); err != nil {
 			return err

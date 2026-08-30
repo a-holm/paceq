@@ -30,9 +30,17 @@ import (
 func concApply(t *testing.T, s *Store, name string, key *spec.ConcurrencyKey, onConflict string) {
 	t.Helper()
 
+	concApplyLimit(t, s, name, key, onConflict, 4)
+}
+
+// concApplyLimit is concApply with the job's ceiling spelled out, for the
+// tests that are about the ceiling rather than about the key.
+func concApplyLimit(t *testing.T, s *Store, name string, key *spec.ConcurrencyKey, onConflict string, limit int) {
+	t.Helper()
+
 	job := &spec.Job{
 		Name:           name,
-		MaxConcurrent:  4,
+		MaxConcurrent:  limit,
 		Steps:          []spec.Step{{Name: "build", Run: []string{"/bin/true"}}},
 		ConcurrencyKey: key,
 	}
