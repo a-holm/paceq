@@ -232,9 +232,41 @@ func applyToStore(ctx context.Context, env Env, g *globals, loaded []loadedSpec)
 	}
 	results, err := s.ApplyJobs(ctx, out)
 	if err != nil {
+		var taken *store.SensorNameTakenError
+		if errors.As(err, &taken) {
+			return nil, sensorNameTakenError(loaded, taken)
+		}
 		return nil, internalError("could not record the job specs", err)
 	}
 	return results, nil
+}
+
+// sensorNameTakenError reports a sensor name the database already holds under
+// another job. It is the same rule refuseSensorNameConflicts applies between
+// two files of one batch, read against the rows instead, so it carries the
+// same diagnostic code and the same exit: an operator who meets the conflict
+// in either order reads one explanation.
+func sensorNameTakenError(loaded []loadedSpec, taken *store.SensorNameTakenError) *Error {
+	where := "the job " + taken.Taker
+	for _, item := range loaded {
+		if item.input.JobName == taken.Taker {
+			where = item.display
+			break
+		}
+	}
+	return &Error{
+		code: ExitValidation,
+		what: fmt.Sprintf("%s: the sensor %s is already owned by the job %s",
+			spec.CodeSensorNameTaken, taken.Sensor, taken.Owner),
+		where: where,
+		err:   taken,
+		next: []string{
+			"a sensor name is the primary key its row lives under across every job, so two jobs can never both own it",
+			"rename the sensor in one of the two jobs, or take it out of " + taken.Owner + " first",
+			"nothing was written: the batch is one transaction",
+			"paceq error " + spec.CodeSensorNameTaken + "  explains that code in full",
+		},
+	}
 }
 
 func writeApplyReport(out *ui, results []store.JobApplyResult, loaded []loadedSpec, failed []failedSpec) error {
