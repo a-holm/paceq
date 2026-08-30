@@ -171,6 +171,48 @@ func TestWithoutAPlanTheRetryIsImmediatelyRunnable(t *testing.T) {
 	}
 }
 
+// A caller's veto ends the step even with budget on the row (#205). The
+// budget answers "how many attempts is this failure worth"; it cannot answer
+// "may this kind of ending be retried at all", and a kill by the run's own
+// deadline is the ending where the two differ.
+func TestAVetoedOutcomeEndsTheStepWithBudgetLeftOnTheRow(t *testing.T) {
+	ctx := context.Background()
+	s, clk := coreStore(t)
+	runID := aRetryingRun(t, s)
+	if _, _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: testOwner}); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := s.StartStep(ctx, runID, "build", store.LeaseRef{Owner: testOwner, Epoch: 1}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	before := mustStep(t, ctx, s, runID, "build")
+	if before.Attempt >= before.MaxAttempts {
+		t.Fatalf("attempt %d of %d leaves no budget to veto", before.Attempt, before.MaxAttempts)
+	}
+
+	err := s.RecordStepOutcome(ctx, runID, "build", store.StepOutcome{
+		Event:            "step_failed",
+		ReasonCode:       reason.STEPFailedTimeout,
+		FinishedAt:       clk.Now(),
+		NoFurtherAttempt: true,
+	}, store.LeaseRef{Owner: testOwner, Epoch: 1})
+	if err != nil {
+		t.Fatalf("RecordStepOutcome: %v", err)
+	}
+
+	step := mustStep(t, ctx, s, runID, "build")
+	if step.State != "failed" {
+		t.Fatalf("state = %s, want failed: the veto outranks the budget", step.State)
+	}
+	if step.ReasonCode != string(reason.STEPFailedTimeout) {
+		t.Errorf("reason_code = %q, want %q", step.ReasonCode, reason.STEPFailedTimeout)
+	}
+	if _, waiting, err := s.NextRetryWait(ctx, runID); err != nil || waiting {
+		t.Errorf("NextRetryWait = waiting(%v) err(%v), want nothing parked", waiting, err)
+	}
+	testutil.AssertNoUnknownReasons(t, ctx, s)
+}
+
 // A run with no parked steps reports no wait at all, which is what lets the
 // executor stop instead of sleeping forever over nothing.
 func TestNextRetryWaitWithNothingParkedReportsNothing(t *testing.T) {

@@ -275,6 +275,18 @@ type StepOutcome struct {
 	// the transition itself; the machine decides from the row.
 	Retry *RetryPlan
 
+	// NoFurtherAttempt is the caller's veto on the retry transition: this
+	// ending forecloses another attempt whatever budget the row still
+	// holds. The run's own deadline is the case it exists for. A kill by a
+	// spent run budget leaves no room for the attempt the step's policy
+	// would otherwise buy, and the veto is how the one party that knows
+	// why the attempt ended tells the one party that owns the counters.
+	//
+	// It only ever narrows: false leaves the budget on the row to decide
+	// alone, which is what a caller with no policy to consult means.
+	// Recovery and the spool committer both write verdicts without one.
+	NoFurtherAttempt bool
+
 	// Artifacts are the references the step published through its output
 	// file (#13). They are written inside this verdict's transaction and
 	// only when the machine lands the step on succeeded: a failed step
@@ -294,7 +306,9 @@ type StepOutcome struct {
 // fails with attempts left goes back to pending for its next attempt: parked
 // at next_attempt_at when the caller attached a RetryPlan, runnable again at
 // once when it did not. The claim gate, not this method, decides when the
-// next attempt may start.
+// next attempt may start. A caller that knows this ending buys no further
+// attempt says so with NoFurtherAttempt, and the step ends terminal however
+// much budget the row still shows.
 //
 // The ref is the fence. A holder writes only while its token still matches;
 // recovery passes the zero ref, which is refused against any live lease. A
@@ -333,9 +347,15 @@ func applyStepOutcomeTx(tx *sql.Tx, runID, name string, out StepOutcome, finishe
 		return err
 	}
 
+	// Two inputs, one answer: the row holds the budget, and only a reader
+	// inside this transaction sees it without a race, so the budget stays
+	// the store's. The caller contributes the fact no column records,
+	// whether this kind of ending may be retried at all, as a veto that
+	// can only narrow. failRunningStepsTx computes the same conjunction
+	// for the reaper.
 	guards := model.Guards{
 		ReasonCode:   string(out.ReasonCode),
-		AttemptsLeft: step.Attempt < step.MaxAttempts,
+		AttemptsLeft: !out.NoFurtherAttempt && step.Attempt < step.MaxAttempts,
 	}
 	state, effects, err := model.NextStepState(cur, model.Event(out.Event), guards)
 	if err != nil {

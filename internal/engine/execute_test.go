@@ -17,6 +17,7 @@ import (
 	"github.com/a-holm/paceq/internal/clock"
 	"github.com/a-holm/paceq/internal/engine"
 	"github.com/a-holm/paceq/internal/logsink"
+	"github.com/a-holm/paceq/internal/model"
 	"github.com/a-holm/paceq/internal/reason"
 	"github.com/a-holm/paceq/internal/store"
 )
@@ -459,6 +460,88 @@ func TestExecuteRunARunTimeoutStopsSchedulingWork(t *testing.T) {
 	}
 	if scope["scope"] != "run" {
 		t.Errorf("the kill is attributed to %v, want the run budget", scope["scope"])
+	}
+	violations, err := f.Store.Fsck(ctx)
+	if err != nil {
+		t.Fatalf("fsck: %v", err)
+	}
+	if len(violations) != 0 {
+		t.Errorf("fsck found violations after a run timeout: %+v", violations)
+	}
+}
+
+// TestExecuteRunARunTimeoutOverAStepWithRetriesFailsTheRun is the retry
+// carrying sibling of the test above (#205). The spec differs in one member:
+// the step carries a retry block, which is the ordinary shape for anything
+// that talks to a network. The run's own budget is spent either way, so both
+// runs must end the same: failed, timed out, over a step the run budget
+// killed.
+func TestExecuteRunARunTimeoutOverAStepWithRetriesFailsTheRun(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 9, 17, 3, 0, 0, 0, time.UTC)
+	f := newFixtureWithClock(t, clock.NewFake(now))
+	f.wireNotify(now)
+
+	if _, _, err := f.Store.UpsertJobVersion(ctx, store.JobVersionInput{
+		JobName:  "slowjob",
+		SpecHash: "sha256:slowjob-retry",
+		SpecJSON: fmt.Sprintf(`{"name":"slowjob","schema":"paceq.job.v1",
+"notify":{"on_failure":["vakt"]},
+"steps":[{"name":"hangs","run":[%s],"shell":false,"retry":{"max":2}}],
+"timeout_ms":250}`, runArgv(f.fakeCmd(t), "sleep 30s")),
+	}); err != nil {
+		t.Fatalf("record the slow job: %v", err)
+	}
+	out, err := f.Store.MaterializeManualTrigger(ctx, store.ManualTriggerInput{JobName: "slowjob"})
+	if err != nil {
+		t.Fatalf("materialise: %v", err)
+	}
+
+	if state := f.mustFinish(t, out.Run.ID); state != "failed" {
+		t.Fatalf("run ended %s, want failed", state)
+	}
+
+	detail, err := f.Store.GetRun(ctx, out.Run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if detail.ReasonCode != string(reason.RUNTimedOut) {
+		t.Errorf("reason_code = %q, want %q", detail.ReasonCode, reason.RUNTimedOut)
+	}
+	step := detail.Steps[0]
+	if step.State != "failed" || step.ReasonCode != string(reason.STEPFailedTimeout) {
+		t.Errorf("the running step = %s/%s, want failed/%s: a retry block cannot"+
+			" buy an attempt the run budget has no room for",
+			step.State, step.ReasonCode, reason.STEPFailedTimeout)
+	}
+	var scope map[string]any
+	if err := json.Unmarshal([]byte(step.ReasonData), &scope); err != nil {
+		t.Fatalf("step reason_data is not an object: %q", step.ReasonData)
+	}
+	if scope["scope"] != "run" {
+		t.Errorf("the kill is attributed to %v, want the run budget", scope["scope"])
+	}
+	// The job has one step and no needs edges, so nothing here has an
+	// upstream to fail: a skip on that code would be a phantom.
+	if step.ReasonCode == string(reason.STEPSkippedUpstreamFailed) {
+		t.Errorf("the step blames an upstream it does not have")
+	}
+
+	// The outbox row rides in the verdict's own transaction, so it cannot
+	// be allowed to say one thing while the row says another.
+	rows, err := f.Store.ListNotifications(ctx, store.NotificationFilter{})
+	if err != nil {
+		t.Fatalf("list notifications: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("a timed out run left %d outbox rows, want exactly 1:\n%+v", len(rows), rows)
+	}
+	if rows[0].Topic != model.TopicRunFailed || detail.State != "failed" {
+		t.Errorf("the outbox says %q while the run row says %q", rows[0].Topic, detail.State)
+	}
+
+	if detail.State == "succeeded" && detail.ReasonCode != string(reason.RUNSucceeded) {
+		t.Errorf("a succeeded run carries %q", detail.ReasonCode)
 	}
 	violations, err := f.Store.Fsck(ctx)
 	if err != nil {

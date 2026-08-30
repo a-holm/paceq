@@ -511,6 +511,12 @@ func (e *Engine) runStep(ctx context.Context, d *drive, name string, h *heldRun)
 				"scope":      "run",
 				"timeout_ms": timeout.Milliseconds(),
 			})
+			// The step's own budget may still show attempts left, and
+			// the row cannot see that none of them fits inside a run
+			// budget that is already spent. Saying so is what keeps
+			// the verdict terminal instead of parking the step for an
+			// attempt this run will never make (#205).
+			outcome.NoFurtherAttempt = true
 			break
 		}
 		// A failed attempt under a retry budget either buys another
