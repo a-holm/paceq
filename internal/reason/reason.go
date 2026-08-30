@@ -5,9 +5,16 @@ import (
 	"sort"
 )
 
-// Level is which object in the observability model the code explains. The four
-// levels are the four tables a reason code can land in: ticks, triggers, runs
-// and steps.
+// Level is which object in the observability model the code explains: the tick
+// that was evaluated, the trigger that was accepted or refused, the run, the
+// step, or the lease. It is not the table the code is stored in.
+//
+// A code names the object it is about, and the row it lands on is whichever
+// row recorded the decision. Two run level codes prove the difference:
+// RUN_REJECTED_DISK_LOW is about a run the free-space floor refused, and lives
+// on the tick and the trigger that refused it, because the hold means no run
+// row is ever created; RUN_INTERRUPTED_SHUTDOWN is about a run a clean daemon
+// stop cut short, and lives on the step rows the drain handed back.
 type Level string
 
 const (
