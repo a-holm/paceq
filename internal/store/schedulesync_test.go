@@ -309,7 +309,10 @@ func TestSchedulePlanReadsEveryDefinitionField(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.what, func(t *testing.T) {
-			plan := buildSchedulePlan([]spec.Schedule{c.schedule}, c.jobShadow, existing)
+			plan := buildSchedulePlan(JobVersionInput{
+				Schedules: []spec.Schedule{c.schedule},
+				Shadow:    c.jobShadow,
+			}, existing)
 			if len(plan) != 1 {
 				t.Fatalf("the plan holds %d items, want 1", len(plan))
 			}

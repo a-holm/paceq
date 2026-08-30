@@ -120,13 +120,15 @@ FROM schedules WHERE job_name = ?`, job)
 }
 
 // buildSchedulePlan compares what the job wants against what the table holds
-// and settles on the additions, replacements, no-ops and removals.
-func buildSchedulePlan(schedules []spec.Schedule, jobShadow bool, existing map[string]string) []schedulePlanItem {
+// and settles on the additions, replacements, no-ops and removals. It takes the
+// whole declaration rather than the schedules alone, because a job-level flag
+// belongs to every row it owns and apply itself has no business reading one.
+func buildSchedulePlan(in JobVersionInput, existing map[string]string) []schedulePlanItem {
 	var plan []schedulePlanItem
-	want := make(map[string]bool, len(schedules))
-	for _, s := range schedules {
+	want := make(map[string]bool, len(in.Schedules))
+	for _, s := range in.Schedules {
 		want[s.Name] = true
-		def := scheduleDefOf(s, jobShadow)
+		def := scheduleDefOf(s, in.Shadow)
 		last, wasThere := existing[s.Name]
 		switch {
 		case !wasThere:
