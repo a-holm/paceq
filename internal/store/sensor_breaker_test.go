@@ -105,6 +105,23 @@ func TestSensorHealthSurfacesSeeAHardDownSensor(t *testing.T) {
 	if errs[sensorJob] != 1 {
 		t.Errorf("`paceq status` counts %v sensor deviations, want one for %s", errs, sensorJob)
 	}
+
+	// The Prometheus gauge, and with it the shipped alert rule, reads the same
+	// column: pinned at zero it could never fire.
+	states, err := s.MetricsSensorStates(context.Background())
+	if err != nil {
+		t.Fatalf("MetricsSensorStates: %v", err)
+	}
+	gauge := int64(-1)
+	for _, st := range states {
+		if st.Name == sensorName {
+			gauge = st.ConsecutiveFailures
+		}
+	}
+	if gauge != int64(model.SensorBreakerThreshold) {
+		t.Errorf("pulseq_sensor_consecutive_failures reads %d, want %d",
+			gauge, model.SensorBreakerThreshold)
+	}
 }
 
 // TestSensorBreakerCountSurvivesARestart is the rearm loop. The count is
