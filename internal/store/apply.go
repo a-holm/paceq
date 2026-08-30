@@ -101,7 +101,7 @@ func (s *Store) ApplyJobs(ctx context.Context, inputs []JobVersionInput) ([]JobA
 		if err != nil {
 			return nil, err
 		}
-		schedulePlan := buildSchedulePlan(inputs[i].Schedules, known)
+		schedulePlan := buildSchedulePlan(inputs[i].Schedules, inputs[i].Shadow, known)
 		rowIDs := make([]string, len(schedulePlan))
 		for j := range schedulePlan {
 			if rowIDs[j], err = id.New(now); err != nil {

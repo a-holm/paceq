@@ -38,14 +38,18 @@ type scheduleDef struct {
 // the schema allows has no spelling in a job file.
 const scheduleKindCron = "cron"
 
-// scheduleDefOf reads one declaration into the columns it decides.
-func scheduleDefOf(s spec.Schedule) scheduleDef {
+// scheduleDefOf reads one declaration into the columns it decides. jobShadow is
+// the job's top-level shadow flag: the spec says a job-level shadow shadows all
+// of its schedules and the per-schedule flag shadows one, so the two compose by
+// OR and the resolved answer is what the row carries (#203). Every reader of
+// shadow, the tick path included, reads the row and nothing else.
+func scheduleDefOf(s spec.Schedule, jobShadow bool) scheduleDef {
 	def := scheduleDef{
 		Kind:     scheduleKindCron,
 		Expr:     s.Cron,
 		Timezone: s.Timezone,
 		Overlap:  s.Overlap,
-		Shadow:   s.Shadow,
+		Shadow:   jobShadow || s.Shadow,
 	}
 	// FromIR leaves both keys out at their default, so a document written
 	// before the key existed reads back as the default rather than as empty.
@@ -117,12 +121,12 @@ FROM schedules WHERE job_name = ?`, job)
 
 // buildSchedulePlan compares what the job wants against what the table holds
 // and settles on the additions, replacements, no-ops and removals.
-func buildSchedulePlan(schedules []spec.Schedule, existing map[string]string) []schedulePlanItem {
+func buildSchedulePlan(schedules []spec.Schedule, jobShadow bool, existing map[string]string) []schedulePlanItem {
 	var plan []schedulePlanItem
 	want := make(map[string]bool, len(schedules))
 	for _, s := range schedules {
 		want[s.Name] = true
-		def := scheduleDefOf(s)
+		def := scheduleDefOf(s, jobShadow)
 		last, wasThere := existing[s.Name]
 		switch {
 		case !wasThere:
