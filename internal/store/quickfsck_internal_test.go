@@ -88,3 +88,15 @@ func TestQuickFsckNamesActiveRunOverflow(t *testing.T) {
 		t.Errorf("violations %+v, want an I12 on %s", violations, subject)
 	}
 }
+
+// TestQuickFsckChecksAreCatalogued keeps the startup subset a subset. Doctor
+// counts this list and the boot gate grades what it finds through the
+// catalogue, so an entry the catalogue does not know would be counted and
+// then graded Serious by the unknown-check fallback.
+func TestQuickFsckChecksAreCatalogued(t *testing.T) {
+	for _, id := range QuickFsckChecks {
+		if _, ok := invariantByID(id); !ok {
+			t.Errorf("the quick sweep claims to check %q, which the catalogue does not describe", id)
+		}
+	}
+}
