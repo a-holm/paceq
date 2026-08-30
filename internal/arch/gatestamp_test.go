@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/a-holm/paceq/internal/testutil"
 )
 
 // The gate stamp mechanism (#176) lets `make ci` skip a target that this exact
@@ -149,10 +151,14 @@ func (w *stampWorld) write(name, content string) {
 }
 
 // command builds a command in the working tree with the stubs first on PATH.
+// The environment goes through testutil.GitEnv because this world has its own
+// repository: under a git hook the ambient GIT_DIR would send every git command
+// below to the repository being pushed instead.
 func (w *stampWorld) command(name string, args ...string) *exec.Cmd {
 	cmd := exec.Command(name, args...)
 	cmd.Dir = w.dir
-	cmd.Env = append(os.Environ(), "PATH="+w.bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	cmd.Env = testutil.GitEnv(w.t,
+		append(os.Environ(), "PATH="+w.bin+string(os.PathListSeparator)+os.Getenv("PATH")))
 	for k, v := range w.env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
