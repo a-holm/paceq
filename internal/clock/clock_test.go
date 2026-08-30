@@ -59,18 +59,44 @@ func TestSinceIsNeverNegativeAndGrows(t *testing.T) {
 				}
 			}
 
-			later := tc.clk.Since(mark)
-			if later <= 0 {
-				t.Fatalf("Since(Mark()) after time passed = %v, want > 0", later)
+			if d := tc.clk.Since(mark); d <= 0 {
+				t.Errorf("Since(Mark()) after time passed = %v, want > 0", d)
 			}
+			if d := tc.clk.Since(tc.clk.Mark()); d < 0 {
+				t.Errorf("Since of a mark taken just now = %v, want >= 0", d)
+			}
+		})
+	}
+}
 
+// TestSinceOrdersMarksTakenInSequence states the ordering of two marks in the
+// only form a running clock can answer. "The later mark has less elapsed than
+// the earlier one" is a claim about a single instant, and two reads of a
+// running clock never share an instant, so the claim is put over a window
+// instead: the elapsed time reported for the later mark cannot exceed the
+// growth of the earlier mark's elapsed time measured across the moment the
+// later mark was taken.
+//
+// The bound follows from Since being non-decreasing and from nothing else, so
+// delay at any of the four reads only widens the window. That is what makes it
+// safe on a loaded machine: load cannot turn the inequality around.
+func TestSinceOrdersMarksTakenInSequence(t *testing.T) {
+	for _, tc := range contractCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			first := tc.clk.Mark()
+
+			opened := tc.clk.Since(first)
 			second := tc.clk.Mark()
-			if d := tc.clk.Since(second); d < 0 {
-				t.Errorf("Since of a later mark = %v, want >= 0", d)
+			tc.pass()
+			gap := tc.clk.Since(second)
+			closed := tc.clk.Since(first)
+
+			if gap < 0 {
+				t.Errorf("Since(later mark) = %v, want >= 0", gap)
 			}
-			if tc.clk.Since(second) > later {
-				t.Errorf("Since(later mark) = %v, want <= Since(earlier mark) = %v",
-					tc.clk.Since(second), later)
+			if window := closed - opened; gap > window {
+				t.Errorf("Since(later mark) = %v, want <= the growth of Since(earlier mark) across it = %v",
+					gap, window)
 			}
 		})
 	}
