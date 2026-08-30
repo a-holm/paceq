@@ -439,12 +439,12 @@ VALUES (?, ?, ?, ?, ?, ?, 'accepted', ?)`,
 	concKey := resolvedConcurrencyKey(p.job, p.params, p.runKey)
 	result, err := tx.Exec(`INSERT INTO runs
 (id, job_name, job_version_id, trigger_id, origin, run_key, state, available_at,
- params_json, attempt, max_attempts, created_at, updated_at, concurrency_key)
-VALUES (?, ?, ?, ?, 'sensor', ?, 'queued', ?, ?, 0, 1, ?, ?, ?)
+ params_json, attempt, max_attempts, created_at, updated_at, concurrency_key, max_parallel)
+VALUES (?, ?, ?, ?, 'sensor', ?, 'queued', ?, ?, 0, 1, ?, ?, ?, ?)
 ON CONFLICT (concurrency_key) WHERE concurrency_key IS NOT NULL
 AND state IN ('queued', 'running') DO NOTHING`,
 		p.runID, p.jobName, p.versionID, p.triggerID, p.runKey, p.at, params, p.at, p.at,
-		nullIfEmpty(concKey))
+		nullIfEmpty(concKey), runMaxParallel(p.job))
 	if err != nil {
 		return false, false, fmt.Errorf("create the sensor run for %s: %w", p.runKey, err)
 	}
@@ -477,11 +477,11 @@ AND state IN ('queued', 'running') DO NOTHING`,
 		if _, err := tx.Exec(`INSERT INTO runs
 (id, job_name, job_version_id, trigger_id, origin, run_key, state, available_at,
  defer_reason, reason_code, reason_data, params_json, attempt, max_attempts,
- created_at, updated_at, concurrency_key)
-VALUES (?, ?, ?, ?, 'sensor', ?, 'queued', ?, ?, ?, ?, ?, 0, 1, ?, ?, NULL)`,
+ created_at, updated_at, concurrency_key, max_parallel)
+VALUES (?, ?, ?, ?, 'sensor', ?, 'queued', ?, ?, ?, ?, ?, 0, 1, ?, ?, NULL, ?)`,
 			p.runID, p.jobName, p.versionID, p.triggerID, p.runKey, availableAt,
 			model.DeferReasonConcurrencyKey, string(reason.RUNDeferredConcurrencyKey),
-			eventData, params, p.at, p.at); err != nil {
+			eventData, params, p.at, p.at, runMaxParallel(p.job)); err != nil {
 			return false, false, fmt.Errorf("create the deferred sensor run for %s: %w", p.runKey, err)
 		}
 		eventKind = "run.deferred"

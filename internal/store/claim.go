@@ -162,39 +162,3 @@ func (s *Store) ClaimNextStep(ctx context.Context, runID string, ref LeaseRef) (
 	}
 	return out, nil
 }
-
-// SetRunMaxParallel sets the number of steps of one run that may run at once.
-// The claim predicate reads the value from the run row, so changing it here
-// changes the gate closed to the next claims in the same transaction. The
-// method exists so tests and the materialisation wiring can steer a specific
-// run; it refuses a run that is not held at the caller's fencing token, the
-// same rule as every other holder's write.
-func (s *Store) SetRunMaxParallel(ctx context.Context, runID string, ref LeaseRef, n int) error {
-	if n < 1 {
-		return errors.New("set the parallel cap of run: the cap must be at least one")
-	}
-	if !ref.held() {
-		return fmt.Errorf("set the parallel cap of run %s: no holder was named", runID)
-	}
-	now := s.clk.Now().UTC()
-	err := s.withTx(ctx, func(tx *sql.Tx) error {
-		result, err := tx.Exec(`UPDATE runs SET max_parallel = ?, updated_at = ?
-WHERE id = ? AND lease_owner = ? AND lease_epoch = ?`,
-			n, now.UnixMilli(), runID, ref.Owner, ref.Epoch)
-		if err != nil {
-			return fmt.Errorf("set the parallel cap of run %s: %w", runID, err)
-		}
-		written, err := result.RowsAffected()
-		if err != nil {
-			return fmt.Errorf("set the parallel cap of run %s: %w", runID, err)
-		}
-		if written == 0 {
-			return fmt.Errorf("set the parallel cap of run %s: %w", runID, ErrRunNotHeld)
-		}
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-	return nil
-}

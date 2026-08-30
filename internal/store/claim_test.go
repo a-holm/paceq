@@ -29,9 +29,11 @@ const dagDiamondSpec = `{"max_concurrent":1,"name":"diamond","schema":"paceq.job
 	`{"name":"notify","needs":["load-warehouse","load-cache"],"run":["/bin/true"],"shell":false}` +
 	`]}`
 
-// threeRootsSpec has three steps with no edges, all immediately claimable, so
-// a test can fill a parallel cap and prove the gate.
-const threeRootsSpec = `{"max_concurrent":1,"name":"roots","schema":"paceq.job.v1","timeout_ms":3600000,` +
+// threeRootsSpec has three steps with no edges, all immediately claimable,
+// under a declared budget of two, so a test can fill the cap and prove the
+// gate. The budget comes from the spec, the way every run gets one.
+const threeRootsSpec = `{"max_concurrent":1,"max_parallel":2,"name":"roots","schema":"paceq.job.v1",` +
+	`"timeout_ms":3600000,` +
 	`"steps":[` +
 	`{"name":"one","run":["/bin/true"],"shell":false},` +
 	`{"name":"two","run":["/bin/true"],"shell":false},` +
@@ -264,10 +266,10 @@ func TestResultWriteRefusedOnALostLease(t *testing.T) {
 	}
 }
 
-// TestParallelCapIsEnforcedByTheClaim: max_parallel on the run row is the
+// TestParallelCapIsEnforcedByTheClaim: the run row's max_parallel is the
 // COUNT gate inside the claim, so the database, not the executor, is what
-// keeps a run under its cap. Fill the cap and the next claim admits nothing;
-// free a slot and it admits again.
+// keeps a run under the budget its job declared. Fill the cap and the next
+// claim admits nothing; free a slot and it admits again.
 func TestParallelCapIsEnforcedByTheClaim(t *testing.T) {
 	s, _ := coreStore(t)
 	ctx := context.Background()
@@ -281,10 +283,6 @@ func TestParallelCapIsEnforcedByTheClaim(t *testing.T) {
 	if err != nil || state != "running" {
 		t.Fatalf("claim the roots run: %v", err)
 	}
-	if err := s.SetRunMaxParallel(ctx, runID, store.LeaseRef{Owner: testOwner, Epoch: epoch}, 2); err != nil {
-		t.Fatalf("set the parallel cap: %v", err)
-	}
-
 	// two roots fit; the third hits the cap.
 	if c, err := claimSeed(t, s, runID, epoch); err != nil || c == nil {
 		t.Fatalf("claim under the cap = %v %v", c, err)
@@ -340,11 +338,13 @@ func TestClaimWritesOneStartedEvent(t *testing.T) {
 	}
 }
 
-// genRootStepsSpec builds a job whose steps are all independent roots, so a
-// test can flood a run with parallel claims.
+// genRootStepsSpec builds a job whose steps are all independent roots under a
+// budget wide enough for every one of them, so a test can flood a run with
+// parallel claims.
 func genRootStepsSpec(n int) string {
 	var b strings.Builder
-	b.WriteString(`{"max_concurrent":1,"name":"roots","schema":"paceq.job.v1","timeout_ms":3600000,"steps":[`)
+	fmt.Fprintf(&b, `{"max_concurrent":1,"max_parallel":%d,"name":"roots",`, n)
+	b.WriteString(`"schema":"paceq.job.v1","timeout_ms":3600000,"steps":[`)
 	for i := 0; i < n; i++ {
 		if i > 0 {
 			b.WriteString(",")
@@ -375,12 +375,6 @@ func TestConcurrentClaimsPartitionTheStepsExactlyOnce(t *testing.T) {
 		t.Fatalf("claim the run: %v", err)
 	}
 	ref := store.LeaseRef{Owner: testOwner, Epoch: epoch}
-	// Lift the parallel cap off so the full set is claimable: this test
-	// partitions the graph, it does not exercise the cap (TestParallelCap
-	// does).
-	if err := s.SetRunMaxParallel(ctx, runID, ref, roots); err != nil {
-		t.Fatalf("raise the parallel cap: %v", err)
-	}
 
 	const workers = 32
 	start := make(chan struct{})

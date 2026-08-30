@@ -833,14 +833,14 @@ ON CONFLICT(source_id, epoch, run_key) DO NOTHING`,
 	result, err := tx.Exec(`INSERT INTO runs
 (id, job_name, job_version_id, trigger_id, origin, run_key, state, available_at,
  defer_reason, reason_code, reason_data, scheduled_for, params_json, attempt,
- max_attempts, created_at, updated_at, concurrency_key)
-VALUES (?, ?, ?, ?, 'schedule', ?, 'queued', ?, ?, ?, ?, ?, '{}', 0, 1, ?, ?, ?)
+ max_attempts, created_at, updated_at, concurrency_key, max_parallel)
+VALUES (?, ?, ?, ?, 'schedule', ?, 'queued', ?, ?, ?, ?, ?, '{}', 0, 1, ?, ?, ?, ?)
 ON CONFLICT (concurrency_key) WHERE concurrency_key IS NOT NULL
 AND state IN ('queued', 'running') DO NOTHING`,
 		run.ID, run.JobName, run.JobVersionID, nullIfEmpty(run.TriggerID), in.RunKey,
 		availableAt.UnixMilli(), nullIfEmpty(run.DeferReason),
 		nullIfEmpty(run.ReasonCode), nullIfEmpty(run.ReasonData),
-		fireAt.UnixMilli(), at, at, nullIfEmpty(concKey))
+		fireAt.UnixMilli(), at, at, nullIfEmpty(concKey), runMaxParallel(job))
 	if err != nil {
 		return Run{}, fmt.Errorf("create the run of schedule %s: %w", sourceName, err)
 	}
@@ -884,12 +884,12 @@ AND state IN ('queued', 'running') DO NOTHING`,
 		if _, err := tx.Exec(`INSERT INTO runs
 (id, job_name, job_version_id, trigger_id, origin, run_key, state, available_at,
  defer_reason, reason_code, reason_data, scheduled_for, params_json, attempt,
- max_attempts, created_at, updated_at, concurrency_key)
-VALUES (?, ?, ?, ?, 'schedule', ?, 'queued', ?, ?, ?, ?, ?, '{}', 0, 1, ?, ?, ?)`,
+ max_attempts, created_at, updated_at, concurrency_key, max_parallel)
+VALUES (?, ?, ?, ?, 'schedule', ?, 'queued', ?, ?, ?, ?, ?, '{}', 0, 1, ?, ?, ?, ?)`,
 			run.ID, run.JobName, run.JobVersionID, nullIfEmpty(run.TriggerID), in.RunKey,
 			availableAt.UnixMilli(), nullIfEmpty(run.DeferReason),
 			nullIfEmpty(run.ReasonCode), nullIfEmpty(run.ReasonData),
-			fireAt.UnixMilli(), at, at, nil); err != nil {
+			fireAt.UnixMilli(), at, at, nil, runMaxParallel(job)); err != nil {
 			return Run{}, fmt.Errorf("create the deferred run of schedule %s: %w", sourceName, err)
 		}
 	}
