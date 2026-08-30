@@ -475,6 +475,39 @@ func TestRunParentCancelSignalsTheGroup(t *testing.T) {
 	}
 }
 
+// TestRunParentCancelIsSignalledAndCarriesTheCancelFact covers the fact the
+// verdict table reads (#204): why an attempt was signalled is the sender's
+// knowledge, and the runner is the sender. Outcome alone cannot say it, since
+// a job killed by an operator and a job killed by its own crash both land on
+// Signalled; only reason_data separates them, and the engine turns that one
+// key into STEP_CANCELLED.
+func TestRunParentCancelIsSignalledAndCarriesTheCancelFact(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	s := baseSpec(t, fakecmd(t), "ignore-term", "5m")
+	s.Timeout = time.Hour // the deadline must not be what ends this
+	s.KillGrace = 200 * time.Millisecond
+
+	done := make(chan Result, 1)
+	go func() {
+		res, _ := Run(ctx, s)
+		done <- res
+	}()
+
+	time.Sleep(300 * time.Millisecond) // let the child reach its signal handler
+	cancel()
+	select {
+	case res := <-done:
+		if res.Outcome != Signalled {
+			t.Fatalf("outcome = %v, want Signalled: a cancelled run is not a deadline", res.Outcome)
+		}
+		if res.ReasonData["cancelled"] != true {
+			t.Errorf("reason_data cancelled = %#v, want true", res.ReasonData["cancelled"])
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("Run did not return after parent cancel")
+	}
+}
+
 func TestRunEnvironmentIsExactlyTheContract(t *testing.T) {
 	t.Setenv("DAEMON_SECRET_TOKEN", "must-not-leak")
 	t.Setenv("PACEQ_EVIL_INJECTION", "must-not-leak")
