@@ -508,6 +508,61 @@ func TestRunParentCancelIsSignalledAndCarriesTheCancelFact(t *testing.T) {
 	}
 }
 
+// TestRunReturnsWhileAGrandchildStillHoldsTheStdoutPipe pins cmd.WaitDelay on
+// the success path. A job may leave a process behind that keeps the stdout
+// pipe open long after the job's own command exited; Wait follows the pipe,
+// not the process, so without the delay one stray daemon would hold an
+// executor slot for its whole lifetime.
+//
+// The survivor is found by reading /proc rather than by asking the runner what
+// it left behind: the runner's own account of the tree is the thing under
+// test. A cmdline can only be read from a live process, so a marker hit is
+// proof the survivor outlived Run rather than a zombie entry.
+func TestRunReturnsWhileAGrandchildStillHoldsTheStdoutPipe(t *testing.T) {
+	// The marker embeds this test binary's pid, so a stray left behind by an
+	// earlier crashed run can never be mistaken for ours.
+	marker := fmt.Sprintf("paceq-pipe-holder-%d-%s", os.Getpid(), t.Name())
+	// grandchild mode: the direct child spawns a process that inherits its
+	// stdout pipe and ignores SIGTERM, then exits 0 at once.
+	const holderLife = 10 * time.Second
+	s := baseSpec(t, fakecmd(t), "grandchild", holderLife.String(), marker)
+
+	start := time.Now()
+	res, err := runBounded(t, 30*time.Second, context.Background(), s)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Outcome != Succeeded {
+		t.Fatalf("outcome = %v, want Succeeded: the direct child exited 0", res.Outcome)
+	}
+	if max := s.KillGrace + 3*time.Second; elapsed > max {
+		t.Fatalf("Run took %s against a %s pipe holder, want under %s: Wait followed the pipe instead of the process", elapsed, holderLife, max)
+	}
+
+	holders := scanProcFor(t, marker)
+	if len(holders) == 0 {
+		t.Fatal("nothing carried the marker once Run returned: the pipe was already free, so the timing above proves nothing")
+	}
+	// End exactly what this test spawned, by pid.
+	for _, pid := range holders {
+		n, err := strconv.Atoi(pid)
+		if err != nil {
+			t.Fatalf("scanProcFor returned %q, which is not a pid", pid)
+		}
+		if err := syscall.Kill(n, syscall.SIGKILL); err != nil {
+			t.Errorf("kill the pipe holder %d: %v", n, err)
+		}
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for len(scanProcFor(t, marker)) > 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("pipe holders %v survived the cleanup SIGKILL", holders)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func TestRunEnvironmentIsExactlyTheContract(t *testing.T) {
 	t.Setenv("DAEMON_SECRET_TOKEN", "must-not-leak")
 	t.Setenv("PACEQ_EVIL_INJECTION", "must-not-leak")
