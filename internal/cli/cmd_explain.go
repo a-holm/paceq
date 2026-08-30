@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"strings"
 	"time"
 
@@ -119,11 +118,11 @@ func runExplain(ctx context.Context, env Env, g *globals, out *ui, noun, ref str
 		return explainResolveError(err)
 	}
 
-	daemonUp := false
-	stateDir, dirErr := g.stateDir(env)
-	if dirErr == nil {
-		daemonUp = daemonResponds(daemonSocket(stateDir))
+	socketPath, socketErr := daemonSocket(env, g)
+	if socketErr != nil {
+		fmt.Fprintf(out.err, "paceq: %v\n", socketErr)
 	}
+	daemonUp := daemonResponds(socketPath)
 	if !daemonUp {
 		// A warning, never data: stdout stays clean for pipes either way.
 		fmt.Fprintln(out.err, "paceq: (daemon down - answering from the state database, read-only)")
@@ -207,19 +206,4 @@ func explainResolveError(err error) error {
 		return notFoundError(missing.What, "", next...)
 	}
 	return internalError("could not resolve the reference", err)
-}
-
-// daemonResponds reports whether a daemon answers on the socket right now.
-// Half a second is generous for a local unix socket; a dead socket file or a
-// refused dial both read as "down".
-func daemonResponds(socketPath string) bool {
-	if socketPath == "" {
-		return false
-	}
-	conn, err := net.DialTimeout("unix", socketPath, 500*time.Millisecond)
-	if err != nil {
-		return false
-	}
-	_ = conn.Close()
-	return true
 }

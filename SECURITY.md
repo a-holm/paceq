@@ -33,9 +33,11 @@ One static binary, one process, one machine, same-user mode (plans: 00 §3.7, 08
 | Boundary | Where it runs in v1 |
 |---|---|
 | TG1 network | does not exist in v1. No TCP listener, no webhook listener |
-| TG2 local IPC | unix socket `$RUNTIME_DIR/paceq.sock`, mode 0660, group owned |
+| TG2 local IPC | unix socket `$RUNTIME_DIR/paceq.sock`, mode 0660, group owned. Both ends check it: the daemon by the mode it sets, the CLI by refusing a socket another account owns, a socket every account may write to, or a path that is not a socket |
 | TG3 exec protocol | does not exist in v1. Same-user mode spawns directly, so there is no privileged helper to talk to |
 | TG4 kernel and cgroup | the step command is a child process in its own process group. cgroup and Landlock confinement are post-1.0 |
+
+The CLI half of TG2 is a refusal, not a warning. Before it dials, paceq refuses a path that is not a socket, a socket whose mode carries world write, and a socket owned by another uid, unless the caller is root, which legitimately administers another user's daemon. Once the connection stands it reads `SO_PEERCRED` and refuses again when another uid is the one listening. That second reading is the one the file cannot make honestly, because the file can be replaced between the check and the connect; `SO_PEERCRED` is Linux only, so on a macOS build only the file check runs and that window stays open. A refused socket ends the command with exit 4 and never falls back to writing the state directory directly: a silent change of transport is how an attempt to answer for the daemon would go unnoticed.
 
 The daemon parses every piece of untrusted input: YAML specs, cron expressions, sensor stdout, JSON on the socket. It can never become root, so a parser bug there yields the paceq user's rights, not the host.
 

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"runtime"
 	"time"
@@ -82,7 +81,7 @@ func runDoctor(ctx context.Context, env Env, g *globals, out *ui) error {
 	}
 	report.Findings = append(report.Findings,
 		doctor.Run(ctx, stateDir, doctor.Options{Status: env.Status, Procs: env.Procs, Limits: limits}).Findings...)
-	report.Findings = append(report.Findings, checkDaemonVersion(ctx, stateDir, buildinfo.Get().Version))
+	report.Findings = append(report.Findings, checkDaemonVersion(ctx, env, g, buildinfo.Get().Version))
 	for _, finding := range report.Findings {
 		out.note(2, "%s: %s", finding.Title, finding.Level)
 	}
@@ -155,14 +154,21 @@ func writeDoctorReport(out *ui, report doctor.Report) error {
 // schema the other side may not share, so a mismatch is worth naming before
 // it becomes a confusing answer. No socket at all is the healthy case for a
 // machine that runs only the CLI side.
-func checkDaemonVersion(ctx context.Context, stateDir, cliVersion string) doctor.Finding {
+func checkDaemonVersion(ctx context.Context, env Env, g *globals, cliVersion string) doctor.Finding {
 	const title = "daemon version"
-	socketPath := daemonSocket(stateDir)
+	socketPath, err := daemonSocket(env, g)
+	if err != nil {
+		return refusedSocketFinding(title, err)
+	}
 	if socketPath == "" {
 		return doctor.Finding{Level: doctor.OK, Title: title, Detail: "no daemon is running"}
 	}
 	version, err := daemonVersion(ctx, socketPath)
 	if err != nil {
+		var refused *untrustedSocket
+		if errors.As(err, &refused) {
+			return refusedSocketFinding(title, refused)
+		}
 		return doctor.Finding{
 			Level:  doctor.Warn,
 			Title:  title,
@@ -185,20 +191,28 @@ func checkDaemonVersion(ctx context.Context, stateDir, cliVersion string) doctor
 	}
 }
 
+// refusedSocketFinding reports a socket paceq will not talk to. It fails the
+// installation rather than warning about it: another account answering for the
+// daemon is the one thing this socket's whole authorisation model rests on not
+// happening.
+func refusedSocketFinding(title string, err error) doctor.Finding {
+	return doctor.Finding{
+		Level:  doctor.Fail,
+		Title:  title,
+		Detail: err.Error(),
+		Next: []string{
+			"ls -l the path: another account owning it, or a mode wider than 0600, is how a stranger answers for the daemon",
+			"remove it if a crash left it behind, then start the daemon again",
+		},
+	}
+}
+
 func daemonVersion(ctx context.Context, socketPath string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://unix/readyz", nil)
 	if err != nil {
 		return "", err
 	}
-	client := &http.Client{
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return net.Dial("unix", socketPath)
-			},
-		},
-		Timeout: 2 * time.Second,
-	}
-	resp, err := client.Do(req)
+	resp, err := socketClient(socketPath, 2*time.Second).Do(req)
 	if err != nil {
 		return "", err
 	}

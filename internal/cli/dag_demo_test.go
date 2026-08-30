@@ -393,9 +393,13 @@ func cmdWantExitWall(ts *testscript.TestScript, neg bool, args []string) {
 // wallClockEnv builds a paceq process environment without the frozen clock,
 // keeping the rest of the determinism layer.
 func wallClockEnv() ([]string, error) {
+	// PACEQ_SOCKET and XDG_RUNTIME_DIR come before the state directory in
+	// socket resolution, so a developer's login session would otherwise
+	// decide which socket the commands under test dial.
 	drop := map[string]bool{
 		"PULSEQ_FAKE_CLOCK": true, "LC_ALL": true, "NO_COLOR": true,
 		"CLICOLOR_FORCE": true, "COLUMNS": true,
+		"PACEQ_SOCKET": true, "XDG_RUNTIME_DIR": true,
 	}
 	var env []string
 	for _, entry := range os.Environ() {

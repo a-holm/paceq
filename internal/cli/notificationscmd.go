@@ -236,12 +236,18 @@ func runNotificationsRetry(ctx context.Context, env Env, g *globals, out *ui, id
 	}
 	// Dual mode, socket first (#29): while the daemon runs, only the daemon
 	// writes; without it, flock arbitration makes the direct write safe.
-	socketPath := daemonSocket(stateDir)
+	socketPath, err := daemonSocket(env, g)
+	if err != nil {
+		return socketRefusedError(err)
+	}
 	if socketPath != "" {
 		serr := sockPost(ctx, socketPath, "/v1/notifications/"+strconv.FormatInt(id, 10)+"/retry")
 		if serr == nil {
 			out.note(1, "notification %d handed back to the daemon for delivery", id)
 			return nil
+		}
+		if stop := stopOnRefusal(serr); stop != nil {
+			return stop
 		}
 		out.note(1, "daemon unreachable (%v); writing directly to the database", serr)
 	}
