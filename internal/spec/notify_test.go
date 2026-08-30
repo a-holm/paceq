@@ -67,8 +67,9 @@ notify:
 }
 
 // TestNotifyHashStability keeps three promises at once (M5 pitfalls): a job
-// that says nothing about notifications hashes like one before the field
-// existed; the lists are sets; and an empty spelled-out block is silence.
+// that says nothing about notifications hashes like one written before the
+// field existed; the lists are sets; and a block that names nobody reads as
+// the deliberate silence rather than as no block at all.
 func TestNotifyHashStability(t *testing.T) {
 	base := `name: stable
 steps:
@@ -80,10 +81,12 @@ steps:
 	jobPlain, _ := Parse("p.yaml", []byte(base))
 	jobSilent, _ := Parse("s.yaml", []byte(silent))
 
-	h1 := string(Hash(Canonical(jobPlain)))
-	h2 := string(Hash(Canonical(jobSilent)))
-	if h1 != h2 {
-		t.Fatalf("an empty notify block changed the hash:\n%s\n%s", h1, h2)
+	if jobPlain.Notify != nil {
+		t.Fatalf("a job that says nothing about notifications decoded to a block: %+v", jobPlain.Notify)
+	}
+	if written := string(Canonical(jobPlain)); strings.Contains(written, "notify") {
+		t.Fatalf("saying nothing wrote a notify member, and every hash from before the field\n"+
+			"existed moves with it:\n%s", written)
 	}
 	if jobSilent.Notify.Empty() != true {
 		t.Fatalf("the decoded empty block should read as Empty")
@@ -162,4 +165,44 @@ func equalSorted(got, want []string) bool {
 		}
 	}
 	return true
+}
+
+// TestExplicitSilenceSurvivesTheFreeze holds the rule the spec states and the
+// planner implements: a block that lists nobody is the deliberate silence, and
+// an absent block inherits the daemon defaults. The frozen document is the only
+// thing the engine ever reads back, so a distinction the canonical encoding
+// drops is a distinction the planner can never act on.
+func TestExplicitSilenceSurvivesTheFreeze(t *testing.T) {
+	base := `name: silent
+steps:
+  - name: only
+    run: ["/bin/true"]
+`
+	spellings := []string{
+		base + "notify: {}\n",
+		base + "notify:\n  on_failure: []\n  on_success: []\n",
+	}
+	for _, src := range spellings {
+		job, diags := Parse("s.yaml", []byte(src))
+		if diags.HasErrors() {
+			t.Fatalf("%q parsed with errors: %v", src, diags)
+		}
+		if job.Notify == nil {
+			t.Fatalf("%q decoded to no notify block at all", src)
+		}
+		back, err := FromIR(Canonical(job))
+		if err != nil {
+			t.Fatalf("read %q back: %v", src, err)
+		}
+		if back.Notify == nil {
+			t.Errorf("%q froze to a document with no notify block: the engine reads nil "+
+				"and the planner takes the daemon defaults, where the file said silence", src)
+		}
+	}
+
+	plain, _ := Parse("p.yaml", []byte(base))
+	silent, _ := Parse("s.yaml", []byte(spellings[0]))
+	if Hash(Canonical(plain)) == Hash(Canonical(silent)) {
+		t.Error("saying nothing and saying nobody hash alike, so the two cannot be told apart again")
+	}
 }

@@ -152,8 +152,9 @@ func (d *decoder) notify(node ast.Node) *Notify {
 	if n.Empty() {
 		d.warn(CodeNotifyEmpty, position(node),
 			"the notify block lists no notifiers",
-			"An empty block is allowed, but silence is also what leaving it out does.\n"+
-				"Name at least one notifier from config.yaml:\n\n"+
+			"An empty block is the deliberate silence: this job sends nothing, and the\n"+
+				"daemon's notify_defaults do not apply to it. Leave the block out instead to\n"+
+				"inherit them, or name a notifier from config.yaml:\n\n"+
 				"    notify:\n"+
 				"      on_failure: [vakt]")
 	}

@@ -215,10 +215,11 @@ func canonicalJob(j *Job) canonicalObject {
 	if len(j.Sensors) > 0 {
 		object = append(object, canonicalMember{"sensors", canonicalSensors(j.Sensors)})
 	}
-	// notify is left out when the block says nothing, the same rule as
-	// every optional member above: a job written before hooks existed keeps
-	// its hash, and silence spelled out hashes like silence omitted.
-	if !j.Notify.Empty() {
+	// notify is left out only when the job carries no block at all: an
+	// absent block inherits the daemon defaults and a written one does not,
+	// so the two are different documents and different hashes. A job from
+	// before hooks existed has no block and keeps its hash.
+	if j.Notify != nil {
 		object = append(object, canonicalMember{"notify", canonicalNotify(j.Notify)})
 	}
 	return object

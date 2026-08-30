@@ -193,8 +193,9 @@ type Notify struct {
 	OnSuccess []string
 }
 
-// Empty says whether the block says nothing at all, which is the condition
-// the canonical encoder leaves out of the document.
+// Empty says whether the block names nobody, which is the deliberate silence:
+// the job is heard, and nothing is sent. It is not the condition the canonical
+// encoder leaves a block out on; that one is the absent block itself.
 func (n *Notify) Empty() bool {
 	return n == nil || (len(n.OnFailure) == 0 && len(n.OnSuccess) == 0)
 }
