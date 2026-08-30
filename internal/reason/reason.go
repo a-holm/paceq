@@ -1,10 +1,20 @@
 package reason
 
-import "sort"
+import (
+	"encoding/json"
+	"sort"
+)
 
-// Level is which object in the observability model the code explains. The four
-// levels are the four tables a reason code can land in: ticks, triggers, runs
-// and steps.
+// Level is which object in the observability model the code explains: the tick
+// that was evaluated, the trigger that was accepted or refused, the run, the
+// step, or the lease. It is not the table the code is stored in.
+//
+// A code names the object it is about, and the row it lands on is whichever
+// row recorded the decision. Two run level codes prove the difference:
+// RUN_REJECTED_DISK_LOW is about a run the free-space floor refused, and lives
+// on the tick and the trigger that refused it, because the hold means no run
+// row is ever created; RUN_INTERRUPTED_SHUTDOWN is about a run a clean daemon
+// stop cut short, and lives on the step rows the drain handed back.
 type Level string
 
 const (
@@ -78,6 +88,34 @@ func All() []Entry {
 	}
 	sort.Slice(all, func(i, j int) bool { return all[i].Code < all[j].Code })
 	return all
+}
+
+// MissingDataKeys names the keys a code promises in DataKeys that a stored
+// reason_data payload does not carry, in the order the catalogue declares
+// them. It is the machine form of the "Promised reason_data keys" line the
+// generated reference prints, so a writer can be held to the promise the
+// documentation makes on its behalf (#191).
+//
+// A payload that is empty, is not a JSON object, or does not parse is missing
+// every promised key: a promise nothing carries is a promise nothing kept. A
+// code outside the catalogue promises nothing and is never missing anything,
+// because there is no entry to read the promise from.
+func MissingDataKeys(c Code, data string) []string {
+	e, ok := Lookup(c)
+	if !ok || len(e.DataKeys) == 0 {
+		return nil
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(data), &obj); err != nil || obj == nil {
+		return append([]string(nil), e.DataKeys...)
+	}
+	var missing []string
+	for _, k := range e.DataKeys {
+		if _, ok := obj[k]; !ok {
+			missing = append(missing, k)
+		}
+	}
+	return missing
 }
 
 // Codes returns every code as a plain string, sorted, the same order All()

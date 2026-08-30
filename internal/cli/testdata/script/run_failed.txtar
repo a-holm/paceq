@@ -47,7 +47,7 @@ steps:
     "job": "flaky",
     "origin": "manual",
     "reason_code": "RUN_FAILED_STEP",
-    "reason_data": "{\"step\":\"boom\"}",
+    "reason_data": "{\"attempt\":1,\"step\":\"boom\"}",
     "started_at": "2026-09-24T09:00:00Z",
     "state": "failed",
     "steps": [

@@ -1057,7 +1057,7 @@ func (s *Store) ObserveRunCancel(ctx context.Context, runID string, ref LeaseRef
 		// state be read off them (I10). Reading the aggregate before the
 		// close-out answers about a run that is still running, which is no
 		// answer at all.
-		states, err := closeOutCancelledStepsTx(tx, runID, now)
+		steps, states, err := closeOutCancelledStepsTx(tx, runID, now)
 		if err != nil {
 			return err
 		}
@@ -1074,7 +1074,8 @@ func (s *Store) ObserveRunCancel(ctx context.Context, runID string, ref LeaseRef
 				finished_at = ?, reason_code = ?, reason_data = ?,
 				lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
 			WHERE id = ? AND state = ? AND lease_owner = ? AND lease_epoch = ?`,
-				string(state), now.UnixMilli(), guards.ReasonCode, "{}", now.UnixMilli(),
+				string(state), now.UnixMilli(), guards.ReasonCode,
+				terminalDataJSON(guards.ReasonCode, steps), now.UnixMilli(),
 				runID, string(cur), ref.Owner, ref.Epoch)
 			if err != nil {
 				return err
@@ -1289,14 +1290,25 @@ func allStepsTerminal(states []model.StepState) bool {
 // steps both end cancelled, each through its own event. Every cancel writer
 // goes through here, so none of them can write a run state its steps
 // contradict (I10): the answer is what the verdict is read from.
-func closeOutCancelledStepsTx(tx *sql.Tx, runID string, now time.Time) ([]model.StepState, error) {
+// It answers with the step rows and their states together, because the
+// verdict is read from the states and the verdict's reason_data is read from
+// the rows, and those two must come from one snapshot.
+func closeOutCancelledStepsTx(tx *sql.Tx, runID string, now time.Time) ([]Step, []model.StepState, error) {
 	if err := cancelRunningStepsTx(tx, runID, now); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := cancelPendingStepsTx(tx, runID, now, string(reason.STEPCancelled)); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return stepStatesTx(tx, runID)
+	steps, err := readStepsTx(tx, runID)
+	if err != nil {
+		return nil, nil, err
+	}
+	states, err := stepStatesOf(steps)
+	if err != nil {
+		return nil, nil, err
+	}
+	return steps, states, nil
 }
 
 // stepStatesTx reads a run's step states in spec order.
@@ -1305,6 +1317,12 @@ func stepStatesTx(tx *sql.Tx, runID string) ([]model.StepState, error) {
 	if err != nil {
 		return nil, err
 	}
+	return stepStatesOf(steps)
+}
+
+// stepStatesOf parses the states of step rows already read, so a writer that
+// needs both the rows and their states pays for one read.
+func stepStatesOf(steps []Step) ([]model.StepState, error) {
 	states := make([]model.StepState, 0, len(steps))
 	for _, step := range steps {
 		st, err := model.ParseStepState(step.State)
@@ -1314,6 +1332,25 @@ func stepStatesTx(tx *sql.Tx, runID string) ([]model.StepState, error) {
 		states = append(states, st)
 	}
 	return states, nil
+}
+
+// terminalDataJSON is the reason_data a terminal run row owes the verdict
+// being stamped on it (#191). RUN_FAILED_STEP promises the failing step and
+// the attempt it spent, and the answer comes off the same step rows the
+// verdict came off, so the reaper, the cancel observer and the engine's finish
+// path all name the same step. Every other terminal code promises nothing and
+// gets an empty object, which is what stops an earlier decision's payload
+// standing under a newer verdict.
+func terminalDataJSON(code string, steps []Step) string {
+	if code != string(reason.RUNFailedStep) {
+		return "{}"
+	}
+	for _, step := range steps {
+		if model.StepState(step.State) == model.StepFailed {
+			return fmt.Sprintf(`{"attempt":%d,"step":%q}`, step.Attempt, step.Name)
+		}
+	}
+	return "{}"
 }
 
 func anyStepIs(states []model.StepState, want model.StepState) bool {

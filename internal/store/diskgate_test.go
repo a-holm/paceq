@@ -101,6 +101,55 @@ func TestTheDiskHoldRefusesAManualRunAndRecordsIt(t *testing.T) {
 	}
 }
 
+// TestTheDiskHoldRecordsItsCodeOnTheTickAndTheTriggerAndNoRun pins where a run
+// level code actually lands (#193). RUN_REJECTED_DISK_LOW is about the run the
+// floor refused, and the rows that record the refusal are the evaluation and
+// the trigger: the hold means no run row is ever created, so the code cannot
+// reach runs.reason_code. A level names the object a code explains, never the
+// table it is stored in, and this is the case that proves it.
+//
+// TestEveryRunLevelPromiseIsKeptOnItsRow names this test as the reason it does
+// not look for the code on a run row.
+func TestTheDiskHoldRecordsItsCodeOnTheTickAndTheTriggerAndNoRun(t *testing.T) {
+	s := migratedStore(t)
+	admitJob(t, s, "build", 1)
+	s.SetRunHold(diskHold(500<<20, 50<<30, 1<<30))
+	code := string(reason.RUNRejectedDiskLow)
+
+	// The manual path writes both rows: the tick it claimed and the trigger
+	// it refused, so a person who typed the command can be told why.
+	_, err := s.MaterializeManualTrigger(context.Background(), ManualTriggerInput{
+		JobName: "build",
+		Actor:   "operator",
+	})
+	if !errors.Is(err, ErrRunsHeld) {
+		t.Fatalf("a manual run under the floor returned %v, want ErrRunsHeld", err)
+	}
+	if got := countWhere(t, s, `SELECT COUNT(*) FROM ticks WHERE reason_code = ?`, code); got != 1 {
+		t.Errorf("%d ticks carry %s, want 1", got, code)
+	}
+	if got := countWhere(t, s, `SELECT COUNT(*) FROM triggers WHERE reason_code = ?`, code); got != 1 {
+		t.Errorf("%d triggers carry %s, want 1", got, code)
+	}
+	if got := countWhere(t, s, `SELECT COUNT(*) FROM runs`); got != 0 {
+		t.Errorf("the hold left %d run rows, want 0: a refused run is never born", got)
+	}
+
+	// The scheduled path refuses the same way and writes the tick alone: no
+	// trigger belongs to a fire-time that never became a run.
+	sched := admitSchedule(t, s, "build", "")
+	if res := admitTick(t, s, sched, 0); res.Run.ID != "" {
+		t.Fatalf("a held disk materialised run %s", res.Run.ID)
+	}
+	if got := readTickRow(t, s, "build/nightly", 0).reasonCode; got != code {
+		t.Errorf("the stood-down tick names %q, want %s", got, code)
+	}
+	if got := countWhere(t, s, `SELECT COUNT(*) FROM runs WHERE reason_code = ?`, code); got != 0 {
+		t.Errorf("%d run rows carry %s; no producer routes it there, and the "+
+			"level is not a claim that one does", got, code)
+	}
+}
+
 func TestMarkLogShardPrunedClearsOnlyTheRemovedShard(t *testing.T) {
 	s := migratedStore(t)
 	ctx := context.Background()

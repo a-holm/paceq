@@ -111,6 +111,13 @@ type ClaimedRun struct {
 //
 // The predicate rides the partial claim index (available_at WHERE state =
 // 'queued'), which the query plan test pins.
+//
+// The three deferral columns are cleared here, exactly as the keyed start
+// clears them (#191). They describe a decision that is over the moment the run
+// starts, and leaving them standing makes a running or finished run read as
+// deferred for the rest of its life: paceq runs list takes its state column
+// from defer_reason. The schema CHECK on defer_reason binds queued rows only,
+// so clearing on the way to running cannot trip it.
 const claimRunsSQL = `UPDATE runs SET
 	state = 'running',
 	lease_owner = ?1,
@@ -118,6 +125,9 @@ const claimRunsSQL = `UPDATE runs SET
 	lease_expires_at = ?3,
 	heartbeat_at = ?2,
 	started_at = COALESCE(started_at, ?2),
+	defer_reason = NULL,
+	reason_code = NULL,
+	reason_data = NULL,
 	updated_at = ?2
 WHERE id IN (?4)
 RETURNING id, job_name, job_version_id, run_key, attempt, lease_epoch, params_json`
@@ -154,6 +164,7 @@ const closeCancelledQueuedSQL = `UPDATE runs SET
 	state = 'cancelled',
 	finished_at = ?1,
 	reason_code = ?2,
+	reason_data = '{}',
 	defer_reason = NULL,
 	updated_at = ?1
 WHERE id IN (
@@ -414,7 +425,7 @@ func closeCancelledQueuedTx(tx *sql.Tx, now time.Time) error {
 		// above wrote cancelled because that is the answer for a queued run
 		// with work left; a replay that reused every step has none left, and
 		// its row is corrected here before anything announces it.
-		states, err := closeOutCancelledStepsTx(tx, c.id, now)
+		steps, states, err := closeOutCancelledStepsTx(tx, c.id, now)
 		if err != nil {
 			return err
 		}
@@ -425,9 +436,11 @@ func closeCancelledQueuedTx(tx *sql.Tx, now time.Time) error {
 			// and the statement above already took this row out of the queued
 			// set inside this same transaction; the predicate pins the state
 			// that statement wrote, so only its own row is corrected.
-			if _, err := tx.Exec(`UPDATE runs SET state = ?, reason_code = ?, updated_at = ?
+			if _, err := tx.Exec(`UPDATE runs SET state = ?, reason_code = ?, reason_data = ?,
+				updated_at = ?
 				WHERE id = ? AND state = 'cancelled'`,
-				string(verdict), guards.ReasonCode, now.UnixMilli(), c.id); err != nil {
+				string(verdict), guards.ReasonCode, terminalDataJSON(guards.ReasonCode, steps),
+				now.UnixMilli(), c.id); err != nil {
 				return fmt.Errorf("close the queued cancellation of run %s: %w", c.id, err)
 			}
 		}
@@ -709,9 +722,12 @@ func reapOneTx(tx *sql.Tx, runID string, now time.Time, backoff time.Duration, m
 	case !run.CancelRequestedAt.IsZero():
 		return reapToCancelledTx(tx, run, now)
 	case run.CrashCount+1 > maxCrash:
-		return reapToFailedTx(tx, run, now, reason.RUNPoisoned, "run.poisoned")
+		return reapToFailedTx(tx, run, now, reason.RUNPoisoned, "run.poisoned",
+			poisonDataJSON(run.CrashCount+1, maxCrash))
 	case run.Attempt >= run.MaxAttempts:
-		return reapToFailedTx(tx, run, now, reason.RUNOrphanedReconciled, "run.failed")
+		// RUN_ORPHANED_RECONCILED promises no keys, so the row says so with
+		// an empty object rather than keeping an older decision's payload.
+		return reapToFailedTx(tx, run, now, reason.RUNOrphanedReconciled, "run.failed", "{}")
 	default:
 		return reapToQueuedTx(tx, run, now, backoff)
 	}
@@ -770,10 +786,17 @@ func reapToQueuedTx(tx *sql.Tx, run Run, now time.Time, backoff time.Duration) (
 	}, nil
 }
 
+// poisonDataJSON is the payload RUN_POISONED promises: the crash count that
+// tripped the quarantine and the ceiling it passed.
+func poisonDataJSON(crashes, max int) string {
+	return fmt.Sprintf(`{"crash_count":%d,"max_crash_count":%d}`, crashes, max)
+}
+
 // reapToFailedTx closes the run as failed under either failure code. The
 // steps all leave terminal (I2: a terminal run has no open step), the verdict
-// is stamped, and the token still rises.
-func reapToFailedTx(tx *sql.Tx, run Run, now time.Time, code reason.Code, kind string) (ReapedRun, error) {
+// is stamped with the reason_data its code promises, and the token still
+// rises.
+func reapToFailedTx(tx *sql.Tx, run Run, now time.Time, code reason.Code, kind, data string) (ReapedRun, error) {
 	state, effects, err := model.NextRunState(model.RunRunning, model.EvLeaseExpired, model.Guards{
 		LeaseValid:      false,
 		CrashBudgetLeft: false,
@@ -789,11 +812,15 @@ func reapToFailedTx(tx *sql.Tx, run Run, now time.Time, code reason.Code, kind s
 	// kill only stopped FinishRun recording it. Failing it here would write a
 	// verdict its own steps contradict, and nothing revisits a terminal row
 	// afterwards, so the disagreement would be permanent (#188).
-	before, err := stepStatesTx(tx, run.ID)
+	before, err := readStepsTx(tx, run.ID)
 	if err != nil {
 		return ReapedRun{}, err
 	}
-	if allStepsTerminal(before) {
+	states, err := stepStatesOf(before)
+	if err != nil {
+		return ReapedRun{}, err
+	}
+	if allStepsTerminal(states) {
 		return reapToAggregateTx(tx, run, now, before)
 	}
 	if err := failRunningStepsTx(tx, run.ID, now, true); err != nil {
@@ -806,6 +833,7 @@ func reapToFailedTx(tx *sql.Tx, run Run, now time.Time, code reason.Code, kind s
 	if _, err := tx.Exec(`UPDATE runs SET
 		state = 'failed',
 		reason_code = ?,
+		reason_data = ?,
 		finished_at = ?,
 		duration_ms = CASE WHEN started_at IS NULL THEN NULL ELSE ? - started_at END,
 		lease_owner = NULL,
@@ -815,7 +843,8 @@ func reapToFailedTx(tx *sql.Tx, run Run, now time.Time, code reason.Code, kind s
 		error = COALESCE(error, 'lease expired'),
 		updated_at = ?
 		WHERE id = ? AND state = 'running' AND lease_epoch = ?`,
-		string(code), now.UnixMilli(), now.UnixMilli(), now.UnixMilli(), run.ID, run.LeaseEpoch); err != nil {
+		string(code), data, now.UnixMilli(), now.UnixMilli(), now.UnixMilli(),
+		run.ID, run.LeaseEpoch); err != nil {
 		return ReapedRun{}, fmt.Errorf("fail run %s: %w", run.ID, err)
 	}
 	_ = effects
@@ -851,7 +880,11 @@ func reapToFailedTx(tx *sql.Tx, run Run, now time.Time, code reason.Code, kind s
 // ReapExpiredRuns before ReconcileRunStates, so the writer that would have
 // finished the run correctly never gets the row, and a terminal row is skipped
 // by every later pass (#188).
-func reapToAggregateTx(tx *sql.Tx, run Run, now time.Time, states []model.StepState) (ReapedRun, error) {
+func reapToAggregateTx(tx *sql.Tx, run Run, now time.Time, steps []Step) (ReapedRun, error) {
+	states, err := stepStatesOf(steps)
+	if err != nil {
+		return ReapedRun{}, err
+	}
 	guards := cancelGuards(states, reason.RUNCancelledManual)
 	verdict, kind := model.TerminalVerdict(guards)
 
@@ -859,6 +892,7 @@ func reapToAggregateTx(tx *sql.Tx, run Run, now time.Time, states []model.StepSt
 	if _, err := tx.Exec(`UPDATE runs SET
 		state = ?,
 		reason_code = ?,
+		reason_data = ?,
 		finished_at = ?,
 		duration_ms = CASE WHEN started_at IS NULL THEN NULL ELSE ? - started_at END,
 		lease_owner = NULL,
@@ -867,7 +901,8 @@ func reapToAggregateTx(tx *sql.Tx, run Run, now time.Time, states []model.StepSt
 		crash_count = crash_count + 1,
 		updated_at = ?
 		WHERE id = ? AND state = 'running' AND lease_epoch = ?`,
-		string(verdict), guards.ReasonCode, now.UnixMilli(), now.UnixMilli(),
+		string(verdict), guards.ReasonCode, terminalDataJSON(guards.ReasonCode, steps),
+		now.UnixMilli(), now.UnixMilli(),
 		now.UnixMilli(), run.ID, run.LeaseEpoch); err != nil {
 		return ReapedRun{}, fmt.Errorf("reap finished run %s: %w", run.ID, err)
 	}
@@ -897,7 +932,7 @@ func reapToAggregateTx(tx *sql.Tx, run Run, now time.Time, states []model.StepSt
 // owner: the request was durable, the owner is gone, and the run ends
 // cancelled instead of being offered to a new holder.
 func reapToCancelledTx(tx *sql.Tx, run Run, now time.Time) (ReapedRun, error) {
-	states, err := closeOutCancelledStepsTx(tx, run.ID, now)
+	steps, states, err := closeOutCancelledStepsTx(tx, run.ID, now)
 	if err != nil {
 		return ReapedRun{}, err
 	}
@@ -908,6 +943,7 @@ func reapToCancelledTx(tx *sql.Tx, run Run, now time.Time) (ReapedRun, error) {
 	if _, err := tx.Exec(`UPDATE runs SET
 		state = ?,
 		reason_code = ?,
+		reason_data = ?,
 		finished_at = ?,
 		duration_ms = CASE WHEN started_at IS NULL THEN NULL ELSE ? - started_at END,
 		lease_owner = NULL,
@@ -916,7 +952,8 @@ func reapToCancelledTx(tx *sql.Tx, run Run, now time.Time) (ReapedRun, error) {
 		crash_count = crash_count + 1,
 		updated_at = ?
 		WHERE id = ? AND state = 'running' AND lease_epoch = ?`,
-		string(verdict), guards.ReasonCode, now.UnixMilli(), now.UnixMilli(),
+		string(verdict), guards.ReasonCode, terminalDataJSON(guards.ReasonCode, steps),
+		now.UnixMilli(), now.UnixMilli(),
 		now.UnixMilli(), run.ID, run.LeaseEpoch); err != nil {
 		return ReapedRun{}, fmt.Errorf("cancel run %s: %w", run.ID, err)
 	}

@@ -193,7 +193,7 @@ func (d *drive) execute(ctx context.Context, e *Engine) (string, error) {
 		return "", err
 	}
 
-	finish, detail, err := e.finishReason(ctx, d.runID, timedOut)
+	finish, detail, err := e.finishReason(ctx, d.runID, timedOut, d.job.Timeout)
 	if err != nil {
 		return "", err
 	}
@@ -689,20 +689,31 @@ func stepIndexOf(steps []store.Step, name string) int {
 // as success. The detail comes back too: notification planning (#29) reads
 // the same rows the verdict did, so the alert can never disagree with the
 // state change it is written in.
-func (e *Engine) finishReason(ctx context.Context, runID string, timedOut bool) (store.FinishReason, store.RunDetail, error) {
+//
+// Each code carries the reason_data the catalogue promises for it (#191).
+// timeout is the run's own deadline, which is the number RUN_TIMED_OUT owes;
+// the failing step's row carries the attempt RUN_FAILED_STEP owes. The failing
+// step is the first in spec order, the same one the store's terminal writers
+// take, so a run closed by the reaper names the step this path would have.
+func (e *Engine) finishReason(ctx context.Context, runID string, timedOut bool,
+	timeout time.Duration,
+) (store.FinishReason, store.RunDetail, error) {
 	detail, err := e.Store.GetRun(ctx, runID)
 	if err != nil {
 		return store.FinishReason{}, store.RunDetail{}, fmt.Errorf("finish run %s: %w", runID, err)
 	}
 	if timedOut {
-		return store.FinishReason{Code: reason.RUNTimedOut}, detail, nil
+		return store.FinishReason{
+			Code: reason.RUNTimedOut,
+			Data: detailJSON(map[string]any{"timeout_ms": timeout.Milliseconds()}),
+		}, detail, nil
 	}
 	for _, s := range detail.Steps {
 		switch model.StepState(s.State) {
 		case model.StepFailed:
 			return store.FinishReason{
 				Code: reason.RUNFailedStep,
-				Data: detailJSON(map[string]any{"step": s.Name}),
+				Data: detailJSON(map[string]any{"attempt": s.Attempt, "step": s.Name}),
 			}, detail, nil
 		case model.StepCancelled:
 			return store.FinishReason{Code: reason.RUNCancelledManual}, detail, nil
