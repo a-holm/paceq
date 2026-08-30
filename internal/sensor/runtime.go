@@ -50,11 +50,11 @@ type Ticket struct {
 // database; the Result travels to the Sink, which is M3-03's.
 //
 // It also owns the sensor-robustness state that must survive from one wake to
-// the next (M3-05): a circuit breaker per sensor and the truncation budget on
-// each Result. A tripped sensor stops being evaluated until it recovers on a
-// half-open probe or an operator resumes it, so the loop stops hammering a
-// service that is down. Truncation caps one tick to the sensor's
-// max_triggers_per_tick and schedules the remainder for the next wake.
+// the next (M3-05): a circuit breaker per sensor. A tripped sensor stops being
+// evaluated until it recovers on a half-open probe or an operator resumes it,
+// so the loop stops hammering a service that is down. The trigger ceiling is
+// not here: ApplyLimit runs where the evaluation is committed, so a forced
+// `paceq sensors tick` is bound by the same budget as a daemon wake (#215).
 //
 // It is not a Go errgroup and does not own a goroutine of selector logic on
 // purpose: the daemon's loop shell already select-s on the context, the ticker
@@ -226,14 +226,12 @@ func (rt *Runtime) evaluate(ctx context.Context, spec Spec) {
 	}
 	in := rt.inputFor(spec)
 	res := rt.ev.Evaluate(ctx, spec, in)
-	// Truncate the batch before it reaches the sink: a single evaluation is
-	// bound to max_triggers_per_tick, and the rest are picked up on the next
-	// wake (M3-05).
-	applyLimit(&res, spec.MaxTriggers)
-	// Feed the verdict into the breaker AFTER the truncation decides what
-	// was actually committed: a truncated batch only counts as a success if
-	// the sensor itself answered, and an errored one counts toward the trip
-	// regardless of how many triggers were dropped.
+	// The batch is bounded by max_triggers_per_tick where it is committed, so
+	// the forced CLI evaluation is bound by the same ceiling and the same
+	// cursor rule (#215). Truncation changes neither the outcome nor the exit
+	// code, so the breaker's verdict is the same on either side of it: a
+	// truncated batch counts as a success if the sensor itself answered, and
+	// an errored one counts toward the trip however many triggers were dropped.
 	_ = brek.NoteOutcome(ClassifyFailure(res.ExitCode), res.Outcome != Errored)
 	if rt.sink != nil {
 		if err := rt.sink.Commit(ctx, spec, tk, res); err != nil && ctx.Err() == nil {

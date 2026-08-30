@@ -25,8 +25,8 @@ func resultWithTriggers(n int) *Result {
 func TestTruncationBounded(t *testing.T) {
 	// 500 triggers, budget 100 => exactly 100 kept.
 	res := resultWithTriggers(500)
-	if truncated := applyLimit(res, 100); !truncated {
-		t.Fatal("applyLimit on an oversized batch reported not truncated")
+	if truncated := ApplyLimit(res, 100); !truncated {
+		t.Fatal("ApplyLimit on an oversized batch reported not truncated")
 	}
 	if len(res.Triggers) != 100 {
 		t.Fatalf("kept %d triggers, want 100", len(res.Triggers))
@@ -40,8 +40,8 @@ func TestTruncationBounded(t *testing.T) {
 
 	// Boundary: exactly the budget, nothing dropped, not truncated.
 	at := resultWithTriggers(100)
-	if truncated := applyLimit(at, 100); truncated {
-		t.Fatal("applyLimit on an exact-budget batch reported truncated")
+	if truncated := ApplyLimit(at, 100); truncated {
+		t.Fatal("ApplyLimit on an exact-budget batch reported truncated")
 	}
 	if len(at.Triggers) != 100 {
 		t.Fatalf("boundary kept %d triggers, want 100", len(at.Triggers))
@@ -49,8 +49,8 @@ func TestTruncationBounded(t *testing.T) {
 
 	// Under budget: untouched.
 	small := resultWithTriggers(17)
-	if truncated := applyLimit(small, 100); truncated {
-		t.Fatal("applyLimit on an under-budget batch reported truncated")
+	if truncated := ApplyLimit(small, 100); truncated {
+		t.Fatal("ApplyLimit on an under-budget batch reported truncated")
 	}
 	if len(small.Triggers) != 17 {
 		t.Fatalf("under-budget kept %d triggers, want 17", len(small.Triggers))
@@ -70,7 +70,7 @@ func TestTruncationWithoutTrustedCursorDropsTheCursor(t *testing.T) {
 	before := "00000000000000000000000000000000"
 	res.CursorBefore = &before
 	res.CursorAfter = &before // a sensor that reported the same cursor
-	applyLimit(res, 100)
+	ApplyLimit(res, 100)
 	if res.CursorAfter != nil {
 		t.Fatal("truncation advanced the cursor without a trusted partial cursor; cursor_after must stay nil")
 	}
@@ -87,8 +87,8 @@ func TestTruncationLeavesCursorAloneWhenWithinBudget(t *testing.T) {
 	cur := "mycursor"
 	res.CursorAfter = &cur
 	res.ReasonData = map[string]any{}
-	applyLimit(res, 100)
+	ApplyLimit(res, 100)
 	if res.CursorAfter == nil || *res.CursorAfter != cur {
-		t.Fatal("applyLimit inside the budget must not drop the cursor")
+		t.Fatal("ApplyLimit inside the budget must not drop the cursor")
 	}
 }

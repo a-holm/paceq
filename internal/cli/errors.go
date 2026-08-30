@@ -54,6 +54,14 @@ func notFoundError(what, where string, next ...string) *Error {
 	return &Error{code: ExitNotFound, what: what, where: where, next: next}
 }
 
+// isNotFound reports whether an error is this package's "nothing there"
+// verdict. A caller that has to tell an absent state directory from an
+// unreadable one asks here rather than matching on the message.
+func isNotFound(err error) bool {
+	var e *Error
+	return errors.As(err, &e) && e.code == ExitNotFound
+}
+
 // validationError is a state paceq refuses to work with, such as a database
 // other users can read. Nothing is broken; something has to be corrected.
 func validationError(what string, err error, next ...string) *Error {

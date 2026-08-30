@@ -11,8 +11,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/a-holm/paceq/internal/daemon"
 	"github.com/a-holm/paceq/internal/diag"
-	"github.com/a-holm/paceq/internal/reason"
 	"github.com/a-holm/paceq/internal/sensor"
 	"github.com/a-holm/paceq/internal/store"
 )
@@ -584,6 +584,9 @@ func runSensorsTick(ctx context.Context, env Env, g *globals, out *ui, name stri
 	} else {
 		out.note(1, "no daemon socket; evaluating directly")
 	}
+	if stop := daemonHoldsState(ctx, env, g, "the tick of "+name+" was not run"); stop != nil {
+		return stop
+	}
 
 	// Direct path: run the evaluation in this process and commit it.
 	stateDir, err := g.stateDir(env)
@@ -621,44 +624,22 @@ func runSensorsTick(ctx context.Context, env Env, g *globals, out *ui, name stri
 	ev := sensor.NewEvaluator(sensor.Config{}, clockForEnv(env))
 	res := ev.Evaluate(ctx, spec, in)
 
-	outcome := store.OutcomeSkipped
-	code := ""
-	cursorAfter := ""
-	if res.CursorAfter != nil {
-		cursorAfter = *res.CursorAfter
+	// The row is re-read for the commit, the way the daemon's sink re-reads
+	// it: the epoch, the job and the interval this evaluation is written
+	// against are the current ones, and the guard is the cursor version
+	// BeginSensorTick already fenced at.
+	row, err = s.GetSensor(ctx, name)
+	if err != nil {
+		return internalError("could not read the sensor "+name, err)
 	}
-	switch res.Outcome {
-	case sensor.Triggered:
-		outcome = store.OutcomeTriggered
-	case sensor.Skipped:
-		outcome = store.OutcomeSkipped
-		code = string(res.ReasonCode)
-	case sensor.Errored:
-		outcome = store.OutcomeError
-		code = string(res.ReasonCode)
-	}
-
-	triggers := make([]store.SensorTrigger, 0, len(res.Triggers))
-	for _, tr := range res.Triggers {
-		params := ""
-		if len(tr.Params) > 0 {
-			params = string(tr.Params)
-		}
-		triggers = append(triggers, store.SensorTrigger{RunKey: tr.RunKey, ParamsJSON: params})
-	}
-
-	commit, err := s.CommitSensorTick(ctx, store.SensorTickCommitInput{
-		TickID:        begin.TickID,
-		SensorName:    name,
-		JobName:       row.JobName,
-		CursorVersion: begin.CursorVersion,
-		CursorAfter:   cursorAfter,
-		DedupEpoch:    row.DedupEpoch,
-		Triggers:      triggers,
-		Outcome:       outcome,
-		ReasonCode:    storeReasonCode(res.ReasonCode),
-		NextEvalAt:    now.Add(time.Duration(row.IntervalMS) * time.Millisecond).UnixMilli(),
-		DurationMs:    res.DurationMS,
+	// One translation from a Result into rows, shared with the daemon
+	// (#215). A copy here is how the trigger ceiling and the sensor's own
+	// skip reason went missing from every forced tick.
+	commit, err := daemon.CommitSensorEvaluation(ctx, s, daemon.SensorEvaluation{
+		Row:    row,
+		Begin:  begin,
+		Result: res,
+		Now:    now,
 	})
 	if err != nil {
 		return internalError("could not commit the sensor tick for "+name, err)
@@ -666,6 +647,7 @@ func runSensorsTick(ctx context.Context, env Env, g *globals, out *ui, name stri
 	if commit.Fenced {
 		return busyError(fmt.Errorf("the tick of %s was fenced: the sensor advanced past this evaluation", name))
 	}
+	code := string(res.ReasonCode)
 
 	if out.mode == modeJSON {
 		type tickJSON struct {
@@ -675,19 +657,29 @@ func runSensorsTick(ctx context.Context, env Env, g *globals, out *ui, name stri
 			Accepted   int    `json:"accepted"`
 			Deduped    int    `json:"deduped"`
 			DurationMS int64  `json:"duration_ms"`
+			Truncated  bool   `json:"truncated"`
+			Dropped    int    `json:"dropped,omitempty"`
 		}
 		return out.json(tickJSON{
-			Sensor: name, Outcome: outcome, ReasonCode: code,
+			Sensor: name, Outcome: commit.Outcome, ReasonCode: code,
 			Accepted: commit.Accepted, Deduped: commit.Deduped, DurationMS: res.DurationMS,
+			Truncated: commit.Truncated, Dropped: commit.Dropped,
 		})
 	}
 
-	out.print("%s tick of %s finished: %s", out.symbols.ok, name, outcome)
+	out.print("%s tick of %s finished: %s", out.symbols.ok, name, commit.Outcome)
 	if code != "" {
 		out.print("  reason: %s", code)
 	}
 	out.print("  accepted %d run(s), %d deduped, in %dms",
 		commit.Accepted, commit.Deduped, res.DurationMS)
+	// A forced tick that quietly dropped most of its batch is worse than one
+	// that says so: the operator asked for this evaluation and has to know
+	// the rest is still waiting.
+	if commit.Truncated {
+		out.print("  %s max_triggers_per_tick is %d: %d trigger(s) dropped, and the cursor stays where it was",
+			out.symbols.warn, row.MaxTriggersPerTick, commit.Dropped)
+	}
 	return nil
 }
 
@@ -825,6 +817,9 @@ func writeSensorOp(ctx context.Context, env Env, g *globals, out *ui, op sensorW
 		out.note(1, "daemon unreachable; writing directly to the database")
 	} else {
 		out.note(1, "no daemon socket; writing directly to the database")
+	}
+	if stop := daemonHoldsState(ctx, env, g, name+" was not "+op.verb); stop != nil {
+		return stop
 	}
 
 	stateDir, err := g.stateDir(env)
@@ -1123,7 +1118,3 @@ func outcomeName(o sensor.Outcome) string {
 		return "unknown"
 	}
 }
-
-// storeReasonCode converts a sensor reason code into the reason.Code a commit
-// row expects.
-func storeReasonCode(c reason.Code) reason.Code { return c }

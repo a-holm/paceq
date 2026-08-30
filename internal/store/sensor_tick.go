@@ -169,6 +169,11 @@ type SensorTickCommitInput struct {
 	ReasonCode reason.Code
 	ReasonText string
 
+	// ReasonData is the JSON detail object beside the code, and it belongs on
+	// any tick that has one: a truncated batch is triggered, carries no reason
+	// code, and still has to say how many triggers it dropped.
+	ReasonData string
+
 	// NextEvalAt is when the sensor becomes due again. Set on every commit.
 	NextEvalAt int64
 
@@ -270,7 +275,7 @@ WHERE name = ? AND cursor_version = ?`,
 			out.Fenced = true
 			finalOutcome, finalReason = OutcomeError, string(reason.TICKMissedLeaseLost)
 			return closeSensorTickTx(tx, in.TickID, at, OutcomeError,
-				reason.TICKMissedLeaseLost, in.DurationMs, "", 0, 0, in.ReasonText)
+				reason.TICKMissedLeaseLost, in.DurationMs, "", 0, 0, in.ReasonText, in.ReasonData)
 		}
 		faults.Point("M3:commit:after_cursor")
 
@@ -280,7 +285,7 @@ WHERE name = ? AND cursor_version = ?`,
 		// concurrently committed evaluation's replay.
 		if in.Outcome != OutcomeTriggered {
 			return closeSensorTickTx(tx, in.TickID, at, in.Outcome,
-				in.ReasonCode, in.DurationMs, cursorAfter, 0, 0, in.ReasonText)
+				in.ReasonCode, in.DurationMs, cursorAfter, 0, 0, in.ReasonText, in.ReasonData)
 		}
 
 		// The current version of the job is chosen inside the transaction, so
@@ -340,7 +345,8 @@ WHERE j.name = ?`, in.JobName).Scan(&versionID, &specJSON); err != nil {
 		}
 
 		return closeSensorTickTx(tx, in.TickID, at, OutcomeTriggered,
-			in.ReasonCode, in.DurationMs, cursorAfter, out.Accepted, out.Deduped, in.ReasonText)
+			in.ReasonCode, in.DurationMs, cursorAfter, out.Accepted, out.Deduped, in.ReasonText,
+			in.ReasonData)
 	})
 	if err != nil {
 		return SensorTickCommitResult{}, err
@@ -535,14 +541,15 @@ func cursorAdvanceOf(outcome, reported string) string {
 // (reasonText), because only the sensor knows what its skip meant.
 func closeSensorTickTx(tx *sql.Tx, tickID string, at int64, outcome string,
 	code reason.Code, durationMs int64, cursorAfter string, accepted, deduped int,
-	reasonText string,
+	reasonText, reasonData string,
 ) error {
 	_, err := tx.Exec(`UPDATE ticks
 SET outcome = ?, finished_at = ?, duration_ms = ?, cursor_after = ?,
-    trigger_count = ?, deduped_count = ?, reason_code = ?, reason_text = ?
+    trigger_count = ?, deduped_count = ?, reason_code = ?, reason_text = ?,
+    reason_data = ?
 WHERE id = ?`,
 		outcome, at, durationMs, nullIfEmpty(cursorAfter), accepted, deduped,
-		nullableCode(code), reasonText, tickID)
+		nullableCode(code), reasonText, nullIfEmpty(reasonData), tickID)
 	if err != nil {
 		return fmt.Errorf("close the sensor tick %s: %w", tickID, err)
 	}

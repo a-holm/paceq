@@ -471,6 +471,9 @@ func runRunsCancel(ctx context.Context, env Env, g *globals, out *ui, runArg str
 	} else {
 		out.note(1, "no daemon socket; writing directly to the database")
 	}
+	if stop := daemonHoldsState(ctx, env, g, detail.ID+" was not cancelled"); stop != nil {
+		return stop
+	}
 
 	s, err := store.OpenState(ctx, stateDir, store.Options{Clock: clockForEnv(env)})
 	if err != nil {

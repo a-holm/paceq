@@ -161,6 +161,9 @@ func replayRunOnce(ctx context.Context, env Env, g *globals, stateDir, runID str
 			return store.ReplayResult{}, err
 		}
 	}
+	if stop := daemonHoldsState(ctx, env, g, runID+" was not replayed"); stop != nil {
+		return store.ReplayResult{}, stop
+	}
 	s, err := store.OpenState(ctx, stateDir, store.Options{Clock: clockForEnv(env)})
 	if err != nil {
 		return store.ReplayResult{}, err

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 )
 
@@ -220,6 +221,45 @@ func daemonResponds(socketPath string) bool {
 	}
 	_ = conn.Close()
 	return true
+}
+
+// daemonHoldsState refuses a direct write while a daemon holds this state
+// directory and there is no socket to send the write to.
+//
+// The two questions are separate and used to be answered by the same stat:
+// which socket to dial, and whether anybody is there. A daemon started without
+// --socket, which is what the shipped unit does, has no socket file and still
+// owns the state. Falling through to the direct path then hands the operator
+// the flock's refusal, which names a lock file and a pid rather than the flag
+// that would have let the write through (#215).
+//
+// It answers nil whenever it cannot tell. The flock is still what forbids two
+// writers; this only decides which refusal the operator reads.
+func daemonHoldsState(ctx context.Context, env Env, g *globals, what string) *Error {
+	if resolveSocket(g, env, g.stateDirOrEmpty(env)).off {
+		// The caller said there is no daemon to ask about, so nothing asks,
+		// and the write goes to the state directory as documented.
+		return nil
+	}
+	ro, err := openReadOnlyStore(ctx, env, g)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = ro.Close() }()
+	owner, running, err := ro.DaemonSession(ctx)
+	if err != nil || !running {
+		return nil
+	}
+	return &Error{
+		code: ExitBusy,
+		what: fmt.Sprintf("%s: a daemon holds this state (pid %d, paceq %s, started %s) "+
+			"and exposes no socket to send the write to",
+			what, owner.PID, owner.Version, owner.StartedAt.Format(time.RFC3339)),
+		next: []string{
+			"start the daemon with --socket, so the CLI reaches it instead of writing behind it",
+			"or stop it first: systemctl stop paceq, or kill " + strconv.Itoa(owner.PID),
+		},
+	}
 }
 
 // noBody is the request of a route whose whole argument is its path. It has to

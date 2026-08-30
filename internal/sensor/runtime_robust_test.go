@@ -141,20 +141,3 @@ func TestRuntimeTransientExit75NeverTrips(t *testing.T) {
 		t.Fatalf("after 10 transient failures the breaker = %v, want Closed", got)
 	}
 }
-
-// TestRuntimeTruncatesAnOversizedBatch proves the truncation seam at the
-// runtime level: a sensor that answers with far more triggers than the budget
-// reaches the sink with at most MaxTriggers kept and the truncated marker set.
-func TestRuntimeTruncatesAnOversizedBatch(t *testing.T) {
-	// There is no fakecmd mode that emits 500 triggers in one object, so the
-	// truncation is proven directly through the applyLimit seam it feeds, and
-	// the bounded Result the sink would receive.
-	res := resultWithTriggers(500)
-	applyLimit(res, 100)
-	if len(res.Triggers) != 100 {
-		t.Fatalf("kept %d triggers, want 100", len(res.Triggers))
-	}
-	if got := res.ReasonData["truncated"]; got != true {
-		t.Fatalf("ReasonData[truncated] = %v, want true", got)
-	}
-}
