@@ -73,6 +73,12 @@ Exactly one JSON object on standard output:
 runs to create, and `skip_reason` explains a quiet run. One JSON object is the
 only accepted form in the MVP; history and summarising are `jq`'s business.
 
+Only an evaluation that names triggers commits its cursor. A `cursor` printed
+next to an empty `triggers` list is read and discarded, because nothing was
+elected for the ground it claims to have covered, so the same question is asked
+again from the old position. Echo the cursor you were given when you skip, as
+the examples do; a sensor that wants to move on fires a trigger.
+
 ## Exit codes and verdicts
 
 | Situation | Tick outcome | reason code |
@@ -103,7 +109,8 @@ but a stream of spaces is unreadable JSON and an error.
   own slot until its deadline, and the scheduler loop is never on its path.
 - The same sensor never runs twice at once.
 - Concurrent evaluations are capped globally (default 4).
-- The cursor never moves on a failed or skipped run.
+- The cursor never moves on a failed or skipped run, whatever cursor that run
+  reported.
 
 ## A full five line sensor
 
