@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/a-holm/paceq/internal/store"
+	"github.com/a-holm/paceq/internal/testutil"
 )
 
 // TestInitCreatesAProjectThatWorks is 09 section 6.3: what init leaves behind
@@ -320,7 +321,9 @@ func gitInit(t *testing.T, dir string) {
 
 // git runs one git command in dir and returns its output. The configuration
 // files are cut off: a developer's global core.excludesFile would otherwise
-// decide what this test proves.
+// decide what this test proves. testutil.GitEnv cuts off the rest of the
+// ambient repository the same way, so a run under a git hook judges the
+// repository this test made rather than the one being pushed.
 func git(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 
@@ -340,7 +343,8 @@ func gitError(t *testing.T, dir string, args ...string) (string, error) {
 	}
 	cmd := exec.Command(path, args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	cmd.Env = testutil.GitEnv(t,
+		append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null"))
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
