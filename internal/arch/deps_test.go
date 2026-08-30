@@ -26,7 +26,10 @@ var allowedImports = map[string][]string{
 	"clock":   {},
 	"diag":    {},
 	"faults":  {},
-	"spec":    {"diag"},
+	// spec asks cronx one question (#214): whether a schedule's time zone is
+	// one the scheduler can load. cronx is a leaf over the standard library,
+	// and one authority on zone names beats two lists that drift apart.
+	"spec":    {"diag", "cronx"},
 	"retry":   {},
 	"procfs":  {},
 	"spool":   {},
