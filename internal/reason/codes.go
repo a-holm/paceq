@@ -79,6 +79,7 @@ var (
 
 	STEPSucceeded              = stepCode("SUCCEEDED")
 	STEPSkippedReplayReused    = stepCode("SKIPPED_REPLAY_REUSED")
+	STEPSkippedRunTimedOut     = stepCode("SKIPPED_RUN_TIMED_OUT")
 	STEPSkippedUpstreamFailed  = stepCode("SKIPPED_UPSTREAM_FAILED")
 	STEPSkippedUpstreamSkipped = stepCode("SKIPPED_UPSTREAM_SKIPPED")
 	STEPRetryScheduled         = stepCode("RETRY_SCHEDULED")
@@ -659,6 +660,21 @@ func newCatalog() map[Code]Entry {
 				"follow the same step on the replayed run for the log and the real duration",
 			},
 			DataKeys: []string{"replayed_from"},
+			Terminal: true,
+		},
+		{
+			Code:  STEPSkippedRunTimedOut,
+			Level: LevelStep,
+			Short: "the run ran out of time before this step started",
+			Explanation: "The run passed its own deadline while an earlier step was still running, so " +
+				"the executor stopped scheduling work and this step never started. Nothing this " +
+				"step needs failed: a failed step closes its dependants itself, under the upstream " +
+				"codes, and what is left when the budget runs out was still waiting its turn.",
+			Remedy: []string{
+				"the run's own reason_data names the deadline it passed",
+				"the step the run was killed on carries scope run: that is where the time went",
+				"raise the job's timeout, or split the work so each step carries its own deadline",
+			},
 			Terminal: true,
 		},
 		{

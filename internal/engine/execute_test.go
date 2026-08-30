@@ -552,6 +552,59 @@ func TestExecuteRunARunTimeoutOverAStepWithRetriesFailsTheRun(t *testing.T) {
 	}
 }
 
+// TestARunTimeoutSkipsTheRestUnderItsOwnCode pins what an operator reads on
+// the steps a spent run budget stopped (#205). The store closes a failed
+// step's dependants itself, in the failure's own transaction, so everything
+// still pending when the engine sweeps has no failed upstream at all:
+// "upstream failed" on those rows names a step that does not exist.
+func TestARunTimeoutSkipsTheRestUnderItsOwnCode(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+
+	if _, _, err := f.Store.UpsertJobVersion(ctx, store.JobVersionInput{
+		JobName:  "slowjob",
+		SpecHash: "sha256:slowjob-parallel",
+		SpecJSON: fmt.Sprintf(`{"name":"slowjob","schema":"paceq.job.v1",
+"steps":[{"name":"hangs","run":[%s],"shell":false},
+{"name":"unrelated","run":[%s],"shell":false}],
+"timeout_ms":250}`, runArgv(f.fakeCmd(t), "sleep 30s"), runArgv(f.fakeCmd(t), "exit 0")),
+	}); err != nil {
+		t.Fatalf("record the slow job: %v", err)
+	}
+	out, err := f.Store.MaterializeManualTrigger(ctx, store.ManualTriggerInput{JobName: "slowjob"})
+	if err != nil {
+		t.Fatalf("materialise: %v", err)
+	}
+
+	if state := f.mustFinish(t, out.Run.ID); state != "failed" {
+		t.Fatalf("run ended %s, want failed", state)
+	}
+	detail, err := f.Store.GetRun(ctx, out.Run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	// "unrelated" names nothing in needs, so no upstream of its own can
+	// have failed. The budget is the only thing that stopped it.
+	unrelated := detail.Steps[1]
+	if unrelated.Name != "unrelated" {
+		t.Fatalf("step 1 is %q, want unrelated", unrelated.Name)
+	}
+	if unrelated.State != "skipped" {
+		t.Fatalf("unrelated = %s, want skipped", unrelated.State)
+	}
+	if unrelated.ReasonCode != string(reason.STEPSkippedRunTimedOut) {
+		t.Errorf("unrelated reason = %q, want %q", unrelated.ReasonCode,
+			reason.STEPSkippedRunTimedOut)
+	}
+	violations, err := f.Store.Fsck(ctx)
+	if err != nil {
+		t.Fatalf("fsck: %v", err)
+	}
+	if len(violations) != 0 {
+		t.Errorf("fsck found violations after a run timeout: %+v", violations)
+	}
+}
+
 func TestExecuteRunACancelRequestedBeforeTheClaimCancelsCleanly(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture(t)

@@ -177,11 +177,16 @@ func (d *drive) execute(ctx context.Context, e *Engine) (string, error) {
 		}
 	}
 
-	// Whatever is still pending never became runnable: some upstream ended
-	// failed, cancelled or skipped, so it never will be. Each leaves
+	// Whatever is still pending never became runnable, and the code says
+	// which of the two reasons stopped it: a spent run budget, or an
+	// upstream that ended failed, cancelled or skipped. Each leaves
 	// through the machine's skip transition, with its own event, in index
 	// order.
-	if err := e.skipPending(ctx, d.runID, d.ref); err != nil {
+	skipCode := reason.STEPSkippedUpstreamFailed
+	if timedOut {
+		skipCode = reason.STEPSkippedRunTimedOut
+	}
+	if err := e.skipPending(ctx, d.runID, d.ref, skipCode); err != nil {
 		if errors.Is(err, store.ErrLeaseLost) {
 			return lostLease("lease lost")
 		}
@@ -279,8 +284,13 @@ func (d *drive) observeCancel(ctx context.Context, e *Engine, by string) (string
 	return string(model.RunCancelled), nil
 }
 
-// skipPending closes out every step still waiting, in index order.
-func (e *Engine) skipPending(ctx context.Context, runID string, ref store.LeaseRef) error {
+// skipPending closes out every step still waiting, in index order, under the
+// code the caller names.
+//
+// A failed step closes its own transitive dependants inside the verdict's
+// transaction, so nothing reached here is waiting on a failure: what is left
+// never became runnable because the loop stopped scheduling.
+func (e *Engine) skipPending(ctx context.Context, runID string, ref store.LeaseRef, code reason.Code) error {
 	pending, err := e.Store.PendingSteps(ctx, runID)
 	if err != nil {
 		return fmt.Errorf("skip the pending steps of run %s: %w", runID, err)
@@ -289,7 +299,7 @@ func (e *Engine) skipPending(ctx context.Context, runID string, ref store.LeaseR
 	for _, p := range pending {
 		err := e.Store.RecordStepOutcome(ctx, runID, p.Name, store.StepOutcome{
 			Event:      string(model.EvUpstreamFailed),
-			ReasonCode: reason.STEPSkippedUpstreamFailed,
+			ReasonCode: code,
 			FinishedAt: now,
 		}, ref)
 		if err != nil {
