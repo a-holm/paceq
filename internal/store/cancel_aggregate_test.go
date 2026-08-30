@@ -173,17 +173,13 @@ func assertRunMatchesItsSteps(t *testing.T, ctx context.Context, s *store.Store,
 		t.Errorf("the steps aggregate to %s, want %s (states %v)", agg, want, states)
 	}
 
-	// The sweep is the production one, not a copy of it, and it is read for
-	// I10 alone: a replay that reuses a succeeded step trips I5 because the
-	// reused row carries no attempt, which belongs to the replay path and is
-	// #175. Widen this back to every check when that lands.
+	// The sweep is the production one, not a copy of it, and every check it
+	// runs is read.
 	violations, err := s.Fsck(ctx)
 	if err != nil {
 		t.Fatalf("Fsck: %v", err)
 	}
 	for _, v := range violations {
-		if v.Check == "I10" {
-			t.Errorf("fsck %s on %s: %s", v.Check, v.Subject, v.Detail)
-		}
+		t.Errorf("fsck %s on %s: %s", v.Check, v.Subject, v.Detail)
 	}
 }

@@ -24,9 +24,10 @@ import (
 // Steps can be spared a second execution. --from <step> spares the upstream
 // closure of that step in the FROZEN graph of the source run; --failed
 // spares every step that succeeded in the source. A spared step is born
-// succeeded carrying STEP_SKIPPED_REPLAY_REUSED, and the artifact rows the
-// source step produced are copied as references: uri, checksum and size move,
-// bytes never do.
+// succeeded carrying STEP_SKIPPED_REPLAY_REUSED and counting no attempt,
+// because this run started nothing; the artifact rows the source step
+// produced are copied as references: uri, checksum and size move, bytes
+// never do.
 //
 // The whole materialization is ONE transaction, like every other path that
 // creates a run: a crash leaves no half run behind.
@@ -147,9 +148,17 @@ VALUES (?, ?, ?, 'replay', 'queued', ?, ?, ?, 1, ?, ?, ?)`,
 				// of this row to transition from, because this run has
 				// never executed anything. Nothing updates an existing
 				// row, so there is nothing to fence.
+				//
+				// attempt is named and left at zero on purpose. The
+				// column counts the starts THIS run made on this row,
+				// and a reused step is never claimed, so any other
+				// number would report an execution that did not
+				// happen. What the outcome cost is a fact about the
+				// source run, which reason_data names and which still
+				// holds it; fsck's I5 spares exactly this reason code.
 				if _, err := tx.Exec(`INSERT INTO steps
-(run_id, name, idx, state, max_attempts, finished_at, reason_code, reason_data)
-VALUES (?, ?, ?, 'succeeded', ?, ?, ?, ?)`,
+(run_id, name, idx, state, attempt, max_attempts, finished_at, reason_code, reason_data)
+VALUES (?, ?, ?, 'succeeded', 0, ?, ?, ?, ?)`,
 					newID, step.Name, i, maxAttempts, now.UnixMilli(),
 					string(reason.STEPSkippedReplayReused),
 					fmt.Sprintf(`{"replay_of":"%s","source_run":"%s"}`, srcRunID, src.ID)); err != nil {

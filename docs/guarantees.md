@@ -111,7 +111,7 @@ Machine-checkable properties, enforced by `paceq fsck` as SQL and asserted conti
 | I2 | No run in a terminal state has a step in `running`. |
 | I3 | The trigger identity is unique: `(source, epoch, run_key)` has at most one run. Enforced by the database and verified anyway. |
 | I4 | At most one active attempt per `(run_id, step_name)`. |
-| I5 | Attempt numbers are dense from 1 with no gaps, per `(run_id, step_name)`. |
+| I5 | A step's attempt counter sits inside its budget: at least one attempt behind a verdict, never past `max_attempts`. A step a replay reused counts none, because nothing ran in that run. |
 | I6 | At most one tick per `(source_kind, source_name, scheduled_for)`. Enforced by the database. |
 | I7 | Every sensor cursor value has a matching finished tick whose `cursor_after` equals it. A cursor cannot have advanced without a committed tick. |
 | I8 | A step in `running` has every step it `needs` in `succeeded`. |
