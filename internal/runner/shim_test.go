@@ -2,6 +2,7 @@ package runner
 
 import (
 	"bufio"
+	"context"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -533,3 +534,75 @@ func markerProcAlive(marker string) bool {
 }
 
 func stderrOf(b *strings.Builder) *strings.Builder { return b }
+
+// Why an attempt was signalled is the sender's knowledge, not the
+// receiver's (#204). The daemon side leaves it beside the result before it
+// kills, the shim stamps it into the result, and the result is what both the
+// live verdict and recovery read.
+func TestSpawnViaShimRecordsWhyTheAttemptWasSignalled(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		argv     []string
+		cancel   bool
+		killedBy string
+		want     bool
+	}{
+		{
+			name:     "the daemon answering a cancellation",
+			argv:     []string{"/bin/sh", "-c", "sleep 60"},
+			cancel:   true,
+			killedBy: spool.KilledByCancel,
+			want:     true,
+		},
+		{
+			name:     "a signal from outside",
+			argv:     []string{"/bin/sh", "-c", "kill -TERM $$"},
+			cancel:   false,
+			killedBy: "",
+			want:     false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spoolDir := filepath.Join(t.TempDir(), "spool", "attempts")
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			spec := Spec{
+				Argv:      tc.argv,
+				Timeout:   30 * time.Second,
+				KillGrace: 200 * time.Millisecond,
+				Ctx: RunContext{
+					RunID:   "01JQ9F0R7K3M5N7P9R1T3V5X7Z",
+					Step:    "dump",
+					Attempt: 2,
+				},
+			}
+			if tc.cancel {
+				spec.OnStart = func(int) { cancel() }
+			}
+
+			res, err := SpawnViaShim(ctx, spec, ShimTarget{
+				Executable: shimFixture(t),
+				SpoolDir:   spoolDir,
+				ClaimEpoch: 42,
+			})
+			if err != nil {
+				t.Fatalf("spawn via shim: %v", err)
+			}
+			if res.Outcome != Signalled {
+				t.Fatalf("outcome = %v, want Signalled; reason_data %v", res.Outcome, res.ReasonData)
+			}
+			file := shimResult(t, ShimConfig{RunID: spec.Ctx.RunID, Step: spec.Ctx.Step, Attempt: spec.Ctx.Attempt}, spoolDir)
+			if file.KilledBy != tc.killedBy {
+				t.Fatalf("the file says killed_by %q, want %q", file.KilledBy, tc.killedBy)
+			}
+			if got := res.ReasonData["cancelled"] == true; got != tc.want {
+				t.Fatalf("the returned verdict reads cancelled = %v, want %v (%v)", got, tc.want, res.ReasonData)
+			}
+			// The mark is a note to a process that has exited.
+			if spool.CancelMarked(spoolDir, spec.Ctx.RunID, spec.Ctx.Step, spec.Ctx.Attempt) {
+				t.Fatal("the cancel mark outlived the shim that read it")
+			}
+		})
+	}
+}

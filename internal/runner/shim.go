@@ -237,9 +237,17 @@ waitLoop:
 	releaseCore()
 	classified := classify(cmd, timedOut, nil, cfg.Timeout)
 	res.EndedAt = clk.Now().UnixMilli()
-	res.Outcome = outcomeName(classified.Outcome)
+	res.Outcome = classified.Outcome.Spool()
 	res.ExitCode = classified.ExitCode
 	res.Signal = classified.Signal
+	if classified.Outcome == Signalled &&
+		spool.CancelMarked(cfg.SpoolDir, cfg.RunID, cfg.Step, cfg.Attempt) {
+		// The sender of the signal said, before it sent it, that the
+		// signal answers a cancellation. That is the one thing the
+		// signal itself cannot say, and the only place it can still be
+		// written down is this file (#204).
+		killedBy = spool.KilledByCancel
+	}
 	if killedBy != "" {
 		res.KilledBy = killedBy
 		res.ReasonData = mergeReasonData(classified.ReasonData, map[string]any{"killed_by": killedBy})
@@ -361,24 +369,6 @@ func writeBaseline(fd, pid int, ticks int64) {
 		return
 	}
 	_, _ = f.Write(append(b, '\n'))
-}
-
-// outcomeName maps the classifier's verdict onto the spool format's words.
-func outcomeName(o Outcome) string {
-	switch o {
-	case Succeeded:
-		return spool.OutcomeSucceeded
-	case Failed:
-		return spool.OutcomeFailed
-	case TimedOut:
-		return spool.OutcomeTimedOut
-	case SpawnFailed:
-		return spool.OutcomeSpawnFailed
-	case Signalled:
-		return spool.OutcomeSignalled
-	default:
-		return spool.OutcomeSignalled
-	}
 }
 
 func mergeReasonData(base map[string]any, extra map[string]any) json.RawMessage {
@@ -548,7 +538,16 @@ func SpawnViaShim(ctx context.Context, s Spec, t ShimTarget) (Result, error) {
 
 	esc := newEscalation(nil, grace, clk)
 	defer esc.stop()
-	cmd.Cancel = esc.fire
+	cmd.Cancel = func() error {
+		// This process is the sender, and this is the moment it knows
+		// the kill answers a cancellation. The mark goes down before
+		// the signal goes out, so the shim can stamp the reason into
+		// the result file that outlives this process (#204). A mark
+		// that could not be written degrades to the verdict a bare
+		// signal earns, exactly as a missing spool file does.
+		_ = spool.MarkCancel(t.SpoolDir, s.Ctx.RunID, s.Ctx.Step, s.Ctx.Attempt)
+		return esc.fire()
+	}
 
 	var timedOut atomic.Bool
 	timer := clk.NewTimer(s.Timeout)
@@ -616,6 +615,9 @@ func SpawnViaShim(ctx context.Context, s Spec, t ShimTarget) (Result, error) {
 	<-watcherDone
 	<-baselineDone
 	child.releaseRegistered()
+	// The only reader of the mark has exited; whatever it had to say is
+	// in the result file by now.
+	_ = spool.ClearCancelMark(t.SpoolDir, s.Ctx.RunID, s.Ctx.Step, s.Ctx.Attempt)
 	_ = waitErr // the spool, or the fallback below, carries the verdict
 
 	if r, err := spool.ReadResult(filepath.Join(t.SpoolDir, spool.FileName(s.Ctx.RunID, s.Ctx.Step, s.Ctx.Attempt))); err == nil {
@@ -627,12 +629,6 @@ func SpawnViaShim(ctx context.Context, s Spec, t ShimTarget) (Result, error) {
 		// stay in the spool file, where recovery reads them.
 		res.StartedAt = startedAt
 		res.FinishedAt = finishedAt
-		if res.Outcome == Signalled && ctx.Err() != nil {
-			// The kill was this process answering a cancellation or a
-			// lost lease; the verdict says so, exactly as the direct
-			// path's classifier does with the context it was given.
-			mergeCancelled(res)
-		}
 		return res, nil
 	}
 
@@ -662,6 +658,13 @@ func resultFromSpool(r spool.Result, shimPID int) Result {
 	if r.KilledBy != "" {
 		data["killed_by"] = r.KilledBy
 	}
+	if r.KilledBy == spool.KilledByCancel {
+		// The file says the signal answered a cancellation. Reading it
+		// back here, rather than asking this process's own context
+		// again, is what makes the verdict this executor commits and
+		// the verdict recovery commits rest on the same bytes (#204).
+		data["cancelled"] = true
+	}
 	out := Result{
 		ExitCode:   r.ExitCode,
 		Signal:     r.Signal,
@@ -683,11 +686,4 @@ func resultFromSpool(r spool.Result, shimPID int) Result {
 		out.Outcome, out.ReasonCode = Failed, ReasonNonzeroExit
 	}
 	return out
-}
-
-func mergeCancelled(res Result) {
-	if res.ReasonData == nil {
-		res.ReasonData = map[string]any{}
-	}
-	res.ReasonData["cancelled"] = true
 }

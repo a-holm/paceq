@@ -72,7 +72,7 @@ var ErrFormat = errors.New("spool: not a result file this paceq accepts")
 // against the spec's name pattern ([a-z0-9_-], issue #39 leans on that rule),
 // so the concatenation is a safe single path component.
 func FileName(runID, step string, attempt int) string {
-	return runID + "-" + step + "-" + strconv.Itoa(attempt) + ".json"
+	return runID + "-" + step + "-" + strconv.Itoa(attempt) + resultSuffix
 }
 
 // WriteResult stores one result durably, or leaves no result at all. The
@@ -172,7 +172,7 @@ func List(dir string) ([]string, error) {
 	}
 	var out []string
 	for _, ent := range entries {
-		if ent.IsDir() || !strings.HasSuffix(ent.Name(), ".json") || strings.HasPrefix(ent.Name(), ".") {
+		if ent.IsDir() || !strings.HasSuffix(ent.Name(), resultSuffix) || strings.HasPrefix(ent.Name(), ".") {
 			continue
 		}
 		out = append(out, filepath.Join(dir, ent.Name()))
@@ -188,7 +188,10 @@ func UnknownDir(dir string) string {
 }
 
 // Archive moves one spool file into the unknown directory beside dir,
-// keeping its name. It is idempotent: a file already gone reads as done.
+// keeping its name. It is idempotent: a file already gone reads as done. The
+// attempt's cancel mark goes with it: a rejected result takes its whole
+// attempt out of the letterbox, and a mark whose result nobody will read is
+// a note to nobody.
 func Archive(dir, path string) error {
 	dst := UnknownDir(dir)
 	if err := os.MkdirAll(dst, 0o700); err != nil {
@@ -200,16 +203,18 @@ func Archive(dir, path string) error {
 		}
 		return fmt.Errorf("spool: archive %s: %w", filepath.Base(path), err)
 	}
-	return nil
+	return removeMark(markBeside(path))
 }
 
-// Remove deletes one consumed result file. Idempotent like Archive: the
-// second consumer of the same good news finds nothing and is glad.
+// Remove deletes one consumed result file, and the attempt's cancel mark
+// with it: the reason the mark carried is inside the result by then.
+// Idempotent like Archive: the second consumer of the same good news finds
+// nothing and is glad.
 func Remove(path string) error {
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("spool: remove the consumed result: %w", err)
 	}
-	return nil
+	return removeMark(markBeside(path))
 }
 
 // Backlog reports how many result files are waiting and how old the oldest

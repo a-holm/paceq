@@ -4,6 +4,8 @@ import (
 	"os"
 	"os/exec"
 	"time"
+
+	"github.com/a-holm/paceq/internal/spool"
 )
 
 // Outcome is the five value verdict a run can have. The taxonomy is a
@@ -18,6 +20,28 @@ const (
 	SpawnFailed
 	Signalled
 )
+
+// Spool names an outcome in the spool format's vocabulary, the words that
+// outlive the process that observed them. An outcome with no word maps to
+// the empty string, which the format's reader refuses outright: a result
+// filed under a word that does not mean it is worse than one that cannot be
+// read at all.
+func (o Outcome) Spool() string {
+	switch o {
+	case Succeeded:
+		return spool.OutcomeSucceeded
+	case Failed:
+		return spool.OutcomeFailed
+	case TimedOut:
+		return spool.OutcomeTimedOut
+	case SpawnFailed:
+		return spool.OutcomeSpawnFailed
+	case Signalled:
+		return spool.OutcomeSignalled
+	default:
+		return ""
+	}
+}
 
 func (o Outcome) String() string {
 	switch o {
