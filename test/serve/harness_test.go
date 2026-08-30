@@ -190,37 +190,77 @@ func seedQueuedRun(t *testing.T, ws *workspace, cmd string, args ...string) stri
 	return run.ID
 }
 
-// lockedBuffer is stderr output safe to read while the daemon writes it.
+// lockedBuffer is stderr output safe to read while the daemon writes it. Each
+// write also wakes whoever waits for a line, so a waiter learns of a log line
+// on the write that carries it instead of on its next poll. A stop test's
+// window can be short, and a poll interval spent inside it is a flake.
 type lockedBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
+	mu      sync.Mutex
+	buf     bytes.Buffer
+	changed chan struct{} // closed and replaced by every write
+}
+
+func newLockedBuffer() *lockedBuffer {
+	return &lockedBuffer{changed: make(chan struct{})}
 }
 
 func (b *lockedBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.buf.Write(p)
+	n, err := b.buf.Write(p)
+	close(b.changed)
+	b.changed = make(chan struct{})
+	return n, err
 }
 
-func (b *lockedBuffer) contains(needle string) bool {
+// containsOrWait reports whether the buffer already holds needle, and when it
+// does not, hands back the channel the next write closes. Both are read under
+// one lock, so no write can land between the look and the wait.
+func (b *lockedBuffer) containsOrWait(needle string) (bool, <-chan struct{}) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return strings.Contains(b.buf.String(), needle)
+	if strings.Contains(b.buf.String(), needle) {
+		return true, nil
+	}
+	return false, b.changed
+}
+
+// drainStartMsg is the daemon's own announcement that phase two has begun:
+// the intake is shut, the executors' context is cancelled, and the process
+// now waits for the steps in flight. Everything a stop signal can convert
+// into a hard stop happens after this line.
+const drainStartMsg = "draining running work"
+
+// milestones are the daemon's own stop sequence in the order it logs them.
+// A failure message quotes the last one seen, so a reader is told what the
+// daemon was doing rather than only that a system call failed.
+var milestones = []struct{ msg, state string }{
+	{"daemon ready", "serving"},
+	{"intake closed", "the intake is closed, the drain has not started"},
+	{drainStartMsg, "draining the work in flight"},
+	{"second stop signal: killing every process group now", "answering a second stop signal"},
+	{"daemon stopped cleanly", "finished its clean stop"},
 }
 
 // serveProc is one running paceq serve subprocess.
 type serveProc struct {
 	cmd    *exec.Cmd
 	stderr *lockedBuffer
-	exited chan int // carries the exit code
+	exited chan int      // carries the exit code
+	gone   chan struct{} // closed once Wait returned and stderr is complete
+
+	mu   sync.Mutex
+	done bool
+	code int
 }
 
 func startServe(t *testing.T, ws *workspace, extra ...string) *serveProc {
 	t.Helper()
 	p := &serveProc{
 		cmd:    exec.Command(paceqBinary(t), append([]string{"serve"}, extra...)...),
-		stderr: &lockedBuffer{},
+		stderr: newLockedBuffer(),
 		exited: make(chan int, 1),
+		gone:   make(chan struct{}),
 	}
 	p.cmd.Dir = ws.Dir
 	p.cmd.Stderr = p.stderr
@@ -238,22 +278,89 @@ func startServe(t *testing.T, ws *workspace, extra ...string) *serveProc {
 				code = -1
 			}
 		}
+		// Wait has returned, so the stderr copy is complete: anything the
+		// daemon logged is readable before any reader learns it is gone.
+		p.mu.Lock()
+		p.done, p.code = true, code
+		p.mu.Unlock()
+		close(p.gone)
 		p.exited <- code
 	}()
 	t.Cleanup(func() { _ = p.cmd.Process.Kill() })
 	return p
 }
 
-// waitReady blocks until the daemon logged its ready line on stderr.
+// waitReady blocks until the daemon logged its ready line on stderr. The line
+// is written inside Serve, after main installed the process signal context and
+// after serve registered the hard stop channel, so a daemon that is ready has
+// its handlers in place: no stop signal sent after this call can be missed.
 func (p *serveProc) waitReady(t *testing.T) {
 	t.Helper()
-	deadline := time.Now().Add(15 * time.Second)
-	for !p.stderr.contains(`"msg":"daemon ready"`) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the daemon never became ready:\n%s", p.stderrSnapshot())
+	p.waitForLog(t, "daemon ready", "the daemon becoming ready", 15*time.Second)
+}
+
+// waitForDrainStart blocks until the daemon says its drain has begun. This is
+// the state a second stop signal converts into a hard stop; before it there is
+// nothing to convert, and after the drain ends there is no daemon left.
+func (p *serveProc) waitForDrainStart(t *testing.T) {
+	t.Helper()
+	p.waitForLog(t, drainStartMsg, "the drain starting", 20*time.Second)
+}
+
+// waitForLog blocks until the daemon logs one slog message, waking on the
+// write that carries it. It gives up as soon as the daemon has exited without
+// ever logging it, because a dead process writes nothing more, and it names
+// what was not observed either way.
+func (p *serveProc) waitForLog(t *testing.T, msg, what string, within time.Duration) {
+	t.Helper()
+	needle := `"msg":"` + msg + `"`
+	timeout := time.NewTimer(within)
+	defer timeout.Stop()
+	for {
+		found, changed := p.stderr.containsOrWait(needle)
+		if found {
+			return
 		}
-		time.Sleep(5 * time.Millisecond)
+		select {
+		case <-changed: // the daemon wrote something; look again
+		case <-p.gone:
+			// Wait has returned, so every byte the daemon wrote is in
+			// the buffer already: one last look settles it.
+			if found, _ := p.stderr.containsOrWait(needle); found {
+				return
+			}
+			t.Fatalf("%s was never observed: the daemon exited first, %s\ndaemon stderr:\n%s",
+				what, p.state(), p.stderrSnapshot())
+		case <-timeout.C:
+			t.Fatalf("%s was never observed within %s; the daemon is %s\ndaemon stderr:\n%s",
+				what, within, p.state(), p.stderrSnapshot())
+		}
 	}
+}
+
+// state describes the daemon the way a failure message needs it: gone and with
+// which code, or alive and at which point of its stop sequence.
+func (p *serveProc) state() string {
+	p.mu.Lock()
+	done, code := p.done, p.code
+	p.mu.Unlock()
+	if done {
+		return fmt.Sprintf("already gone, exit code %d, last logged: %s", code, p.lastMilestone())
+	}
+	return "still running, last logged: " + p.lastMilestone()
+}
+
+// lastMilestone names the furthest point of the stop sequence the daemon has
+// reached on stderr.
+func (p *serveProc) lastMilestone() string {
+	out := p.stderrSnapshot()
+	last := "nothing yet"
+	for _, m := range milestones {
+		if strings.Contains(out, `"msg":"`+m.msg+`"`) {
+			last = m.state
+		}
+	}
+	return last
 }
 
 func (p *serveProc) stderrSnapshot() string {
@@ -262,22 +369,29 @@ func (p *serveProc) stderrSnapshot() string {
 	return p.stderr.buf.String()
 }
 
-// signal delivers one stop signal to the daemon process.
-func (p *serveProc) signal(t *testing.T, sig syscall.Signal) {
+// signal delivers one stop signal to the daemon process. The ordinal is the
+// caller's name for this request ("first", "second"): a stop test's whole
+// claim rests on which request failed, so the message must say so, and it must
+// say what the daemon was doing when the signal was refused.
+func (p *serveProc) signal(t *testing.T, ordinal string, sig syscall.Signal) {
 	t.Helper()
 	if err := p.cmd.Process.Signal(sig); err != nil {
-		t.Fatalf("send %s: %v", sig, err)
+		t.Fatalf("the %s stop request (%s) never reached the daemon: %v\nthe daemon is %s\ndaemon stderr:\n%s",
+			ordinal, sig, err, p.state(), p.stderrSnapshot())
 	}
 }
 
-// waitExit blocks for the daemon to end and reports its exit code.
+// waitExit blocks for the daemon to end and reports its exit code. A daemon
+// that outlives the budget is reported with the point of the stop sequence it
+// reached, because "it did not exit" alone never says which promise broke.
 func (p *serveProc) waitExit(t *testing.T, within time.Duration) int {
 	t.Helper()
 	select {
 	case code := <-p.exited:
 		return code
 	case <-time.After(within):
-		t.Fatalf("the daemon did not exit within %s", within)
+		t.Fatalf("the daemon did not exit within %s; it is %s\ndaemon stderr:\n%s",
+			within, p.state(), p.stderrSnapshot())
 		return -1
 	}
 }
@@ -300,6 +414,7 @@ func waitForChildRunning(t *testing.T, ws *workspace, p *serveProc, runID string
 			t.Fatalf("the step's process never appeared; last read: %+v\ndaemon stderr:\n%s",
 				detail, p.stderrSnapshot())
 		}
+		// A poll interval, not a gate: the loop's exit is the observed state.
 		time.Sleep(10 * time.Millisecond)
 	}
 }
@@ -359,6 +474,7 @@ func requireNoOrphan(t *testing.T, runID string) {
 		if time.Now().After(deadline) {
 			t.Fatal("a process carrying the interrupted run is still alive after the stop")
 		}
+		// A poll interval, not a gate: the loop's exit is /proc going quiet.
 		time.Sleep(25 * time.Millisecond)
 	}
 }
