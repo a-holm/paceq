@@ -47,6 +47,12 @@ func (r *ring) push(encoded []byte, rawLen int) int64 {
 	return evicted
 }
 
+// holds reports whether the ring is carrying anything to flush. It is a
+// different question from whether the quota lost output: the ring can be full
+// with nothing dropped, and it can be empty after dropping a line too big for
+// it to keep.
+func (r *ring) holds() bool { return len(r.entries) > 0 }
+
 // flush hands the retained lines to fn in the order they were pushed, oldest
 // first, which is the order they were produced in.
 func (r *ring) flush(fn func(encoded []byte) error) error {

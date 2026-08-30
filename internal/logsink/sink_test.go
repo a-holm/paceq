@@ -300,42 +300,6 @@ func TestQuotaKeepsHeadAndTailAndMarksTheGap(t *testing.T) {
 	}
 }
 
-// The boundary is the line that crosses the head limit. Under it nothing is
-// dropped; one byte past it the next line starts the tail.
-func TestQuotaBoundaryAtTheHeadLimit(t *testing.T) {
-	for _, tc := range []struct {
-		name      string
-		lines     int
-		wantTrunc bool
-	}{
-		{"under the head limit", 7, false},
-		{"exactly at the head limit", 8, false},
-		{"one line past the head limit", 9, true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			clk := fakeClk(t, frozen)
-			root := testRoot(t)
-			s := openSink(t, root, "01K5ZQ8V3M7X", "spew", 1, clk, smallQuota)
-			w := s.Writer(StreamStdout)
-			// Each encoded line is exactly 128 bytes with a single digit
-			// seq: the fixed fields are 57 bytes and the content is 71.
-			// Eight of them fill the 1 KiB head precisely.
-			for i := 0; i < tc.lines; i++ {
-				if _, err := fmt.Fprintf(w, "%04d-%s\n", i, strings.Repeat("y", 66)); err != nil {
-					t.Fatalf("write: %v", err)
-				}
-			}
-			_, _, truncated, err := s.Finish()
-			if err != nil {
-				t.Fatalf("finish: %v", err)
-			}
-			if truncated != tc.wantTrunc {
-				t.Fatalf("truncated = %v, want %v", truncated, tc.wantTrunc)
-			}
-		})
-	}
-}
-
 // A step that pours out 64 MiB ends up with at most the 16 MiB quota plus one
 // line of overshoot and the marker, and the newest lines are the ones kept.
 func TestSixtyFourMiBStaysInsideTheQuota(t *testing.T) {

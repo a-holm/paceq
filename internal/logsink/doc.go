@@ -12,8 +12,9 @@ package logsink
 //   - Every line carries a seq number, including lines the quota throws
 //     away, so loss is detectable from the file alone.
 //   - The quota is 16 MiB per attempt: the first quarter stays on disk as
-//     the head, the last three quarters are kept in memory and written
-//     behind a truncated marker at Finish.
+//     the head, the last three quarters are kept in memory and written out
+//     at Finish. A truncated marker precedes them only when the memory ring
+//     had to throw a line away, which is the only thing that loses output.
 //   - The job process sees pipes. Nothing here hands out a file handle to
 //     the process whose output it is collecting.
 //   - Directories are 0700 and files are 0600, checked after creation and
