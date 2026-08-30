@@ -11,12 +11,15 @@ import (
 var levelOrder = []Level{LevelTick, LevelTrigger, LevelRun, LevelStep, LevelLease}
 
 // levelIntro is the one line under each level heading on the generated page.
+// It names the object the codes explain and never a storage location: a level
+// is not a claim about where the row is kept (#193), and the page said it was
+// until two run level codes were followed to the rows they actually reach.
 var levelIntro = map[Level]string{
-	LevelTick:    "Codes stored in the ticks table, one row per evaluation that was due.",
-	LevelTrigger: "Codes stored in the triggers table, one row per trigger a tick produced.",
-	LevelRun:     "Codes stored on the runs table, one row per run.",
-	LevelStep:    "Codes stored on the steps table, one row per step of a run.",
-	LevelLease:   "Codes stored in the lease_events table, one row per moment a role lease changed.",
+	LevelTick:    "Codes about one evaluation that was due: whether it fired, and why it did not.",
+	LevelTrigger: "Codes about one trigger an evaluation produced: whether it became a run, and why it did not.",
+	LevelRun:     "Codes about one run: why it was refused, why it waits, and how it ended.",
+	LevelStep:    "Codes about one step of a run: why it was skipped or retried, and how it ended.",
+	LevelLease:   "Codes about one moment a role lease changed hands.",
 }
 
 // Render draws docs/reference/reason-codes.md from the catalogue and nothing
@@ -35,6 +38,11 @@ func Render() string {
 	b.WriteString("`paceq error <code>`), a remediation hint, and the keys it promises in\n")
 	b.WriteString("reason_data. \"Ends the object\" marks the codes whose object is finished when the\n")
 	b.WriteString("code is written; those are exactly the writes the schema refuses without a code.\n\n")
+	b.WriteString("A code's level is the object it explains, not where its row is kept. The row a\n")
+	b.WriteString("code lands on is whichever one recorded the decision, and a single code can land\n")
+	b.WriteString("on more than one: RUN_REJECTED_DISK_LOW explains a run the free-space floor\n")
+	b.WriteString("refused, and it is written on the evaluation and on the trigger that refused it,\n")
+	b.WriteString("because a refused run is never created.\n\n")
 	b.WriteString("See also: `paceq error <code>` prints one entry, `paceq error --list -o json`\n")
 	b.WriteString("prints the whole catalogue for machines.\n")
 

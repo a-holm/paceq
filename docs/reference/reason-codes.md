@@ -12,12 +12,18 @@ Each code carries a short text (for lists), a long explanation (for
 reason_data. "Ends the object" marks the codes whose object is finished when the
 code is written; those are exactly the writes the schema refuses without a code.
 
+A code's level is the object it explains, not where its row is kept. The row a
+code lands on is whichever one recorded the decision, and a single code can land
+on more than one: RUN_REJECTED_DISK_LOW explains a run the free-space floor
+refused, and it is written on the evaluation and on the trigger that refused it,
+because a refused run is never created.
+
 See also: `paceq error <code>` prints one entry, `paceq error --list -o json`
 prints the whole catalogue for machines.
 
 ## Tick level
 
-Codes stored in the ticks table, one row per evaluation that was due.
+Codes about one evaluation that was due: whether it fired, and why it did not.
 
 | Code | Meaning | Ends the object | reason_data keys |
 |---|---|---|---|
@@ -41,7 +47,7 @@ Codes stored in the ticks table, one row per evaluation that was due.
 
 ## Trigger level
 
-Codes stored in the triggers table, one row per trigger a tick produced.
+Codes about one trigger an evaluation produced: whether it became a run, and why it did not.
 
 | Code | Meaning | Ends the object | reason_data keys |
 |---|---|---|---|
@@ -54,7 +60,7 @@ Codes stored in the triggers table, one row per trigger a tick produced.
 
 ## Run level
 
-Codes stored on the runs table, one row per run.
+Codes about one run: why it was refused, why it waits, and how it ended.
 
 | Code | Meaning | Ends the object | reason_data keys |
 |---|---|---|---|
@@ -74,7 +80,7 @@ Codes stored on the runs table, one row per run.
 
 ## Step level
 
-Codes stored on the steps table, one row per step of a run.
+Codes about one step of a run: why it was skipped or retried, and how it ended.
 
 | Code | Meaning | Ends the object | reason_data keys |
 |---|---|---|---|
@@ -99,7 +105,7 @@ Codes stored on the steps table, one row per step of a run.
 
 ## Lease level
 
-Codes stored in the lease_events table, one row per moment a role lease changed.
+Codes about one moment a role lease changed hands.
 
 | Code | Meaning | Ends the object | reason_data keys |
 |---|---|---|---|
