@@ -406,3 +406,37 @@ func requireCode(t *testing.T, diags diag.List, code string) diag.Diagnostic {
 	}
 	return d
 }
+
+// TestAStepTimeoutIsBoundedByTheJobCeiling holds the boundary the runner's own
+// refusal now shares (#201). The two sat an order of magnitude apart, which
+// made every duration between them a step that validated here and could then
+// never start.
+func TestAStepTimeoutIsBoundedByTheJobCeiling(t *testing.T) {
+	cases := []struct {
+		name    string
+		written string
+		want    time.Duration
+	}{
+		{"the ceiling itself", "24h", 24 * time.Hour},
+		{"an hour over it", "25h", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := []byte("name: report\ntimeout: 24h\nsteps:\n  - name: only\n" +
+				"    run: [\"/bin/true\"]\n    timeout: " + tc.written + "\n")
+
+			job, diags := spec.Parse("job.yaml", src)
+
+			if tc.want == 0 {
+				requireCode(t, diags, spec.CodeTimeoutTooLong)
+				return
+			}
+			if len(diags) > 0 {
+				t.Fatalf("a step at the ceiling was refused: %v", codesOf(diags))
+			}
+			if job.Steps[0].Timeout != tc.want {
+				t.Errorf("step timeout = %s, want %s", job.Steps[0].Timeout, tc.want)
+			}
+		})
+	}
+}
