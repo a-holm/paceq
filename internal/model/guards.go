@@ -16,9 +16,12 @@ type Guards struct {
 	AvailableAt int64
 	// CancelRequested is cancel_requested_at being set on the run.
 	CancelRequested bool
-	// LeaseValid is the caller holding the run's lease at the current epoch.
-	// A caller whose lease has gone is a stale writer and may not finish or
-	// cancel the run; the reaper's EvLeaseExpired is the way that run moves.
+	// LeaseValid is the run row naming this caller as the lease owner at this
+	// caller's fencing epoch. Owner and epoch are the whole rule: the lease
+	// deadline is not a term, because it says when the reaper may take the
+	// run and not who owns it. A caller whose lease has gone is a stale
+	// writer and may not finish or cancel the run; the reaper's
+	// EvLeaseExpired is the way that run moves.
 	LeaseValid bool
 	// AttemptsLeft is the step having retries left under its policy. The
 	// backoff itself is M1-09; the model only says the retry transition is

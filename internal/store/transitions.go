@@ -953,8 +953,7 @@ func (s *Store) FinishRun(ctx context.Context, runID string, ref LeaseRef, fr Fi
 			return err
 		}
 		guards := model.Guards{
-			LeaseValid: run.LeaseOwner == ref.Owner && run.LeaseEpoch == ref.Epoch &&
-				(run.LeaseExpiresAt.IsZero() || run.LeaseExpiresAt.After(now)),
+			LeaseValid:       leaseHeldBy(run, ref),
 			AllStepsTerminal: allStepsTerminal(states),
 			AnyStepFailed:    anyStepIs(states, model.StepFailed),
 			AnyStepCancelled: anyStepIs(states, model.StepCancelled),
@@ -1063,6 +1062,7 @@ func (s *Store) ObserveRunCancel(ctx context.Context, runID string, ref LeaseRef
 			return err
 		}
 		guards := cancelGuards(states, code)
+		guards.LeaseValid = leaseHeldBy(run, ref)
 
 		state, effects, err := model.NextRunState(cur, model.EvCancelObserved, guards)
 		if err != nil {
@@ -1329,9 +1329,13 @@ func anyStepIs(states []model.StepState, want model.StepState) bool {
 // ranks them by, and names the verdict they reach. The reason code follows the
 // verdict rather than the request: a cancellation that arrived after the run
 // had already failed records the failure, because that is what happened.
+//
+// It says nothing about the lease. Three of its four callers only rank the
+// steps and never ask the machine to move the run, so a lease answer here
+// would be a fact nobody computed; the one caller that does ask fills the
+// field in from leaseHeldBy.
 func cancelGuards(states []model.StepState, code reason.Code) model.Guards {
 	return model.Guards{
-		LeaseValid:       true,
 		AnyStepFailed:    anyStepIs(states, model.StepFailed),
 		AnyStepCancelled: anyStepIs(states, model.StepCancelled),
 		AllStepsTerminal: allStepsTerminal(states),
@@ -1600,8 +1604,7 @@ func (s *Store) DrainRun(ctx context.Context, runID string, ref LeaseRef, code r
 		// Nothing of ours is out there any more: another holder claimed, or
 		// the reaper took the run. Quietly reporting nothing owed is correct,
 		// not a failure; the row belongs to someone else now.
-		if run.State != string(model.RunRunning) ||
-			run.LeaseOwner != ref.Owner || run.LeaseEpoch != ref.Epoch {
+		if !leaseHeldBy(run, ref) {
 			return nil
 		}
 		cur, err := model.ParseRunState(run.State)
@@ -1647,9 +1650,8 @@ func (s *Store) DrainRun(ctx context.Context, runID string, ref LeaseRef, code r
 			}
 		}
 
-		held := run.LeaseExpiresAt.IsZero() || run.LeaseExpiresAt.After(now)
 		state, effects, err := model.NextRunState(cur, model.EvShutdownDrain, model.Guards{
-			LeaseValid: held,
+			LeaseValid: leaseHeldBy(run, ref),
 		})
 		if err != nil {
 			return fmt.Errorf("drain run %s: %w", runID, err)
