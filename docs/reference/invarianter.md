@@ -66,11 +66,11 @@ Severity: **serious**.
 
 paceq fsck --repair cancels the stranded steps with a reason code, exactly as a shutdown would
 
-### I3 — one run per (job, run_key)
+### I3 — one run per dedup identity (source, epoch, run_key)
 
 Severity: **critical**.
 
-the unique rule is enforced by the schema, so a break means a hand edit or corruption; keep a copy of the state directory and restore from backup
+the run_keys PRIMARY KEY (source_id, epoch, run_key) grants each identity one run, so a run named by two of them means a hand edit or corruption; keep a copy of the state directory and restore from backup
 
 ### I5 — a step's attempt counter sits inside its budget
 
@@ -82,7 +82,7 @@ a row was written behind the transition layer; report it as a bug with paceq exp
 
 Severity: **critical**.
 
-the unique rule is enforced by the schema, so a break means a hand edit or corruption; keep a copy of the state directory and restore from backup
+the ticks UNIQUE (source_kind, source_name, scheduled_for) constraint refuses the write, so a break means a hand edit or corruption; keep a copy of the state directory and restore from backup
 
 ### I8 — a running step has every step it needs succeeded
 
@@ -100,5 +100,5 @@ a cyclic run can never finish: cancel it with paceq cancel run <id> and fix the 
 
 Severity: **warning**.
 
-rows from an older paceq; paceq fsck --repair stamps them as legacy, new rows are refused by the schema
+rows from an older paceq; paceq fsck --repair stamps them as legacy, and the schema CHECK that a terminal row carries reason_code IS NOT NULL refuses new ones
 

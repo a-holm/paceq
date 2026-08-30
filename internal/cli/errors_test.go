@@ -47,8 +47,8 @@ func TestEveryErrorCarriesAllThreeParts(t *testing.T) {
 
 		"repairConfirmError": repairConfirmError(&store.RepairConfirmError{Critical: []store.Violation{
 			{
-				Check: "I3", Severity: store.Critical, Subject: "job x run_key k",
-				Detail: "the run key names more than one run",
+				Check: "I3", Severity: store.Critical, Subject: "run 01J0RUN",
+				Detail: "the run is claimed by more than one dedup identity (sensor-a/1/k, sensor-b/1/k)",
 			},
 		}}, Env{}, "/tmp/x/.paceq"),
 

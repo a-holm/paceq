@@ -11,9 +11,10 @@ import (
 // is in a state the code cannot reason about safely. Full fsck with repair
 // is M6-06; this file exists so a boot can refuse to make things worse.
 //
-//   - I3  One run per (job, run_key). Dedup's whole promise is that a key
-//         names exactly one run; two rows under one key mean history itself
-//         is ambiguous.
+//   - I3  One run per dedup identity (source, epoch, run_key). The run_keys
+//         primary key grants each identity its own row, so the direction with
+//         content is the reverse: a run claimed by two identities means the
+//         decision behind it is ambiguous.
 //   - I6  One tick per schedule slot. The UNIQUE index enforces this on every
 //         write; the query re-checks what a corrupted or hand-edited file
 //         could still break.
@@ -35,9 +36,9 @@ import (
 // The critical subset's statements, shared by the boot gate and the full
 // sweep. The EQP gate explains these same constants.
 const (
-	fsckI3SQL = `SELECT job_name, run_key, COUNT(*)
-FROM runs WHERE run_key IS NOT NULL
-GROUP BY job_name, run_key HAVING COUNT(*) > 1`
+	fsckI3SQL = `SELECT run_id, group_concat(source_id || '/' || epoch || '/' || run_key, ', '), COUNT(*)
+FROM run_keys WHERE run_id IS NOT NULL
+GROUP BY run_id HAVING COUNT(*) > 1`
 
 	fsckI6SQL = `SELECT source_name, scheduled_for, COUNT(*)
 FROM ticks WHERE scheduled_for IS NOT NULL
@@ -56,7 +57,7 @@ WHERE s.name IS NULL`
 func (s *Store) QuickFsck(ctx context.Context) ([]Violation, error) {
 	var out []Violation
 
-	dupes, err := s.checkRunKeyDuplicates(ctx, "quick fsck I3")
+	dupes, err := s.checkDoubleClaimedRuns(ctx, "quick fsck I3")
 	if err != nil {
 		return nil, err
 	}
@@ -97,9 +98,17 @@ func (s *Store) QuickFsck(ctx context.Context) ([]Violation, error) {
 	return tagViolations(out), nil
 }
 
-// checkRunKeyDuplicates sweeps I3: a (job, run_key) pair naming more than one
-// run. Label names the caller in the error ("fsck I3", "quick fsck I3").
-func (s *Store) checkRunKeyDuplicates(ctx context.Context, label string) ([]Violation, error) {
+// checkDoubleClaimedRuns sweeps I3: one run claimed by more than one dedup
+// identity. Label names the caller in the error ("fsck I3", "quick fsck I3").
+//
+// The other direction, one identity holding two runs, is the run_keys primary
+// key and cannot be queried for: grouping a table by its own primary key
+// always counts one. Nor can it be asked of the runs table, where a run row
+// carries a bare run_key with neither the source nor the epoch that made it
+// unique: a reset replays a key into a new epoch, and a pruned key fires
+// again inside the old one, so two runs under one (job_name, run_key) is
+// ordinary history rather than a broken rule.
+func (s *Store) checkDoubleClaimedRuns(ctx context.Context, label string) ([]Violation, error) {
 	qctx, qcancel := fsckBounded(ctx)
 	defer qcancel()
 	rows, err := s.r.QueryContext(qctx, fsckI3SQL)
@@ -109,8 +118,8 @@ func (s *Store) checkRunKeyDuplicates(ctx context.Context, label string) ([]Viol
 	return collectPairs(rows, nil, func(a, b string) Violation {
 		return Violation{
 			Check:   "I3",
-			Subject: "job " + a + " run_key " + b,
-			Detail:  "the run key names more than one run",
+			Subject: "run " + a,
+			Detail:  "the run is claimed by more than one dedup identity (" + b + ")",
 		}
 	})
 }

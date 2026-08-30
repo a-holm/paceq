@@ -9,6 +9,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // The dedup epoch half of M3-04 (issue #6). The run_keys gate itself, the
@@ -283,6 +284,83 @@ func TestDedupManyKeysReplayResetIsTheProductSentence(t *testing.T) {
 	if got := countSensorRuns(t, s); got != 100 {
 		t.Fatalf("runs after reset replay = %d, want 100 (50 old + 50 new)", got)
 	}
+
+	// The sentence is only true if the database it leaves behind can be
+	// served. A reset that replays into a state the boot gate calls critical
+	// corruption is not a feature, so the product test owns the sweep too.
+	requireFsckIsQuiet(t, s, "after the reset replay")
+}
+
+// requireFsckIsQuiet runs both sweeps, the operator's and the boot gate's,
+// and fails on anything above a warning. Warnings alone exit paceq fsck 0;
+// a serious finding exits 1, and a critical one also refuses the daemon's
+// start with PSQ-FSCK-001.
+func requireFsckIsQuiet(t *testing.T, s *Store, when string) {
+	t.Helper()
+	ctx := context.Background()
+	full, err := s.Fsck(ctx)
+	if err != nil {
+		t.Fatalf("fsck %s: %v", when, err)
+	}
+	for _, v := range full {
+		if v.Severity > Warning {
+			t.Errorf("fsck %s reports %s %s (%s): %s", when, v.Severity, v.Check, v.Subject, v.Detail)
+		}
+	}
+	quick, err := s.QuickFsck(ctx)
+	if err != nil {
+		t.Fatalf("quick fsck %s: %v", when, err)
+	}
+	for _, v := range quick {
+		if v.Severity == Critical {
+			t.Errorf("the boot gate %s refuses on %s (%s): %s", when, v.Check, v.Subject, v.Detail)
+		}
+	}
+}
+
+// TestAPrunedRunKeyRefiresWithoutACriticalFinding is the retention route to
+// the same shape, with no reset involved. run_keys are pruned by age with no
+// keep-minimum while runs keep a per-job minimum for ever, so a source that
+// re-presents an old unit of work fires a second run under a run key whose
+// first run is still there, inside one epoch. The runbook documents that
+// re-firing as the price of a bounded table, so the sweep must not call it
+// corruption.
+func TestAPrunedRunKeyRefiresWithoutACriticalFinding(t *testing.T) {
+	s := migratedStore(t)
+	seedSensorJob(t, s)
+	seedSensor(t, s, resetSensor, "a", 0)
+	ctx := context.Background()
+
+	b1, err := s.BeginSensorTick(ctx, BeginSensorTickInput{SensorName: resetSensor, CursorBefore: "a"})
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if out := commitKeys(t, s, b1.TickID, b1.CursorVersion, 0, "file:old"); out.Accepted != 1 {
+		t.Fatalf("first pass accepted %d, want 1", out.Accepted)
+	}
+
+	// Retention deletes the key by age. The run it produced is younger than
+	// the key's horizon and survives.
+	if _, err := s.PruneRunKeysBatch(ctx, s.clk.Now().Add(24*time.Hour)); err != nil {
+		t.Fatalf("prune the run keys: %v", err)
+	}
+	if got := runKeyCount(t, s, resetSensor); got != 0 {
+		t.Fatalf("%d run keys survived the prune, want 0", got)
+	}
+
+	// The source re-presents the same unit of work in the SAME epoch.
+	b2, err := s.BeginSensorTick(ctx, BeginSensorTickInput{SensorName: resetSensor, CursorBefore: "b"})
+	if err != nil {
+		t.Fatalf("begin the refire: %v", err)
+	}
+	if out := commitKeys(t, s, b2.TickID, b2.CursorVersion, 0, "file:old"); out.Accepted != 1 {
+		t.Fatalf("the refire accepted %d, want 1: the pruned key must fire again", out.Accepted)
+	}
+	if got := countSensorRuns(t, s); got != 2 {
+		t.Fatalf("runs after the refire = %d, want 2", got)
+	}
+
+	requireFsckIsQuiet(t, s, "after a pruned key refired")
 }
 
 // TestResetCrashLeavesEitherOldOrNewEpoch proves a reset is atomic. A child

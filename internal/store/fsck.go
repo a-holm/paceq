@@ -19,7 +19,7 @@ import (
 //   - I1  A run in running holds a live lease: an owner, and an expiry still
 //         ahead of the wall clock minus the skew allowance.
 //   - I2  A terminal run has no step still pending or running.
-//   - I3  One run per (job, run_key).
+//   - I3  One run per dedup identity (source, epoch, run_key).
 //   - I5  The attempt counter is tight within its budget.
 //   - I6  One tick per schedule slot.
 //   - I8  A step that is running has every need succeeded.
@@ -232,9 +232,11 @@ func (s *Store) Fsck(ctx context.Context) ([]Violation, error) {
 		return nil, fmt.Errorf("fsck I2: %w", err)
 	}
 
-	// I3: a run_key that names more than one run of one job. Critical: the
-	// schema refuses the write, so a break means a hand edit or corruption.
-	dupes, err := s.checkRunKeyDuplicates(ctx, "fsck I3")
+	// I3: a run claimed by more than one dedup identity. Critical: the
+	// run_keys primary key grants each identity one run and the trigger
+	// materialisation writes exactly one identity per run, so a break means
+	// a hand edit or a partial write.
+	dupes, err := s.checkDoubleClaimedRuns(ctx, "fsck I3")
 	if err != nil {
 		return nil, err
 	}

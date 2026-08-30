@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -106,6 +107,56 @@ WHERE id = ?`, runID); err != nil {
 	}
 }
 
+// schemaRuleByInvariant names, for every invariant whose remedy tells an
+// operator the database itself refuses the write, the rule that does the
+// refusing. The rule text must read verbatim both in the remedy and in the
+// golden schema, so a remedy can never send an operator looking for a
+// constraint the schema does not hold.
+var schemaRuleByInvariant = map[string]string{
+	"I3":     "PRIMARY KEY (source_id, epoch, run_key)",
+	"I6":     "UNIQUE (source_kind, source_name, scheduled_for)",
+	"reason": "reason_code IS NOT NULL",
+}
+
+// TestSchemaBackedRemediesNameARuleTheSchemaHolds is the honesty gate on the
+// catalogue. A remedy that tells an operator the database itself refused the
+// write must name the rule that does the refusing, and that rule must be in
+// the schema: a remedy pointing at a constraint the schema does not hold
+// sends the operator to a backup restore over a state the product produces
+// on purpose.
+func TestSchemaBackedRemediesNameARuleTheSchemaHolds(t *testing.T) {
+	raw, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", goldenPath, err)
+	}
+	schema := string(raw)
+
+	for _, inv := range Invariants {
+		claimsSchema := strings.Contains(inv.Remedy, "schema") ||
+			strings.Contains(inv.Remedy, "PRIMARY KEY") ||
+			strings.Contains(inv.Remedy, "UNIQUE")
+		rule, named := schemaRuleByInvariant[inv.ID]
+		if !claimsSchema {
+			if named {
+				t.Errorf("invariant %s is listed as schema-backed but its remedy claims nothing: %q",
+					inv.ID, inv.Remedy)
+			}
+			continue
+		}
+		if !named {
+			t.Errorf("the remedy of %s claims the schema enforces it but names no rule: %q",
+				inv.ID, inv.Remedy)
+			continue
+		}
+		if !strings.Contains(inv.Remedy, rule) {
+			t.Errorf("the remedy of %s does not name %q: %q", inv.ID, rule, inv.Remedy)
+		}
+		if !strings.Contains(schema, rule) {
+			t.Errorf("the remedy of %s names %q, which is not in %s", inv.ID, rule, goldenPath)
+		}
+	}
+}
+
 // TestFsckFullSweepCatchesTheCriticalSubset proves the full sweep and the boot
 // gate agree: the same plants that refuse a startup come out of the operator's
 // sweep graded critical.
@@ -113,20 +164,15 @@ func TestFsckFullSweepCatchesTheCriticalSubset(t *testing.T) {
 	ctx := context.Background()
 	s, runID := plantSeededRun(t)
 
-	// I3: two runs under one run_key.
-	if _, err := s.w.ExecContext(ctx, `UPDATE runs SET run_key = 'shared-key'
-WHERE id = ?`, runID); err != nil {
-		t.Fatalf("plant the run_key: %v", err)
-	}
-	// The dedup gate refuses a duplicate key through the API, which is the
-	// everyday enforcement; the twin row is planted the way the corruption
-	// this check exists for would arrive, behind the gate.
-	if _, err := s.w.ExecContext(ctx, `INSERT INTO runs (id, job_name, job_version_id,
-	state, origin, run_key, available_at, created_at, updated_at, reason_code)
-	SELECT '01DUPRUNKEY0000000000000A', job_name, job_version_id, state, origin,
-		run_key, available_at, created_at, updated_at, reason_code
-	FROM runs WHERE id = ?`, runID); err != nil {
-		t.Fatalf("plant the duplicate run_key row: %v", err)
+	// I3: one run claimed by two dedup identities. The run_keys primary key
+	// keeps identities apart, so the second claim is planted the way the
+	// corruption this check exists for would arrive, behind the gate.
+	for _, source := range []string{"src-a", "src-b"} {
+		if _, err := s.w.ExecContext(ctx, `INSERT INTO run_keys
+(source_id, epoch, run_key, first_seen_at, run_id) VALUES (?, 1, 'shared-key', 1, ?)`,
+			source, runID); err != nil {
+			t.Fatalf("plant the second dedup identity: %v", err)
+		}
 	}
 
 	// I9: a dependency on a step the run does not have.
@@ -141,6 +187,9 @@ VALUES (?, 'build', 'ghost')`, runID); err != nil {
 	}
 	if !hasCheck(violations, "I9") {
 		t.Fatalf("the full sweep missed the dangling edge: %+v", violations)
+	}
+	if !hasCheck(violations, "I3") {
+		t.Fatalf("the full sweep missed the double-claimed run: %+v", violations)
 	}
 	for _, v := range violations {
 		if v.Severity != severityOf(v.Check) {
@@ -190,7 +239,7 @@ func TestEveryInvariantQueryPlansWithoutScanningRuns(t *testing.T) {
 	}{
 		{check: "I1", sql: fsckI1SQL, args: []any{time.Now().UnixMilli()}, uses: []string{"idx_runs_reaper"}},
 		{check: "I2", sql: fsckI2SQL, uses: []string{"SEARCH"}},
-		{check: "I3", sql: fsckI3SQL, uses: []string{"idx_runs_run_key"}},
+		{check: "I3", sql: fsckI3SQL, uses: []string{"COVERING INDEX idx_run_keys_run_id"}},
 		{check: "I5", sql: fsckI5SQL},
 		{check: "I6", sql: fsckI6SQL, uses: []string{"ticks"}},
 		{check: "I8", sql: fsckI8SQL, uses: []string{"SEARCH sd"}},

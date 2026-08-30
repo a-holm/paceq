@@ -411,7 +411,7 @@ func TestACriticalViolationRefusesStartup(t *testing.T) {
 	if !strings.Contains(err.Error(), `paceq fsck --repair`) {
 		t.Errorf("the refusal %q does not name the repair path", err)
 	}
-	if !strings.Contains(err.Error(), "I3") || !strings.Contains(err.Error(), subject[len(subject)-len("planted-duplicate-run-key"):]) {
+	if !strings.Contains(err.Error(), "I3") || !strings.Contains(err.Error(), subject) {
 		t.Errorf("the refusal %q does not name the violation %s", err, subject)
 	}
 
@@ -454,7 +454,7 @@ func TestBootChangeSurvivesHealthGateRefusal(t *testing.T) {
 	if !strings.Contains(err.Error(), `paceq fsck --repair`) {
 		t.Errorf("the refusal %q does not name the repair path", err)
 	}
-	if !strings.Contains(err.Error(), "I3") || !strings.Contains(err.Error(), subject[len(subject)-len("planted-duplicate-run-key"):]) {
+	if !strings.Contains(err.Error(), "I3") || !strings.Contains(err.Error(), subject) {
 		t.Errorf("the refusal %q does not name the violation %s", err, subject)
 	}
 

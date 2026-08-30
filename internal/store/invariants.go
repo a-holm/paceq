@@ -16,9 +16,9 @@ import (
 //
 // Severities are graded, not uniform (02 R11):
 //
-//   - Critical breaks the database's own uniqueness rules (I3, I6) or its
-//     dependency graph (I9). They mean a hand edit or corruption; the daemon
-//     refuses to start on one until an operator confirms a repair.
+//   - Critical breaks a uniqueness rule the schema itself holds (I3, I6) or
+//     the dependency graph (I9). They mean a hand edit or corruption; the
+//     daemon refuses to start on one until an operator confirms a repair.
 //   - Serious is state drift the system can reconcile out of: a lease that
 //     died, a step outliving its run. Alarming, but boot continues.
 //   - Warning is cosmetic or historic: rows written by an older paceq that
@@ -87,8 +87,8 @@ var Invariants = []Invariant{
 	{
 		ID:       "I3",
 		Severity: Critical,
-		Title:    "one run per (job, run_key)",
-		Remedy:   "the unique rule is enforced by the schema, so a break means a hand edit or corruption; keep a copy of the state directory and restore from backup",
+		Title:    "one run per dedup identity (source, epoch, run_key)",
+		Remedy:   "the run_keys PRIMARY KEY (source_id, epoch, run_key) grants each identity one run, so a run named by two of them means a hand edit or corruption; keep a copy of the state directory and restore from backup",
 	},
 	{
 		ID:       "I5",
@@ -100,7 +100,7 @@ var Invariants = []Invariant{
 		ID:       "I6",
 		Severity: Critical,
 		Title:    "at most one tick per (source_kind, source_name, scheduled_for)",
-		Remedy:   "the unique rule is enforced by the schema, so a break means a hand edit or corruption; keep a copy of the state directory and restore from backup",
+		Remedy:   "the ticks UNIQUE (source_kind, source_name, scheduled_for) constraint refuses the write, so a break means a hand edit or corruption; keep a copy of the state directory and restore from backup",
 	},
 	{
 		ID:       "I8",
@@ -154,7 +154,7 @@ var Invariants = []Invariant{
 		ID:       "reason",
 		Severity: Warning,
 		Title:    "a terminal row carries a usable reason code",
-		Remedy:   "rows from an older paceq; paceq fsck --repair stamps them as legacy, new rows are refused by the schema",
+		Remedy:   "rows from an older paceq; paceq fsck --repair stamps them as legacy, and the schema CHECK that a terminal row carries reason_code IS NOT NULL refuses new ones",
 	},
 }
 

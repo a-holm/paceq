@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,9 +15,9 @@ import (
 
 // The repair flags and the graded exit contract, from the command line down.
 
-// plantDuplicateRunKey returns a state directory holding two runs under one
-// run_key: a critical finding (I3) that the dedup gate would have refused at
-// the trigger, planted here through the manual create the gate does not cover.
+// plantDuplicateRunKey returns a state directory holding one run claimed by
+// two dedup identities: a critical finding (I3) no live path writes, because
+// the trigger materialisation commits exactly one identity per run.
 func plantDuplicateRunKey(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -27,16 +28,17 @@ func plantDuplicateRunKey(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("record job: %v", err)
 	}
-	for range 2 {
-		if _, err := s.CreateRunWithSteps(ctx, store.NewRun{
-			JobName:      fixtureJobInput.JobName,
-			JobVersionID: version.ID,
-			Origin:       "manual",
-			RunKey:       "shared",
-			Steps:        []store.NewStep{{Name: "extract"}},
-		}); err != nil {
-			t.Fatalf("create the run: %v", err)
-		}
+	if _, err := s.CreateRunWithSteps(ctx, store.NewRun{
+		JobName:      fixtureJobInput.JobName,
+		JobVersionID: version.ID,
+		Origin:       "manual",
+		RunKey:       "shared",
+		Steps:        []store.NewStep{{Name: "extract"}},
+	}); err != nil {
+		t.Fatalf("create the run: %v", err)
+	}
+	if _, err := s.InjectDuplicateRunKey(ctx); err != nil {
+		t.Fatalf("plant the second dedup identity: %v", err)
 	}
 	if err := s.Close(); err != nil {
 		t.Fatalf("close: %v", err)
@@ -122,5 +124,83 @@ func TestFsckJSONFlagPinsTheContract(t *testing.T) {
 		if v.Remedy == "" {
 			t.Errorf("finding %s carries no remedy", v.Check)
 		}
+	}
+}
+
+// TestFsckExitsCleanAfterASensorReset is the operator-facing half of #200:
+// `paceq sensors reset` replays every run key into a new dedup epoch, so the
+// runs that follow share a (job_name, run_key) pair with the runs they
+// replay. `paceq fsck` must read that as history and exit 0.
+func TestFsckExitsCleanAfterASensorReset(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, stateDirName)
+	s := openFixtureStoreAt(t, stateDir, clock.NewFake(testOrigin))
+	ctx := context.Background()
+	const job = "polling-job"
+	const sensorName = "poller"
+	if _, _, err := s.UpsertJobVersion(ctx, store.JobVersionInput{
+		JobName:       job,
+		SpecHash:      "sha256:poller",
+		SpecJSON:      `{"schema":"paceq.job.v1","name":"polling-job","steps":[{"name":"collect","run":["true"]}]}`,
+		MaxConcurrent: 10,
+	}); err != nil {
+		t.Fatalf("record the job: %v", err)
+	}
+	if err := s.UpsertSensor(ctx, store.SensorSeedInput{
+		Name: sensorName, JobName: job, ExecJSON: `["cat"]`,
+	}); err != nil {
+		t.Fatalf("seed the sensor: %v", err)
+	}
+	keys := make([]store.SensorTrigger, 0, 50)
+	for i := range 50 {
+		keys = append(keys, store.SensorTrigger{RunKey: fmt.Sprintf("file:%02d.csv", i)})
+	}
+	evaluate := func(epoch int64) {
+		t.Helper()
+		b, err := s.BeginSensorTick(ctx, store.BeginSensorTickInput{SensorName: sensorName})
+		if err != nil {
+			t.Fatalf("begin the tick: %v", err)
+		}
+		out, err := s.CommitSensorTick(ctx, store.SensorTickCommitInput{
+			TickID:        b.TickID,
+			SensorName:    sensorName,
+			JobName:       job,
+			CursorVersion: b.CursorVersion,
+			DedupEpoch:    epoch,
+			Triggers:      keys,
+			Outcome:       store.OutcomeTriggered,
+			NextEvalAt:    60000,
+		})
+		if err != nil {
+			t.Fatalf("commit the tick: %v", err)
+		}
+		if out.Accepted != len(keys) {
+			t.Fatalf("the evaluation accepted %d run keys, want %d", out.Accepted, len(keys))
+		}
+	}
+	evaluate(0)
+	reset, err := s.ResetSensor(ctx, store.ResetSensorInput{Name: sensorName})
+	if err != nil {
+		t.Fatalf("reset the sensor: %v", err)
+	}
+	evaluate(reset.NewEpoch)
+	if err := s.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if err := os.Chmod(filepath.Join(stateDir, store.DatabaseFileName), 0o600); err != nil {
+		t.Fatalf("tighten the database mode: %v", err)
+	}
+
+	got := runCLI(t, dir, nil, "fsck", "--json")
+	if got.code != ExitOK {
+		t.Fatalf("fsck over 50 run keys naming 100 runs exited %d, want %d:\n%s%s",
+			got.code, ExitOK, got.stdout, got.stderr)
+	}
+	var doc fsckReport
+	if err := json.Unmarshal([]byte(got.stdout), &doc); err != nil {
+		t.Fatalf("the --json report is not the contract document: %v\n%s", err, got.stdout)
+	}
+	if doc.Critical != 0 {
+		t.Fatalf("the report grades %d findings critical: %+v", doc.Critical, doc.Violations)
 	}
 }

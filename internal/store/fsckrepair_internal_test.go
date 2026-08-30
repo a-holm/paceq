@@ -256,17 +256,13 @@ func TestFsckRepairDemandsConfirmationOnCriticalFindings(t *testing.T) {
 	s, runID := repairFixture(t)
 
 	// Plant the duplicate behind the everyday gate, the way corruption or a
-	// hand edit would arrive.
-	if _, err := s.w.ExecContext(ctx, `UPDATE runs SET run_key = 'shared-key'
-WHERE id = ?`, runID); err != nil {
-		t.Fatalf("name the run_key: %v", err)
-	}
-	if _, err := s.w.ExecContext(ctx, `INSERT INTO runs (id, job_name, job_version_id,
-	state, origin, run_key, available_at, created_at, updated_at)
-	SELECT '01DUPRUNKEY0000000000000B', job_name, job_version_id, state, origin,
-		run_key, available_at, created_at, updated_at
-	FROM runs WHERE id = ?`, runID); err != nil {
-		t.Fatalf("plant the duplicate: %v", err)
+	// hand edit would arrive: two dedup identities naming one run.
+	for _, source := range []string{"src-a", "src-b"} {
+		if _, err := s.w.ExecContext(ctx, `INSERT INTO run_keys
+(source_id, epoch, run_key, first_seen_at, run_id) VALUES (?, 1, 'shared-key', 1, ?)`,
+			source, runID); err != nil {
+			t.Fatalf("plant the second dedup identity: %v", err)
+		}
 	}
 	if !hasCheck(mustFsck(t, s), "I3") {
 		t.Fatal("the planted duplicate did not trip I3")
