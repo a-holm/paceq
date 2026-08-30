@@ -592,7 +592,7 @@ func (s *Store) ReconcileRunStates(ctx context.Context) error {
 			for _, st := range p.steps {
 				aggSteps = append(aggSteps, model.StepState(st))
 			}
-			agg := model.RunAggregate(aggSteps)
+			agg := model.RunAggregate(aggSteps, false)
 			if agg == model.RunRunning {
 				// Still work open: nothing to converge.
 				continue
@@ -932,16 +932,12 @@ func (s *Store) FinishRun(ctx context.Context, runID string, ref LeaseRef, fr Fi
 		if err != nil {
 			return err
 		}
-		allTerminal := allStepsTerminal(states)
-		// A step that was cancelled ends the run the way a failed one does:
-		// the work it stood for never completed.
-		anyFailed := anyStepIs(states, model.StepFailed) || anyStepIs(states, model.StepCancelled)
-
 		guards := model.Guards{
 			LeaseValid: run.LeaseOwner == ref.Owner && run.LeaseEpoch == ref.Epoch &&
 				(run.LeaseExpiresAt.IsZero() || run.LeaseExpiresAt.After(now)),
-			AllStepsTerminal: allTerminal,
-			AnyStepFailed:    anyFailed,
+			AllStepsTerminal: allStepsTerminal(states),
+			AnyStepFailed:    anyStepIs(states, model.StepFailed),
+			AnyStepCancelled: anyStepIs(states, model.StepCancelled),
 			ReasonCode:       string(fr.Code),
 			Now:              now.UnixMilli(),
 			AvailableAt:      run.AvailableAt.UnixMilli(),
@@ -1319,7 +1315,7 @@ func cancelGuards(states []model.StepState, code reason.Code) model.Guards {
 		AnyStepFailed:    anyStepIs(states, model.StepFailed),
 		AnyStepCancelled: anyStepIs(states, model.StepCancelled),
 		AllStepsTerminal: allStepsTerminal(states),
-		ReasonCode:       string(cancelReason(model.RunAggregate(states), code)),
+		ReasonCode:       string(cancelReason(model.RunAggregate(states, false), code)),
 	}
 }
 

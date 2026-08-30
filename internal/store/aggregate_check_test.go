@@ -2,8 +2,12 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/a-holm/paceq/internal/model"
 )
 
 // seedSucceededOneStepRun drives one seeded run's rows to a consistent
@@ -85,4 +89,88 @@ func TestRunAggregateMismatches(t *testing.T) {
 				len(violations), runID)
 		}
 	})
+}
+
+// runLevelCodesOutsideAFailedRun sweeps every run row through the production
+// predicate and returns the rows that break the implication I10 now rests on:
+// a run-level failure code implies the row is failed. It calls runLevelFailure
+// rather than repeating its list, so a third code added to the pair is covered
+// on the day it lands.
+func runLevelCodesOutsideAFailedRun(t *testing.T, s *Store) []string {
+	t.Helper()
+
+	rows, err := s.r.QueryContext(context.Background(),
+		`SELECT id, state, COALESCE(reason_code, '') FROM runs`)
+	if err != nil {
+		t.Fatalf("sweep the run rows: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var bad []string
+	for rows.Next() {
+		var id, state, code string
+		if err := rows.Scan(&id, &state, &code); err != nil {
+			t.Fatalf("scan a run row: %v", err)
+		}
+		if runLevelFailure(code) && state != string(model.RunFailed) {
+			bad = append(bad, fmt.Sprintf("run %s is %s carrying %s", id, state, code))
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("sweep the run rows: %v", err)
+	}
+	return bad
+}
+
+// TestRunLevelReasonCodesOnlyLiveOnFailedRuns guards the exclusivity that makes
+// runLevelFailure a safe input to the fold. The flag outranks every step, so a
+// run-level code on a row that is not failed makes fsck read that row as failed
+// forever: fsck --repair has no I10 arm and the reconciler skips terminal rows.
+//
+// repairRequeueRunTx is the writer one UPDATE away from breaking it. It stamps
+// RUN_ORPHANED_RECONCILED on its run_event while writing state = 'queued', and
+// happens not to touch runs.reason_code. Adding the column there for symmetry
+// with the reaper would turn every run fsck --repair requeues into a permanent
+// false I10.
+func TestRunLevelReasonCodesOnlyLiveOnFailedRuns(t *testing.T) {
+	ctx := context.Background()
+	s, runID := repairFixture(t)
+
+	// A running run whose claim died: the I1 shape the requeue repair answers.
+	if _, err := s.w.ExecContext(ctx, `UPDATE runs SET lease_expires_at = ? WHERE id = ?`,
+		time.Now().Add(-time.Hour).UnixMilli(), runID); err != nil {
+		t.Fatalf("expire the lease: %v", err)
+	}
+	if !hasCheck(mustFsck(t, s), "I1") {
+		t.Fatal("the planted orphan did not trip I1")
+	}
+	if _, err := s.FsckRepair(ctx, nil, true); err != nil {
+		t.Fatalf("repair: %v", err)
+	}
+
+	var state, code string
+	if err := s.r.QueryRowContext(ctx,
+		`SELECT state, COALESCE(reason_code, '') FROM runs WHERE id = ?`, runID).
+		Scan(&state, &code); err != nil {
+		t.Fatalf("read the repaired run back: %v", err)
+	}
+	if state != string(model.RunQueued) {
+		t.Fatalf("the repaired run is %s, want queued", state)
+	}
+	if runLevelFailure(code) {
+		t.Errorf("the repaired run carries %s while queued: the flag outranks its steps, "+
+			"so the fold answers failed for a row that is waiting to run", code)
+	}
+
+	if bad := runLevelCodesOutsideAFailedRun(t, s); len(bad) > 0 {
+		t.Errorf("run-level failure codes off a failed row: %v", bad)
+	}
+
+	// The consequence the implication exists to prevent, read off the
+	// production sweep rather than a copy of it.
+	for _, v := range mustFsck(t, s) {
+		if v.Check == "I10" {
+			t.Errorf("fsck I10 on %s after the repair: %s", v.Subject, v.Detail)
+		}
+	}
 }

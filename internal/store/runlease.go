@@ -417,7 +417,7 @@ func closeCancelledQueuedTx(tx *sql.Tx, now time.Time) error {
 			return err
 		}
 		guards := cancelGuards(states, reason.RUNCancelledManual)
-		verdict, kind := model.CancelVerdict(guards)
+		verdict, kind := model.TerminalVerdict(guards)
 		if verdict != model.RunCancelled {
 			// nolint:fencing: a queued run holds no lease to fence against,
 			// and the statement above already took this row out of the queued
@@ -783,6 +783,17 @@ func reapToFailedTx(tx *sql.Tx, run Run, now time.Time, code reason.Code, kind s
 	if state != model.RunFailed {
 		return ReapedRun{}, fmt.Errorf("reap run %s: the machine sent it to %s", run.ID, state)
 	}
+	// A run whose steps are all terminal already reached its conclusion; the
+	// kill only stopped FinishRun recording it. Failing it here would write a
+	// verdict its own steps contradict, and nothing revisits a terminal row
+	// afterwards, so the disagreement would be permanent (#188).
+	before, err := stepStatesTx(tx, run.ID)
+	if err != nil {
+		return ReapedRun{}, err
+	}
+	if allStepsTerminal(before) {
+		return reapToAggregateTx(tx, run, now, before)
+	}
 	if err := failRunningStepsTx(tx, run.ID, now, true); err != nil {
 		return ReapedRun{}, err
 	}
@@ -828,6 +839,58 @@ func reapToFailedTx(tx *sql.Tx, run Run, now time.Time, code reason.Code, kind s
 	}, nil
 }
 
+// reapToAggregateTx ends a run the reaper found already finished. Every step
+// is terminal, so the work reached its conclusion and only the record is
+// missing: the executor was killed between its last step outcome and its
+// FinishRun. The run takes the state its steps aggregate to, which is what
+// FinishRun would have written.
+//
+// The reaper wins this race often enough to matter. Both reconcilers call
+// ReapExpiredRuns before ReconcileRunStates, so the writer that would have
+// finished the run correctly never gets the row, and a terminal row is skipped
+// by every later pass (#188).
+func reapToAggregateTx(tx *sql.Tx, run Run, now time.Time, states []model.StepState) (ReapedRun, error) {
+	guards := cancelGuards(states, reason.RUNCancelledManual)
+	verdict, kind := model.TerminalVerdict(guards)
+
+	epoch := run.LeaseEpoch + 1
+	if _, err := tx.Exec(`UPDATE runs SET
+		state = ?,
+		reason_code = ?,
+		finished_at = ?,
+		duration_ms = CASE WHEN started_at IS NULL THEN NULL ELSE ? - started_at END,
+		lease_owner = NULL,
+		lease_expires_at = NULL,
+		lease_epoch = lease_epoch + 1,
+		crash_count = crash_count + 1,
+		updated_at = ?
+		WHERE id = ? AND state = 'running' AND lease_epoch = ?`,
+		string(verdict), guards.ReasonCode, now.UnixMilli(), now.UnixMilli(),
+		now.UnixMilli(), run.ID, run.LeaseEpoch); err != nil {
+		return ReapedRun{}, fmt.Errorf("reap finished run %s: %w", run.ID, err)
+	}
+	if err := appendRunEvent(tx, RunEvent{
+		RunID:      run.ID,
+		At:         now,
+		Kind:       kind,
+		FromState:  string(model.RunRunning),
+		ToState:    string(verdict),
+		ReasonCode: guards.ReasonCode,
+		Actor:      "reaper",
+		DetailJSON: epochDetail(epoch),
+	}); err != nil {
+		return ReapedRun{}, err
+	}
+	return ReapedRun{
+		ID:         run.ID,
+		State:      string(verdict),
+		ReasonCode: guards.ReasonCode,
+		CrashCount: run.CrashCount + 1,
+		Attempt:    run.Attempt,
+		LeaseEpoch: epoch,
+	}, nil
+}
+
 // reapToCancelledTx completes a cancellation whose requester outlived the
 // owner: the request was durable, the owner is gone, and the run ends
 // cancelled instead of being offered to a new holder.
@@ -837,7 +900,7 @@ func reapToCancelledTx(tx *sql.Tx, run Run, now time.Time) (ReapedRun, error) {
 		return ReapedRun{}, err
 	}
 	guards := cancelGuards(states, reason.RUNCancelledManual)
-	verdict, kind := model.CancelVerdict(guards)
+	verdict, kind := model.TerminalVerdict(guards)
 
 	epoch := run.LeaseEpoch + 1
 	if _, err := tx.Exec(`UPDATE runs SET

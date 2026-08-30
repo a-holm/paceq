@@ -52,9 +52,10 @@
 //
 //	I2   A terminal run has no step in running. EvAllStepsDone is refused
 //	     unless Guards.AllStepsTerminal says every step has finished.
-//	I10  A succeeded run has no failed step, and a failed run has one.
-//	     RunAggregate is the single function that decides it, used by the
-//	     engine (M1-08) and by fsck (M1-12).
+//	I10  A succeeded run has no failed step. A failed run has one, or failed
+//	     for a reason no step can express. RunAggregate is the single
+//	     function that decides it, used by every writer of a terminal run
+//	     state (M1-08) and by fsck (M1-12).
 //	I14  A deferred run has a defer reason. EvDeferred is refused without
 //	     one, and a requeue after a crash writes DeferReasonAfterCrash.
 //	     06 section 2.1: a terminal state has a reason code. Every

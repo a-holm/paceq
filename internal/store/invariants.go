@@ -117,8 +117,8 @@ var Invariants = []Invariant{
 	{
 		ID:       "I10",
 		Severity: Serious,
-		Title:    "a run's stored state is what its steps aggregate to",
-		Remedy:   "paceq explain run <id> shows both stories; the reconciler repairs the aggregate on its next sweep",
+		Title:    "a run's stored state is what its steps aggregate to, unless the run itself failed",
+		Remedy:   "paceq explain run <id> shows both stories; the reconciler converges a run that has not finished, and nothing revisits one that has, so report a terminal row as a bug with paceq export run <id>",
 	},
 	{
 		ID:       "I11",

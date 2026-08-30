@@ -9,8 +9,8 @@ import (
 )
 
 // guardCombos is every combination of the guard inputs the machines can read:
-// the six flags, a reason code present or not, a defer reason present or not,
-// and available_at before, at and after now. 768 of them, enumerated rather
+// the seven flags, a reason code present or not, a defer reason present or not,
+// and available_at before, at and after now. 1536 of them, enumerated rather
 // than sampled, which is what makes the sweeps below proofs rather than
 // evidence. Nothing here is random, so nothing here can be flaky.
 func guardCombos() []model.Guards {
@@ -361,6 +361,7 @@ func TestEveryGuardIsLoadBearing(t *testing.T) {
 		{"LeaseValid", func(g model.Guards) model.Guards { g.LeaseValid = !g.LeaseValid; return g }},
 		{"AttemptsLeft", func(g model.Guards) model.Guards { g.AttemptsLeft = !g.AttemptsLeft; return g }},
 		{"AnyStepFailed", func(g model.Guards) model.Guards { g.AnyStepFailed = !g.AnyStepFailed; return g }},
+		{"AnyStepCancelled", func(g model.Guards) model.Guards { g.AnyStepCancelled = !g.AnyStepCancelled; return g }},
 		{"AllStepsTerminal", func(g model.Guards) model.Guards { g.AllStepsTerminal = !g.AllStepsTerminal; return g }},
 		{"CrashBudgetLeft", func(g model.Guards) model.Guards { g.CrashBudgetLeft = !g.CrashBudgetLeft; return g }},
 		{"ReasonCode", func(g model.Guards) model.Guards {
