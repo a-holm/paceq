@@ -92,6 +92,7 @@ Codes stored on the steps table, one row per step of a run.
 | `STEP_RETRIES_EXHAUSTED` | failed with no retries left | yes | `attempt`, `max_attempts` |
 | `STEP_RETRY_SCHEDULED` | failed, will retry | no | `attempt`, `backoff_ms`, `next_attempt_at` |
 | `STEP_SKIPPED_REPLAY_REUSED` | reused from the replayed run, not run again | yes | `replayed_from` |
+| `STEP_SKIPPED_RUN_TIMED_OUT` | the run ran out of time before this step started | yes | - |
 | `STEP_SKIPPED_UPSTREAM_FAILED` | a step it needs failed | yes | `upstream` |
 | `STEP_SKIPPED_UPSTREAM_SKIPPED` | an upstream step was itself skipped | yes | `upstream` |
 | `STEP_SUCCEEDED` | exited zero | yes | - |
@@ -795,6 +796,21 @@ What to do next:
 - follow the same step on the replayed run for the log and the real duration
 
 Promised reason_data keys: replayed_from.
+
+### STEP_SKIPPED_RUN_TIMED_OUT
+
+the run ran out of time before this step started. [step level, ends the object]
+
+The run passed its own deadline while an earlier step was still running, so
+the executor stopped scheduling work and this step never started. Nothing
+this step needs failed: a failed step closes its dependants itself, under
+the upstream codes, and what is left when the budget runs out was still
+waiting its turn.
+
+What to do next:
+- the run's own reason_data names the deadline it passed
+- the step the run was killed on carries scope run: that is where the time went
+- raise the job's timeout, or split the work so each step carries its own deadline
 
 ### STEP_SKIPPED_UPSTREAM_FAILED
 

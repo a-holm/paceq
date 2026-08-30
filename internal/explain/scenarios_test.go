@@ -925,6 +925,36 @@ var scenarios = []scenario{
 	},
 
 	{
+		name:       "step_skipped_run_timed_out",
+		subjectJob: "overtime",
+		code:       reason.STEPSkippedRunTimedOut,
+		level:      reason.LevelStep,
+		setup: func(w *world) {
+			// Two steps with no edge between them: when the run's own
+			// budget stops the loop, the one that never started is not
+			// waiting on anything that failed.
+			w.seedJob("overtime", 1, `"timeout_ms":250`,
+				stepSpec("slow", "/bin/sleep", nil, -1),
+				stepSpec("unrelated", "/bin/true", nil, -1))
+			run := w.scheduledRun("overtime", "ot")
+			ref := w.claim(run.ID, "exec-overtime", store.DefaultRunLeaseTTL)
+			w.beginStep(run.ID, ref)
+			w.verdict(run.ID, "slow", ref, store.StepOutcome{
+				Event:            "step_failed",
+				ReasonCode:       reason.STEPFailedTimeout,
+				DetailJSON:       `{"scope":"run","timeout_ms":250}`,
+				NoFurtherAttempt: true,
+			})
+			w.verdict(run.ID, "unrelated", ref, store.StepOutcome{
+				Event:      "upstream_failed",
+				ReasonCode: reason.STEPSkippedRunTimedOut,
+			})
+			w.finishRun(run.ID, ref, reason.RUNTimedOut, `{"timeout_ms":250}`)
+		},
+		wantIn: []string{"where the time went"},
+	},
+
+	{
 		name:       "step_skipped_upstream_failed",
 		subjectJob: "diamond",
 		code:       reason.STEPSkippedUpstreamFailed,

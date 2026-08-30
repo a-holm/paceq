@@ -126,6 +126,7 @@ And per step:
 | `STEP_FAILED_TIMEOUT` | deadline hit, process group killed | grandchildren die too - check for stragglers |
 | `STEP_FAILED_SPAWN` | never started (missing binary, missing workdir, unreadable env_file); zero side effects | retrying is safe once the cause is fixed |
 | `STEP_RETRIES_EXHAUSTED` | the retry policy ran out | widen `retry.max` only if the failures were transient |
+| `STEP_SKIPPED_RUN_TIMED_OUT` | the run spent its deadline before this step started | raise `timeout`; nothing here failed |
 | `STEP_SKIPPED_UPSTREAM_FAILED` | an upstream step failed | fix upstream; this step never started |
 | `STEP_SKIPPED_UPSTREAM_SKIPPED` | skipped because *its* upstream was skipped | same, one level up |
 | `STEP_SKIPPED_REPLAY_REUSED` | a replay reused the earlier attempt's result | nothing to do - reuse is recorded, not hidden |
