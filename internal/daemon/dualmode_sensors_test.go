@@ -2,8 +2,6 @@ package daemon
 
 import (
 	"context"
-	"io"
-	"log/slog"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -11,6 +9,7 @@ import (
 	"time"
 
 	"github.com/a-holm/paceq/internal/store"
+	"github.com/a-holm/paceq/internal/testutil"
 )
 
 // Issue #207: a sensor write has to land the same way whether it travelled
@@ -123,17 +122,22 @@ func runSensorWrite(t *testing.T, bin string, withDaemon bool, argv ...string) s
 
 	socket := "none"
 	if withDaemon {
-		socket = filepath.Join(stateDir, "paceq.sock")
+		// The socket does not live in the state directory: a unix socket
+		// path is capped at 107 bytes and a path under t.TempDir() spends
+		// most of them on the test's own name.
+		socket = testutil.SocketPath(t)
+		rec, logger := newRecLog()
 		cfg := Config{
 			StateDir:   stateDir,
 			Version:    "sensorparity",
 			SocketPath: socket,
-			Logger:     slog.New(slog.NewJSONHandler(io.Discard, nil)),
+			Logger:     logger,
 		}
 		sts := newStatuses(func() time.Time { return time.Unix(0, 0).UTC() })
 		stop := startHealthEndpoint(cfg, sts, cfg.Logger, s, nil, nil)
 		if stop == nil {
-			t.Fatal("a configured socket did not start the endpoints")
+			t.Fatalf("the endpoints did not start on %s (%d bytes); the daemon logged:\n%s",
+				socket, len(socket), rec.text())
 		}
 		defer func() { stop(context.Background()) }()
 	}

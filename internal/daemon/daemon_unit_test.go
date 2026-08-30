@@ -55,6 +55,14 @@ func (r *recLog) named(msg string) []map[string]any {
 	return out
 }
 
+// text returns everything logged so far, verbatim, for a failure that has to
+// report what the daemon said about itself.
+func (r *recLog) text() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.buf.String()
+}
+
 // indexes returns the record positions of every line with this msg, in the
 // order they were logged. Order assertions read off this list.
 func (r *recLog) indexes(msg string) []int {

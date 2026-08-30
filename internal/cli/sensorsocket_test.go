@@ -14,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/a-holm/paceq/internal/testutil"
 )
 
 // Issue #207: a sensor write sent over the daemon socket has to carry the
@@ -59,13 +61,19 @@ func (rec *sensorSocketRecorder) recorded() []sensorSocketCall {
 	return append([]sensorSocketCall(nil), rec.calls...)
 }
 
-// plantSensorSocket puts a listening socket where the resolution order leaves
-// it for a project with no other socket named, at the mode the client check
-// accepts.
-func plantSensorSocket(t *testing.T, dir string) *sensorSocketRecorder {
+// plantSensorSocket starts a listening socket at the mode the client check
+// accepts, and answers with the recorder and the path the caller has to name
+// in PACEQ_SOCKET.
+//
+// It does not sit in the state directory. A unix socket path is capped at 107
+// bytes, and a path under t.TempDir() spends most of them on the test's own
+// name, so the socket would bind or not depending on what this test is called
+// and on how long TMPDIR is. Which file the resolution order picks when
+// nobody names one is settled in socket_test.go.
+func plantSensorSocket(t *testing.T) (*sensorSocketRecorder, string) {
 	t.Helper()
 
-	path := filepath.Join(dir, stateDirName, socketName)
+	path := testutil.SocketPath(t)
 	listener, err := net.Listen("unix", path)
 	if err != nil {
 		t.Fatalf("listen on %s: %v", path, err)
@@ -77,7 +85,7 @@ func plantSensorSocket(t *testing.T, dir string) *sensorSocketRecorder {
 	srv := &http.Server{Handler: rec, ReadHeaderTimeout: time.Second}
 	go func() { _ = srv.Serve(listener) }()
 	t.Cleanup(func() { _ = srv.Close() })
-	return rec
+	return rec, path
 }
 
 // daemonSensorRoutes reads the routes the daemon registers under
@@ -152,9 +160,9 @@ func TestEverySensorSocketRouteCarriesItsArguments(t *testing.T) {
 				t.Fatalf("init = %d\n%s%s", got.code, got.stdout, got.stderr)
 			}
 			seedSensorCLI(t, dir, "finder", `["/bin/true"]`)
-			rec := plantSensorSocket(t, dir)
+			rec, socket := plantSensorSocket(t)
 
-			got := runCLI(t, dir, nil, tc.argv...)
+			got := runCLI(t, dir, map[string]string{"PACEQ_SOCKET": socket}, tc.argv...)
 			if got.code != ExitOK {
 				t.Fatalf("paceq %s = %d\n%s%s", strings.Join(tc.argv, " "), got.code, got.stdout, got.stderr)
 			}
