@@ -590,8 +590,9 @@ func newCatalog() map[Code]Entry {
 				"check whether the host rebooted or the daemon crashed mid run",
 				"the step logs survive; read them for how far the run got",
 			},
-			Terminal:       true,
-			ScenarioExempt: true,
+			Terminal:        true,
+			RunLevelFailure: true,
+			ScenarioExempt:  true,
 			ExemptReason: "the reaper's spent-attempt arm needs runs.attempt past its " +
 				"budget, and no producer raises it yet - internal/store's own test " +
 				"plants the row directly. Add the scenario together with the writer.",
@@ -608,8 +609,9 @@ func newCatalog() map[Code]Entry {
 				"find what kills the executor: usually memory pressure or a signal trap",
 				"after fixing the cause, replay the run deliberately instead of waiting for a retry",
 			},
-			DataKeys: []string{"crash_count", "max_crash_count"},
-			Terminal: true,
+			DataKeys:        []string{"crash_count", "max_crash_count"},
+			Terminal:        true,
+			RunLevelFailure: true,
 		},
 		{
 			Code:  RUNLegacyUnspecified,
