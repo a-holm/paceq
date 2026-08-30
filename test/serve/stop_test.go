@@ -26,7 +26,7 @@ func TestOneStopSignalDrainsTheRunningWork(t *testing.T) {
 	waitForChildRunning(t, ws, p, runID)
 
 	started := time.Now()
-	p.signal(t, syscall.SIGTERM)
+	p.signal(t, "only", syscall.SIGTERM)
 	code := p.waitExit(t, 20*time.Second)
 	took := time.Since(started)
 	if code != 0 {
@@ -119,23 +119,33 @@ func TestASecondStopSignalInsistsWithSigkill(t *testing.T) {
 	p.waitReady(t)
 	waitForChildRunning(t, ws, p, runID)
 
-	started := time.Now()
-	p.signal(t, syscall.SIGTERM) // the graceful path begins
-	time.Sleep(200 * time.Millisecond)
-	p.signal(t, syscall.SIGTERM) // the operator insists
-	code := p.waitExit(t, 5*time.Second)
-	took := time.Since(started)
+	p.signal(t, "first", syscall.SIGTERM) // the graceful path begins
+	// The second request only means something while the first stop is still
+	// draining, so wait for the daemon to say the drain started rather than
+	// for a duration. The step ignores the term half of the runner's
+	// escalation, so from that line the drain still owes it the whole
+	// grace: that is the window the insistence lands in.
+	p.waitForDrainStart(t)
+
+	insisted := time.Now()
+	p.signal(t, "second", syscall.SIGTERM) // the operator insists
+	// The budget outlasts the graceful path on purpose. A stop that drained
+	// to its end instead of answering the insistence is worth reporting as
+	// the wrong exit code rather than as a harness timeout.
+	code := p.waitExit(t, 30*time.Second)
+	took := time.Since(insisted)
 	if code != daemon.ExitHardStop {
-		t.Fatalf("the second signal exited %d, want %d\nstderr:\n%s",
-			code, daemon.ExitHardStop, p.stderrSnapshot())
+		t.Fatalf("the second stop request exited %d, want %d after %s\nstderr:\n%s",
+			code, daemon.ExitHardStop, took, p.stderrSnapshot())
 	}
-	// Any exit under ten seconds proves the hard path: even the runner's
-	// own term-to-kill escalation inside one grace period needs longer,
-	// and the named drain timeout needs forty five.
+	// Measured from the second request, because that is what the claim is
+	// about. The graceful path cannot answer this fast from the same point:
+	// it still owes this step the runner's term-to-kill escalation, and it
+	// may take the whole drain timeout named on the command line.
 	if took > 5*time.Second {
-		t.Errorf("the hard stop took %s, too slow for insistence", took)
+		t.Errorf("the hard stop took %s after the second request, too slow for insistence", took)
 	}
-	t.Logf("the hard stop answered the second signal in %s", took)
+	t.Logf("the hard stop answered the second request in %s", took)
 
 	requireNoOrphan(t, runID)
 
@@ -182,7 +192,7 @@ func TestServeRefusesToShareTheStateEndToEnd(t *testing.T) {
 
 	// The first daemon keeps serving: cancel it cleanly and let the row
 	// end queued, which also cleans up the workspace.
-	first.signal(t, syscall.SIGTERM)
+	first.signal(t, "only", syscall.SIGTERM)
 	if code := first.waitExit(t, 20*time.Second); code != 0 {
 		t.Fatalf("the first daemon exited %d after its own stop, want 0", code)
 	}

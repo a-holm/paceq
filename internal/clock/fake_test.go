@@ -73,3 +73,25 @@ func TestSinceIsMonotonicAcrossASetToThePast(t *testing.T) {
 		t.Fatalf("Since(mark) = %v, want 2m: a wall clock Set must not reset monotonic time", got)
 	}
 }
+
+// TestSinceOfTwoMarksDiffersByTheTimeBetweenThem is the exact ordering of two
+// marks, which only a clock that stands still between reads can be asked for.
+// The system clock gets the same claim as an inequality over a window; see
+// TestSinceOrdersMarksTakenInSequence.
+func TestSinceOfTwoMarksDiffersByTheTimeBetweenThem(t *testing.T) {
+	f := clock.NewFake(t0)
+	first := f.Mark()
+	f.Advance(20 * time.Second)
+	second := f.Mark()
+	f.Advance(5 * time.Second)
+
+	if got := f.Since(first); got != 25*time.Second {
+		t.Errorf("Since(earlier mark) = %v, want 25s", got)
+	}
+	if got := f.Since(second); got != 5*time.Second {
+		t.Errorf("Since(later mark) = %v, want 5s", got)
+	}
+	if got := f.Since(first) - f.Since(second); got != 20*time.Second {
+		t.Errorf("Since(earlier) - Since(later) = %v, want the 20s between the marks", got)
+	}
+}
