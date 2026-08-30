@@ -309,8 +309,8 @@ func TestSensorSkipWithAWatermarkLeavesTheCursorAlone(t *testing.T) {
 		return sensorCursorValue(spec.Cursor), tk.ID
 	}
 
-	first, firstTick := evaluate()
-	second, secondTick := evaluate()
+	first, _ := evaluate()
+	second, _ := evaluate()
 
 	after, err := st.GetSensor(ctx, "dropzone")
 	if err != nil {
@@ -325,16 +325,25 @@ func TestSensorSkipWithAWatermarkLeavesTheCursorAlone(t *testing.T) {
 	if first != "a" || second != "a" {
 		t.Errorf("evaluations started from %q then %q, want a then a", first, second)
 	}
-	for _, id := range []string{firstTick, secondTick} {
-		tick, ok, err := st.ExplainTickByID(ctx, id)
-		if err != nil || !ok {
-			t.Fatalf("read tick %s back: %v (found %v)", id, err, ok)
-		}
+	// The history is read whole rather than tick by tick, because two
+	// identical skips coalesce onto one row and only the repeat counts say
+	// both evaluations are in it.
+	ticks, err := st.ExplainTicks(ctx, []store.ExplainSource{{Kind: "sensor", Name: "dropzone"}},
+		time.Time{}, "", 10)
+	if err != nil {
+		t.Fatalf("read the tick history back: %v", err)
+	}
+	recorded := 0
+	for _, tick := range ticks {
+		recorded += tick.RepeatCount
 		if tick.CursorBefore != "a" {
-			t.Errorf("tick %s cursor_before = %q, want a", id, tick.CursorBefore)
+			t.Errorf("tick %s cursor_before = %q, want a", tick.ID, tick.CursorBefore)
 		}
 		if tick.CursorAfter != "" {
-			t.Errorf("tick %s cursor_after = %q, want none recorded", id, tick.CursorAfter)
+			t.Errorf("tick %s cursor_after = %q, want none recorded", tick.ID, tick.CursorAfter)
 		}
+	}
+	if recorded != 2 {
+		t.Errorf("the history accounts for %d evaluations over %d rows, want both", recorded, len(ticks))
 	}
 }
