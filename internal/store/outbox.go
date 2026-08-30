@@ -179,12 +179,19 @@ func (s *Store) RescheduleOutbox(ctx context.Context, id int64, availableAt time
 // pending index's blind spot but keeps every fact on disk. Nothing ever
 // deletes a failed notification silently; only retention horizons or an
 // operator's retry move it afterwards.
+//
+// Giving up is also an event, counted once here after the write lands. The
+// row cannot carry that count: a retry clears failed_at again.
 func (s *Store) MarkOutboxFailed(ctx context.Context, id int64, now time.Time, errMsg string) error {
 	res, err := s.w.ExecContext(ctx,
 		`UPDATE outbox SET failed_at = ?, last_error = ?
 		  WHERE id = ? AND delivered_at IS NULL`,
 		now.UTC().UnixMilli(), errMsg, id)
-	return confirmWrite(res, err, "fail outbox row")
+	if cerr := confirmWrite(res, err, "fail outbox row"); cerr != nil {
+		return cerr
+	}
+	s.observeNotificationGaveUp()
+	return nil
 }
 
 // confirmWrite turns zero affected rows into NotFound rather than silent
@@ -590,10 +597,13 @@ func (s *Store) MetricsNotificationsPending(ctx context.Context) (int64, error) 
 	return n, err
 }
 
-// MetricsNotificationsFailedTotal counts rows we gave up on
-// (pulseq_notifications_failed_total). Failed rows are kept forever, so the
-// number rises monotonically over any horizon retention cannot touch.
-func (s *Store) MetricsNotificationsFailedTotal(ctx context.Context) (int64, error) {
+// MetricsNotificationsGivenUp counts the rows sitting in the given-up state
+// right now (pulseq_notifications_given_up). It is a gauge and only a gauge:
+// an operator retry clears failed_at, and a row that then delivers is pruned
+// with the rest, so the number falls as readily as it rises. How often we
+// gave up is a different question, answered by the event counter the notifier
+// feeds through MetricsHook.
+func (s *Store) MetricsNotificationsGivenUp(ctx context.Context) (int64, error) {
 	var n int64
 	err := s.withRead(ctx, func(_ context.Context, r reader) error {
 		return r.QueryRowContext(ctx,

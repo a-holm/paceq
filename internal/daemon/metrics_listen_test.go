@@ -99,7 +99,7 @@ func (m *metricsStubSource) MetricsNotificationsPending(context.Context) (int64,
 	return 0, nil
 }
 
-func (m *metricsStubSource) MetricsNotificationsFailedTotal(context.Context) (int64, error) {
+func (m *metricsStubSource) MetricsNotificationsGivenUp(context.Context) (int64, error) {
 	return 0, nil
 }
 

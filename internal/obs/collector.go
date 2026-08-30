@@ -34,12 +34,13 @@ type Source interface {
 	MetricsMetaValues(ctx context.Context) (map[string]string, error)
 	MetricsDBBytes(ctx context.Context) (int64, int64, error)
 
-	// Notification health (#29): the pending gauge reads row state at
-	// scrape time through the pending index; the failed total rides the
-	// permanent rows. Delivery durations are kept in memory by the store
-	// because they measure sends that never touched its tables.
+	// Notification health (#29): both gauges read row state at scrape time
+	// through the outbox indexes. How often a notification was given up on
+	// is an event count and lives in Counters instead, because a retry
+	// clears the row's failed_at. Delivery durations are kept in memory by
+	// the store because they measure sends that never touched its tables.
 	MetricsNotificationsPending(ctx context.Context) (int64, error)
-	MetricsNotificationsFailedTotal(ctx context.Context) (int64, error)
+	MetricsNotificationsGivenUp(ctx context.Context) (int64, error)
 	TakeDelivery() store.DeliverySnapshot
 
 	// Integrity health (M6-06): what the newest fsck sweep recorded. The
@@ -414,10 +415,14 @@ func (c *Collector) writeMetaFamilies(ctx context.Context, w *Writer, dbErr *boo
 type srcKey struct{ kind, name string }
 
 // writeNotificationFamilies writes the alerting half of the document (#29):
-// how many notifications are owed, how many were given up on for ever, and
-// how long sends took. The histogram's buckets are fixed - delivery time is
-// a latency budget, not a quantity to bucket cleverly. Returns true on a
-// read failure, the house convention that feeds pulseq_metrics_db_error.
+// how many notifications are owed, how many sit given up on, how often we
+// gave up, and how long sends took. The two failure families answer different
+// questions and take their answers from different halves: the gauge is row
+// state now, the counter is events since this process started. A count of
+// given-up rows cannot be a counter, because an operator retry clears one.
+// The histogram's buckets are fixed - delivery time is a latency budget, not
+// a quantity to bucket cleverly. Returns true on a read failure, the house
+// convention that feeds pulseq_metrics_db_error.
 func (c *Collector) writeNotificationFamilies(ctx context.Context, w *Writer) bool {
 	pending, err := c.src.MetricsNotificationsPending(ctx)
 	if err != nil {
@@ -426,12 +431,15 @@ func (c *Collector) writeNotificationFamilies(ctx context.Context, w *Writer) bo
 	w.Help("pulseq_notifications_pending", "Outbox rows not yet delivered or given up on.", "gauge")
 	w.Metric("pulseq_notifications_pending", nil, float64(pending))
 
-	failed, err := c.src.MetricsNotificationsFailedTotal(ctx)
+	givenUp, err := c.src.MetricsNotificationsGivenUp(ctx)
 	if err != nil {
 		return true
 	}
-	w.Help("pulseq_notifications_failed_total", "Notifications given up on permanently after max_attempts.", "counter")
-	w.Metric("pulseq_notifications_failed_total", nil, float64(failed))
+	w.Help("pulseq_notifications_given_up", "Outbox rows sitting given up on right now; a retry clears one.", "gauge")
+	w.Metric("pulseq_notifications_given_up", nil, float64(givenUp))
+
+	w.Help("pulseq_notifications_failed_total", "Notifications given up on permanently after max_attempts, counted as they happen.", "counter")
+	w.Metric("pulseq_notifications_failed_total", nil, float64(c.counters.snapshotGaveUp()))
 
 	snap := c.src.TakeDelivery()
 	buckets := store.DeliveryBuckets()

@@ -27,6 +27,11 @@ type Counters struct {
 	// leaseReclaims counts runs whose leases the reaper took from dead
 	// holders.
 	leaseReclaims uint64
+	// notificationsGaveUp counts notifications given up on for good, one
+	// per decision. The outbox row cannot answer this: a retry clears
+	// failed_at and a delivered row is pruned, so a count over rows walks
+	// backwards under ordinary operator work.
+	notificationsGaveUp uint64
 }
 
 // tickKey is one pulseq_tick_total series identity.
@@ -67,6 +72,13 @@ func (c *Counters) ObserveLeaseReclaims(n int) {
 	c.leaseReclaims += uint64(n)
 }
 
+// ObserveNotificationGaveUp implements store.MetricsHook.
+func (c *Counters) ObserveNotificationGaveUp() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.notificationsGaveUp++
+}
+
 // snapshotTicks copies the tick map so a scrape renders stable bytes even if
 // an event commits mid-render.
 func (c *Counters) snapshotTicks() map[tickKey]uint64 {
@@ -84,6 +96,13 @@ func (c *Counters) snapshotReclaims() uint64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.leaseReclaims
+}
+
+// snapshotGaveUp reads the permanent-failure total under the same lock.
+func (c *Counters) snapshotGaveUp() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.notificationsGaveUp
 }
 
 // writeSortedTicks renders every tick series in one deterministic order:

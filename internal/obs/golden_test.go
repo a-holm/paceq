@@ -38,7 +38,7 @@ type stubSource struct {
 	busy      uint64
 
 	notifPending int64
-	notifFailed  int64
+	notifGivenUp int64
 	delivery     store.DeliverySnapshot
 }
 
@@ -94,8 +94,8 @@ func (s *stubSource) MetricsFsckLastRun(context.Context) (time.Time, bool, error
 	return s.fsckLastRun, true, nil
 }
 
-func (s *stubSource) MetricsNotificationsFailedTotal(context.Context) (int64, error) {
-	return s.notifFailed, nil
+func (s *stubSource) MetricsNotificationsGivenUp(context.Context) (int64, error) {
+	return s.notifGivenUp, nil
 }
 func (s *stubSource) TakeDelivery() store.DeliverySnapshot { return s.delivery }
 
@@ -147,7 +147,7 @@ func fixture() (*stubSource, *clock.Fake) {
 		busy:      3,
 
 		notifPending: 2,
-		notifFailed:  1,
+		notifGivenUp: 1,
 		delivery:     store.DeliverySnapshot{SumSeconds: 0.75, TotalCount: 3},
 	}
 
@@ -155,6 +155,7 @@ func fixture() (*stubSource, *clock.Fake) {
 	counters.ObserveTick("schedule", "nightly", store.OutcomeTriggered, "")
 	counters.ObserveTick("sensor", "dropzone", store.OutcomeSkipped, "TICK_SKIPPED_SENSOR")
 	counters.ObserveLeaseReclaims(7)
+	counters.ObserveNotificationGaveUp()
 	// Three delivery observations: two fast sends land inside the first
 	// bucket, one slow one only clears the 0.5 bucket, which pins every
 	// le line's shape in the golden document.

@@ -82,7 +82,10 @@ pulseq_backup_last_verified 1
 # HELP pulseq_notifications_pending Outbox rows not yet delivered or given up on.
 # TYPE pulseq_notifications_pending gauge
 pulseq_notifications_pending 2
-# HELP pulseq_notifications_failed_total Notifications given up on permanently after max_attempts.
+# HELP pulseq_notifications_given_up Outbox rows sitting given up on right now; a retry clears one.
+# TYPE pulseq_notifications_given_up gauge
+pulseq_notifications_given_up 1
+# HELP pulseq_notifications_failed_total Notifications given up on permanently after max_attempts, counted as they happen.
 # TYPE pulseq_notifications_failed_total counter
 pulseq_notifications_failed_total 1
 # HELP pulseq_notification_delivery_seconds Wall time of one notifier send attempt, success or failure alike.
