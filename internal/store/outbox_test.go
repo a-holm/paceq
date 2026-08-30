@@ -500,3 +500,44 @@ func seedRunForNotify(t *testing.T, s *Store, fail bool) Run {
 	}
 	return run
 }
+
+// TestInsertNotificationsRefusesAnIncompleteRow proves the guard #194 leans
+// on. The refusal is the whole reason the planner must fail closed: it happens
+// inside FinishRun's transaction, so an incomplete row does not just go
+// unsent, it unwinds the run's verdict with it. The store keeps refusing on
+// purpose; dropping the row silently would turn an engine defect into
+// notifications that sometimes do not arrive.
+func TestInsertNotificationsRefusesAnIncompleteRow(t *testing.T) {
+	s := migratedStore(t)
+	ctx := context.Background()
+
+	cases := []struct {
+		name string
+		note model.Notification
+	}{
+		{"no topic", aNote("", "backup-db", "vakt", "|backup-db|vakt|01JQ:1")},
+		{"no subject", aNote(model.TopicRunFailed, "", "vakt", "run.failed||vakt|01JQ:1")},
+		{"no target", aNote(model.TopicRunFailed, "backup-db", "", "run.failed|backup-db||01JQ:1")},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tx, err := s.w.BeginTx(ctx, nil)
+			if err != nil {
+				t.Fatalf("begin: %v", err)
+			}
+			defer func() { _ = tx.Rollback() }()
+
+			err = insertNotificationsTx(tx, []model.Notification{tc.note})
+			if err == nil {
+				t.Fatal("the store accepted a notification it cannot deliver")
+			}
+			if !strings.Contains(err.Error(), "without topic/subject/target") {
+				t.Errorf("error is %q, want the topic/subject/target refusal", err)
+			}
+		})
+	}
+	if n := countOutbox(t, s); n != 0 {
+		t.Errorf("a refused batch left %d rows behind, want 0", n)
+	}
+}
