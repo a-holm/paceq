@@ -42,6 +42,7 @@ func TestDecoderRefusesTheExpressionsCronxRefuses(t *testing.T) {
 		"0 0 1 jan mon-fri",
 		"@daily",
 		"@every 90m",
+		"@every 1s",
 		"15m",
 		"not a cron expression at all",
 		"0 3 * *",
