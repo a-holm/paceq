@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -81,5 +82,32 @@ func TestTheJobSeesPipesNeverItsOwnLogFile(t *testing.T) {
 		if !strings.HasPrefix(target, "pipe:") {
 			t.Errorf("fd %s is %s, want a pipe", fd, target)
 		}
+	}
+}
+
+// TestRunStdoutAndStderrNeverCrossWriters proves each stream reaches the
+// writer it belongs to. TestTheJobSeesPipesNeverItsOwnLogFile hands both
+// streams to one sink on purpose, so nothing there would notice a crossed
+// wire; a job's stderr line surfacing in its stdout log is invisible until an
+// operator reads it.
+func TestRunStdoutAndStderrNeverCrossWriters(t *testing.T) {
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	s := baseSpec(t, "/bin/sh", "-c", "echo to-stdout; echo to-stderr >&2")
+	s.Stdout = stdout
+	s.Stderr = stderr
+
+	res, err := runBounded(t, time.Minute, context.Background(), s)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Outcome != Succeeded {
+		t.Fatalf("outcome = %v, want Succeeded", res.Outcome)
+	}
+	if got := strings.TrimSpace(stdout.String()); got != "to-stdout" {
+		t.Errorf("stdout = %q, want only to-stdout", got)
+	}
+	if got := strings.TrimSpace(stderr.String()); got != "to-stderr" {
+		t.Errorf("stderr = %q, want only to-stderr", got)
 	}
 }
