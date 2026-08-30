@@ -77,6 +77,10 @@ func (sd *shutdown) run(cause error) error {
 	budget := sd.cfg.drainTimeout()
 	drainCtx, cancelDrain := context.WithTimeout(base, budget)
 	sd.stopExec()
+	// The drain announces itself. An operator watching a deploy needs to
+	// know the daemon has stopped taking work and is now waiting for the
+	// steps in flight, and how long it will wait before it gives up.
+	sd.log.Info("draining running work", "timeout", budget.String())
 	select {
 	case <-sd.execDrained:
 	case <-drainCtx.Done():
