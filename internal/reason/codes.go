@@ -68,7 +68,6 @@ var (
 	RUNRejectedDiskLow        = runCode("REJECTED_DISK_LOW")
 	RUNCancelledSuperseded    = runCode("CANCELLED_SUPERSEDED") // reserved (#17), no policy behind it in 1.0
 	RUNCancelledManual        = runCode("CANCELLED_MANUAL")
-	RUNCancelledShutdown      = runCode("CANCELLED_SHUTDOWN")
 	RUNInterruptedShutdown    = runCode("INTERRUPTED_SHUTDOWN")
 	RUNTimedOut               = runCode("TIMED_OUT")
 	RUNFailedStep             = runCode("FAILED_STEP")
@@ -526,21 +525,6 @@ func newCatalog() map[Code]Entry {
 				"if the work still matters, start a fresh run once the reason for the cancel is handled",
 			},
 			Terminal: true,
-		},
-		{
-			Code:  RUNCancelledShutdown,
-			Level: LevelRun,
-			Short: "cancelled because the daemon stopped",
-			Explanation: "The daemon was shut down while this run was in flight, so it cancelled the " +
-				"run rather than orphan it. The process group was killed and the run closed " +
-				"cleanly, so nothing keeps running unowned.",
-			Remedy: []string{
-				"runs closed this way are safe to start again once the daemon is back",
-			},
-			Terminal:       true,
-			ScenarioExempt: true,
-			ExemptReason: "unused today: the shutdown drain closes in-flight runs as " +
-				"RUN_INTERRUPTED_SHUTDOWN. Revisit if a shutdown ever cancels instead of interrupting.",
 		},
 		{
 			Code:  RUNInterruptedShutdown,
