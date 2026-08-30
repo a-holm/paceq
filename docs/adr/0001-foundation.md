@@ -89,6 +89,8 @@ One exception, scoped to the test target: the race detector requires cgo, so `ma
 
 The reason is cost. GitHub Actions minutes are a budget, and a red build discovered after a push has already spent them. A developer machine has the toolchain, the module cache and the test cache warm, so the same checks cost seconds there. CI still runs everything, because a hook can be bypassed and a contributor may not have run `make hooks`.
 
+`make ci` pays that cost once per tree rather than once per push. It runs its targets through `scripts/gate-run.sh`, which skips a target only when a content key over the whole working tree, the toolchain and the installed tool set matches a stamp the runner itself wrote after that target exited zero. The stamp lives under the per-worktree git directory, so it cannot be committed, cannot travel to a colleague and cannot vouch for another worktree; CI has no stamp file and runs every target by construction. Everything short of an exact match runs the target.
+
 `pre-commit` checks a materialised copy of the index, produced with `git checkout-index`, not the working tree. Checking the working tree is the obvious implementation and it is wrong: with unformatted content staged and the working tree already fixed, the commit passes and the bad blob lands. That is exactly what a partial `git add` produces.
 
 `core.hooksPath` is repository-level configuration, shared by every worktree, but it is resolved relative to each worktree's own root. A worktree checked out at a commit without `.githooks` therefore runs no hooks at all, silently, rather than failing. CI is the backstop for that case.

@@ -167,6 +167,29 @@ func TestPrePushKeepsTheGateOutOfGitsChannel(t *testing.T) {
 	}
 }
 
+// gateSummaryLine is what scripts/gate-run.sh writes into the gate log once it
+// has walked its targets.
+const gateSummaryLine = "gate-summary: 6 of 20 targets skipped as already proven for this tree, 14 run in 1180s"
+
+// TestPrePushSaysWhatTheGateSkipped is the visible half of #176. A skip nobody
+// is told about is how a gate stops guarding without anyone noticing, so the
+// count reaches the person doing the push on every one, whether the gate went
+// green or red.
+func TestPrePushSaysWhatTheGateSkipped(t *testing.T) {
+	refLines := "refs/heads/feature " + newSHA + " refs/heads/feature " + oldSHA + "\n"
+	want := "6 of 20 targets skipped"
+
+	green := runPrePush(t, "origin", refLines, 0)
+	if !strings.Contains(green.stdout, want) {
+		t.Errorf("a green push has to say what it skipped, stdout = %q", green.stdout)
+	}
+
+	red := runPrePush(t, "origin", refLines, 1)
+	if !strings.Contains(red.stderr, want) {
+		t.Errorf("a red push has to say what it skipped too, stderr = %q", red.stderr)
+	}
+}
+
 // runPrePush runs .githooks/pre-push the way git does: the remote name and url as
 // arguments, the ref lines on stdin. make is a stub on PATH, so the test observes
 // the gate without paying for it.
@@ -185,10 +208,14 @@ func runPrePush(t *testing.T, remote, refLines string, makeExit int) hookRun {
 	logFile := filepath.Join(dir, "gate.log")
 	// The stub also writes to stdout, the way make does. That is what the hook
 	// has to keep off git's channel, so the tests need something to look for.
+	// The summary line is the one the gate writes when it has skipped targets
+	// that this exact tree already passed (#176). The hook has to lift it onto
+	// git's channel, green or red, so no push is silent about a skip.
 	stub := "#!/bin/sh\n" +
 		"cat >\"$PACEQ_STUB_STDIN\"\n" +
 		"printf '%s\\n' \"$*\" >>\"$PACEQ_STUB_CALLS\"\n" +
 		"printf 'gate output for %s\\n' \"$*\"\n" +
+		"printf '%s\\n' \"$PACEQ_STUB_SUMMARY\"\n" +
 		"exit \"$PACEQ_STUB_EXIT\"\n"
 	if err := os.WriteFile(filepath.Join(binDir, "make"), []byte(stub), 0o700); err != nil {
 		t.Fatalf("write the make stub: %v", err)
@@ -201,6 +228,7 @@ func runPrePush(t *testing.T, remote, refLines string, makeExit int) hookRun {
 		"PACEQ_STUB_CALLS="+callsFile,
 		"PACEQ_STUB_STDIN="+stdinFile,
 		"PACEQ_STUB_EXIT="+strconv.Itoa(makeExit),
+		"PACEQ_STUB_SUMMARY="+gateSummaryLine,
 		"PACEQ_GATE_LOG="+logFile,
 	)
 	cmd.Stdin = strings.NewReader(refLines)
