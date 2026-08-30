@@ -156,7 +156,6 @@ func ShimMain(ctx context.Context, cfg ShimConfig) (exitCode int) {
 	if ticks, ok := procfs.ProcStartTicks(res.PID); ok {
 		res.PIDStartTicks = ticks
 	}
-	writeBaseline(cfg.BaseFD, res.PID, res.PIDStartTicks)
 
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
@@ -183,6 +182,12 @@ func ShimMain(ctx context.Context, cfg ShimConfig) (exitCode int) {
 	// behind.
 	fwd := newSignalForwarder(res.PID)
 	defer fwd.stop()
+
+	// The baseline goes out last, once the attempt is armed: it is the
+	// daemon's only evidence that this attempt is live, and a daemon that
+	// answers it with a signal must find a shim that traps signals rather
+	// than one the default disposition kills without a result.
+	writeBaseline(cfg.BaseFD, res.PID, res.PIDStartTicks)
 
 	timer := clk.NewTimer(cfg.Timeout)
 	defer timer.Stop()

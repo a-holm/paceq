@@ -568,9 +568,11 @@ func TestSpawnViaShimRecordsWhyTheAttemptWasSignalled(t *testing.T) {
 			defer cancel()
 
 			spec := Spec{
-				Argv:      tc.argv,
-				Timeout:   30 * time.Second,
-				KillGrace: 200 * time.Millisecond,
+				Argv:    tc.argv,
+				Timeout: 30 * time.Second,
+				// Room for the shim to write its result before
+				// cmd.WaitDelay gives up on it.
+				KillGrace: 5 * time.Second,
 				Ctx: RunContext{
 					RunID:   "01JQ9F0R7K3M5N7P9R1T3V5X7Z",
 					Step:    "dump",
