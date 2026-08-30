@@ -210,6 +210,12 @@ func (src *Source) Tick(ctx context.Context) error {
 	// that never landed. Other schedules keep going; their cursors stand
 	// independent of the failure.
 	blocked := make(map[string]bool)
+	// Whatever this pass meets at the tick gate is reported once at the end,
+	// including when the pass is cut short: the fire-times it did reach were
+	// still decided.
+	gaps := newGapLedger()
+	defer gaps.report(src.log)
+
 	for _, in := range plans {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -230,9 +236,73 @@ func (src *Source) Tick(ctx context.Context) error {
 				"scheduled_for", in.ScheduledFor.Format(time.RFC3339), "err", err.Error())
 			continue
 		}
-		_ = res // Claimed=false means someone owned the fire-time already: silence is correct.
+		gaps.record(in, res)
 	}
 	return nil
+}
+
+// gapLedger accumulates what one wake met at the tick gate where startup
+// reconciliation had already been: fire-times replayed out of its evidence,
+// and fire-times left to it because the policy wanted no run there.
+//
+// It reports once per schedule rather than once per fire-time, because an
+// outage produces one row per slot and an operator wants the shape of the
+// outage, not a line per minute of it. A loss to a rival holder is not
+// counted at all: that is the ordinary follower answer during a handover and
+// says nothing about any decision.
+type gapLedger struct {
+	order []string
+	seen  map[string]*gapEntry
+}
+
+type gapEntry struct {
+	replayed int
+	left     int
+	oldest   time.Time
+	newest   time.Time
+}
+
+func newGapLedger() *gapLedger {
+	return &gapLedger{seen: make(map[string]*gapEntry)}
+}
+
+func (l *gapLedger) record(in store.TickInput, res store.TickResult) {
+	if !res.Replayed && res.LostTo != store.LossMissed {
+		return
+	}
+	name := in.Schedule.JobName + "/" + in.Schedule.Name
+	e := l.seen[name]
+	if e == nil {
+		e = &gapEntry{oldest: in.ScheduledFor, newest: in.ScheduledFor}
+		l.seen[name] = e
+		l.order = append(l.order, name)
+	}
+	if in.ScheduledFor.Before(e.oldest) {
+		e.oldest = in.ScheduledFor
+	}
+	if in.ScheduledFor.After(e.newest) {
+		e.newest = in.ScheduledFor
+	}
+	if res.Replayed {
+		e.replayed++
+		return
+	}
+	e.left++
+}
+
+// report is the line that used to be missing. Before it, a catch-up overruled
+// by gap detection left no run, no row and nothing in the log, so an operator
+// following the troubleshooting page ran out of places to look.
+func (l *gapLedger) report(log *slog.Logger) {
+	for _, name := range l.order {
+		e := l.seen[name]
+		log.Info("catch-up met gap detection's evidence at the tick gate",
+			"schedule", name,
+			"replayed", e.replayed,
+			"left_as_missed", e.left,
+			"oldest", e.oldest.Format(time.RFC3339),
+			"newest", e.newest.Format(time.RFC3339))
+	}
 }
 
 // planSchedule evaluates one due schedule into the list of transactions it

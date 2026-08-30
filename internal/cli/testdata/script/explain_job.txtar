@@ -66,16 +66,19 @@ summary: never succeeded, last outcome queued, next 2026-09-24 10:00 (1h00m from
        TICK_MISSED_DAEMON_DOWN
        no daemon was running (gap detection)
        -> treat these rows as outage evidence, not as measurements
+       -> set catchup to last or all if these moments should still run after a restart
        -> compare them against the daemon session rows covering the same period
   2026-09-24 00:03:00Z  missed  tick         01M38BHZS0  WARN
        TICK_MISSED_DAEMON_DOWN
        no daemon was running (gap detection)
        -> treat these rows as outage evidence, not as measurements
+       -> set catchup to last or all if these moments should still run after a restart
        -> compare them against the daemon session rows covering the same period
   2026-09-24 00:00:00Z  missed  outage       1  9m00s  WARN
        TICK_MISSED_DAEMON_DOWN
        the daemon was down for 9m00s
        -> treat these rows as outage evidence, not as measurements
+       -> set catchup to last or all if these moments should still run after a restart
        -> compare them against the daemon session rows covering the same period
        2 schedules were due in this window
   2026-09-23 10:01:00Z  triggered tick         01M39A98M0  OK
@@ -99,6 +102,7 @@ summary: never succeeded, last outcome queued, next 2026-09-24 10:00 (1h00m from
       "at_ms": 1790208360000,
       "hints": [
         "treat these rows as outage evidence, not as measurements",
+        "set catchup to last or all if these moments should still run after a restart",
         "compare them against the daemon session rows covering the same period"
       ],
       "kind": "tick",
@@ -117,6 +121,7 @@ summary: never succeeded, last outcome queued, next 2026-09-24 10:00 (1h00m from
       "at_ms": 1790208180000,
       "hints": [
         "treat these rows as outage evidence, not as measurements",
+        "set catchup to last or all if these moments should still run after a restart",
         "compare them against the daemon session rows covering the same period"
       ],
       "kind": "tick",
@@ -136,6 +141,7 @@ summary: never succeeded, last outcome queued, next 2026-09-24 10:00 (1h00m from
       "duration_ms": 540000,
       "hints": [
         "treat these rows as outage evidence, not as measurements",
+        "set catchup to last or all if these moments should still run after a restart",
         "compare them against the daemon session rows covering the same period"
       ],
       "kind": "outage",
@@ -224,7 +230,6 @@ summary: never succeeded, last outcome queued, next 2026-09-24 10:00 (1h00m from
     "paused": false
   }
 }
-
 -- expected_sched.json --
 {
   "daemon_up": false,
@@ -234,6 +239,7 @@ summary: never succeeded, last outcome queued, next 2026-09-24 10:00 (1h00m from
       "at_ms": 1790208360000,
       "hints": [
         "treat these rows as outage evidence, not as measurements",
+        "set catchup to last or all if these moments should still run after a restart",
         "compare them against the daemon session rows covering the same period"
       ],
       "kind": "tick",
@@ -252,6 +258,7 @@ summary: never succeeded, last outcome queued, next 2026-09-24 10:00 (1h00m from
       "at_ms": 1790208180000,
       "hints": [
         "treat these rows as outage evidence, not as measurements",
+        "set catchup to last or all if these moments should still run after a restart",
         "compare them against the daemon session rows covering the same period"
       ],
       "kind": "tick",
@@ -271,6 +278,7 @@ summary: never succeeded, last outcome queued, next 2026-09-24 10:00 (1h00m from
       "duration_ms": 540000,
       "hints": [
         "treat these rows as outage evidence, not as measurements",
+        "set catchup to last or all if these moments should still run after a restart",
         "compare them against the daemon session rows covering the same period"
       ],
       "kind": "outage",

@@ -166,7 +166,8 @@ func newCatalog() map[Code]Entry {
 				"daemon comes back.",
 			Remedy: []string{
 				"set catchup to last or all on the schedule if late runs are wanted",
-				"a long outage with catchup off shows up here as a block of skipped ticks",
+				"these rows come from a schedule that fell behind while the daemon was up; " +
+					"a detected outage keeps TICK_MISSED_DAEMON_DOWN on its own slots instead",
 			},
 			Terminal: true,
 		},
@@ -180,7 +181,8 @@ func newCatalog() map[Code]Entry {
 				"playing catch-up, and this row is where the discarded moments are recorded.",
 			Remedy: []string{
 				"set catchup to all on the schedule if the missed moments should all run",
-				"a long outage with catchup on last shows up here as one run plus a block of these rows",
+				"a detected outage with catchup on last shows up as one run plus a block of " +
+					"TICK_MISSED_DAEMON_DOWN rows, not as these",
 			},
 			Terminal: true,
 		},
@@ -313,9 +315,12 @@ func newCatalog() map[Code]Entry {
 			Explanation: "Nobody observed this moment: the row was written afterwards by gap " +
 				"detection, which walks a schedule's expected fire times after a restart and " +
 				"fills the holes. It is synthetic evidence of an outage, not a measurement, and " +
-				"it exists so silence never looks like success.",
+				"it exists so silence never looks like success. Catchup decides what happens " +
+				"next: a schedule set to last or all takes back the slots it replays, and those " +
+				"become runs, so the rows left carrying this code are the moments nothing ran.",
 			Remedy: []string{
 				"treat these rows as outage evidence, not as measurements",
+				"set catchup to last or all if these moments should still run after a restart",
 				"compare them against the daemon session rows covering the same period",
 			},
 			Terminal: true,
