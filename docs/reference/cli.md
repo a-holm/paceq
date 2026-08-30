@@ -77,7 +77,7 @@ Inherited flags:
 
 Comment imported jobs out of the crontab, with a way back
 
-The migration's last step (M6-03): after import and shadow mode,
+The migration's last step: after import and shadow mode,
 comment the crontab lines that paceq now owns out of the crontab - and be
 able to undo it in one minute.
 
@@ -1680,7 +1680,7 @@ Inherited flags:
 
 Shadow mode reporting: what would have run, compared to cron
 
-The migration's trust mechanism (M6-02).
+The migration's trust mechanism.
 
 Shadow mode runs while `paceq serve --shadow` is up: every schedule is
 planned, evaluated and recorded exactly as normally - fire-times, skip
