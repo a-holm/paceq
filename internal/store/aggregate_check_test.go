@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/a-holm/paceq/internal/model"
+	"github.com/a-holm/paceq/internal/reason"
 )
 
 // seedSucceededOneStepRun drives one seeded run's rows to a consistent
@@ -94,7 +95,7 @@ func TestRunAggregateMismatches(t *testing.T) {
 
 // runLevelCodesOutsideAFailedRun sweeps every run row through the production
 // predicate and returns the rows that break the implication I10 now rests on:
-// a run-level failure code implies the row is failed. It calls runLevelFailure
+// a run-level failure code implies the row is failed. It asks the catalogue
 // rather than repeating its list, so a third code added to the pair is covered
 // on the day it lands.
 func runLevelCodesOutsideAFailedRun(t *testing.T, s *Store) []string {
@@ -113,7 +114,7 @@ func runLevelCodesOutsideAFailedRun(t *testing.T, s *Store) []string {
 		if err := rows.Scan(&id, &state, &code); err != nil {
 			t.Fatalf("scan a run row: %v", err)
 		}
-		if runLevelFailure(code) && state != string(model.RunFailed) {
+		if reason.IsRunLevelFailure(reason.Code(code)) && state != string(model.RunFailed) {
 			bad = append(bad, fmt.Sprintf("run %s is %s carrying %s", id, state, code))
 		}
 	}
@@ -158,7 +159,7 @@ func TestRunLevelReasonCodesOnlyLiveOnFailedRuns(t *testing.T) {
 	if state != string(model.RunQueued) {
 		t.Fatalf("the repaired run is %s, want queued", state)
 	}
-	if runLevelFailure(code) {
+	if reason.IsRunLevelFailure(reason.Code(code)) {
 		t.Errorf("the repaired run carries %s while queued: the flag outranks its steps, "+
 			"so the fold answers failed for a row that is waiting to run", code)
 	}

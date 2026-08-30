@@ -24,9 +24,10 @@ type AggregateMismatch struct {
 //
 // Fsck reports the same fact as I10 by calling this method, so the harness
 // battery and the invariant engine cannot drift apart. What counts as
-// agreement is model.RunStateAgrees, beside the fold itself, so this package
-// holds no part of the rule and no caller can find one half without the
-// other.
+// agreement is model.RunStateAgrees, beside the fold itself, and which reason
+// codes mean the run failed for something no step can express is
+// reason.IsRunLevelFailure, beside the codes themselves, so this package holds
+// no part of the rule and no caller can find one half without the other.
 func (s *Store) RunAggregateMismatches(ctx context.Context) ([]AggregateMismatch, error) {
 	rows, err := s.r.QueryContext(ctx, fsckI10SQL)
 	if err != nil {
@@ -67,7 +68,7 @@ func (s *Store) RunAggregateMismatches(ctx context.Context) ([]AggregateMismatch
 		if err != nil {
 			return nil, fmt.Errorf("sweep for aggregate mismatches: run %s: %w", id, err)
 		}
-		failed := runLevelFailure(r.reason)
+		failed := reason.IsRunLevelFailure(reason.Code(r.reason))
 		if model.RunStateAgrees(have, r.steps, failed) {
 			continue
 		}
@@ -78,16 +79,4 @@ func (s *Store) RunAggregateMismatches(ctx context.Context) ([]AggregateMismatch
 		})
 	}
 	return out, nil
-}
-
-// runLevelFailure names the two reason codes that mean a run failed for
-// something no step can express: the reaper quarantined it, or its attempt
-// budget ran out. reapToFailedTx is the only writer of either, so the pair is
-// exact for every row this code writes.
-//
-// A run stamped RUN_LEGACY_UNSPECIFIED by fsck --repair reads false here even
-// if it failed at run level, because the stamp erased which kind it was. That
-// is a pre-catalogue row, and it is reported rather than excused.
-func runLevelFailure(code string) bool {
-	return code == string(reason.RUNPoisoned) || code == string(reason.RUNOrphanedReconciled)
 }
