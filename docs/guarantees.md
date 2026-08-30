@@ -97,6 +97,10 @@ The cursor and the dedup key must therefore never be coupled implicitly (10 `§5
 | `sensors reset <s> --forget-run-keys` | NULL | +1 | deleted for that sensor | Full replay plus a clean dedup table |
 | `sensors cursor set <s> <v>` | v | unchanged | kept | Spool the cursor without replay; old run keys still dedup |
 
+The table holds whether the daemon is running or not. A write reaches the daemon over its socket and the same store transaction runs there; with no daemon the command takes the state lock and runs it itself. Either way the row moves exactly the flags the command named.
+
+`sensors cursor set <s> ""` is refused with exit 2 rather than treated as a clearing move: starting over is what `sensors reset` means, and NULL is the only no-cursor form the column holds.
+
 The epoch bump is `O(1)` and reversible in practice (the old rows stay), while deleting run keys is `O(n)` and irreversible, so reset never deletes unless you ask. This is why a reset bumps the epoch rather than clearing the table: it preserves the dedup history and only makes old keys irrelevant.
 
 `run_keys` keeps its rows for 365 days, longer than runs (90 days). A `run_key` that reappears after the retention window is treated as new and fires a new run. That is a documented consequence, not a silent one: the gate only remembers what it is still told to remember.

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -222,9 +222,24 @@ func daemonResponds(socketPath string) bool {
 	return true
 }
 
-// sockPost sends an empty POST request over a unix socket.
-func sockPost(ctx context.Context, socketPath, path string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://unix"+path, strings.NewReader("{}"))
+// noBody is the request of a route whose whole argument is its path. It has to
+// be written down at the call site, and that is the point: a helper that sent
+// an empty object whenever nothing was passed is what let every sensor
+// argument disappear between the command line and the daemon (#207). A route
+// that does carry arguments can no longer reach the wire without them unless
+// somebody types this word into the diff.
+type noBody struct{}
+
+// sockPostJSON sends one POST with a JSON body over a unix socket and reports
+// only whether the daemon accepted it. The body is marshalled rather than
+// pasted together, so a value carrying a quote or a backslash arrives as
+// itself.
+func sockPostJSON(ctx context.Context, socketPath, path string, body any) error {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://unix"+path, bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
@@ -250,7 +265,7 @@ func sendSocket(ctx context.Context, socketPath string, req *http.Request) error
 // render it exactly like the same refusal made in this process.
 func postForJSON(ctx context.Context, socketPath, path string, body []byte, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://unix"+path,
-		strings.NewReader(string(body)))
+		bytes.NewReader(body))
 	if err != nil {
 		return err
 	}

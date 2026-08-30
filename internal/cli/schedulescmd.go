@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -757,24 +756,26 @@ func policyOfRow(sch store.ScheduleRow) cronx.Policy {
 }
 
 // pauseViaSocket sends a POST /v1/schedules/{name}/pause to the daemon socket.
+// The route's whole argument is the schedule in its path.
 func pauseViaSocket(ctx context.Context, socketPath, name string) error {
-	return sockPost(ctx, socketPath, "/v1/schedules/"+name+"/pause")
+	return sockPostJSON(ctx, socketPath, "/v1/schedules/"+name+"/pause", noBody{})
 }
 
-// resumeViaSocket sends a POST /v1/schedules/{name}/resume to the daemon socket.
+// resumeViaSocket sends a POST /v1/schedules/{name}/resume to the daemon
+// socket. The next tick is recomputed by the daemon, so nothing travels with
+// the request.
 func resumeViaSocket(ctx context.Context, socketPath, name string) error {
-	return sockPost(ctx, socketPath, "/v1/schedules/"+name+"/resume")
+	return sockPostJSON(ctx, socketPath, "/v1/schedules/"+name+"/resume", noBody{})
+}
+
+// cancelRequest is the body a cancel carries.
+type cancelRequest struct {
+	Reason string `json:"reason"`
 }
 
 // cancelViaSocket sends a POST /v1/runs/{id}/cancel to the daemon socket.
 func cancelViaSocket(ctx context.Context, socketPath, runID, reason string) error {
-	body := strings.NewReader(`{"reason":"` + reason + `"}`)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://unix"+"/v1/runs/"+runID+"/cancel", body)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	return sendSocket(ctx, socketPath, req)
+	return sockPostJSON(ctx, socketPath, "/v1/runs/"+runID+"/cancel", cancelRequest{Reason: reason})
 }
 
 // clockForEnv returns the clock an Env carries, or the system clock.
