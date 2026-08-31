@@ -8,7 +8,7 @@ require (
 	github.com/oklog/ulid/v2 v2.1.2
 	github.com/rogpeppe/go-internal v1.16.0
 	github.com/spf13/cobra v1.10.2
-	github.com/spf13/pflag v1.0.9
+	github.com/spf13/pflag v1.0.10
 	modernc.org/sqlite v1.57.0
 )
 
