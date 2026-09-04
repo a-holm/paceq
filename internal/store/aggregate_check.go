@@ -23,10 +23,10 @@ type AggregateMismatch struct {
 // an attempt, but the run row and its steps must always tell one story.
 //
 // Fsck reports the same fact as I10 by calling this method, so the harness
-// battery and the invariant engine cannot drift apart. A run whose steps
-// aggregate to work no executor has claimed yet is not a mismatch; that
-// exception belongs to the recovery windows and lives beside the aggregate
-// function itself.
+// battery and the invariant engine cannot drift apart. What counts as
+// agreement is model.RunStateAgrees, beside the fold itself, so this package
+// holds no part of the rule and no caller can find one half without the
+// other.
 func (s *Store) RunAggregateMismatches(ctx context.Context) ([]AggregateMismatch, error) {
 	rows, err := s.r.QueryContext(ctx, fsckI10SQL)
 	if err != nil {
@@ -63,14 +63,19 @@ func (s *Store) RunAggregateMismatches(ctx context.Context) ([]AggregateMismatch
 
 	var out []AggregateMismatch
 	for id, r := range byRun {
-		want := model.RunAggregate(r.steps, runLevelFailure(r.reason))
-		if string(want) != r.state && !unclaimedWork(want, r.state) {
-			out = append(out, AggregateMismatch{
-				RunID:     id,
-				State:     r.state,
-				Aggregate: want,
-			})
+		have, err := model.ParseRunState(r.state)
+		if err != nil {
+			return nil, fmt.Errorf("sweep for aggregate mismatches: run %s: %w", id, err)
 		}
+		failed := runLevelFailure(r.reason)
+		if model.RunStateAgrees(have, r.steps, failed) {
+			continue
+		}
+		out = append(out, AggregateMismatch{
+			RunID:     id,
+			State:     r.state,
+			Aggregate: model.RunAggregate(r.steps, failed),
+		})
 	}
 	return out, nil
 }

@@ -171,3 +171,169 @@ func contains(steps []model.StepState, want model.StepState) bool {
 	}
 	return false
 }
+
+// TestRunStateAgreesOverEveryStoredStateAndStepList is exhaustive: every stored
+// run state against every list of up to three steps, with and without a
+// run-level failure, checked against an oracle stated as a set of permitted
+// stored states rather than as an equality with one branch off it.
+//
+// Exhaustiveness is what makes this bite in both directions. A predicate that
+// excused more than the one-to-many region admits a stored state the oracle's
+// set does not hold; a predicate that excused less refuses one the set does.
+func TestRunStateAgreesOverEveryStoredStateAndStepList(t *testing.T) {
+	t.Parallel()
+
+	const maxSteps = 3
+
+	pairs := 0
+	var walk func(prefix []model.StepState)
+	walk = func(prefix []model.StepState) {
+		for _, runLevelFailure := range []bool{false, true} {
+			for _, have := range model.AllRunStates() {
+				pairs++
+				got := model.RunStateAgrees(have, prefix, runLevelFailure)
+				want := runStateAgreesOracle(have, prefix, runLevelFailure)
+				if got != want {
+					t.Fatalf("RunStateAgrees(%q, %v, %t) = %t, want %t",
+						have, prefix, runLevelFailure, got, want)
+				}
+			}
+		}
+		if len(prefix) == maxSteps {
+			return
+		}
+		for _, s := range model.AllStepStates() {
+			next := make([]model.StepState, 0, len(prefix)+1)
+			next = append(next, prefix...)
+			walk(append(next, s))
+		}
+	}
+	walk(nil)
+
+	// (1 + 6 + 36 + 216) step lists, five stored states, two flags. A
+	// smaller number means the walk lost a state and the sweep proves less
+	// than it claims.
+	if want := 259 * 5 * 2; pairs != want {
+		t.Errorf("walked %d pairs, want %d", pairs, want)
+	}
+}
+
+// runStateAgreesOracle is the permitted set per step list, written as
+// membership rather than as one comparison with an exception hung off it, so
+// an error in the implementation's shape does not repeat itself here. It
+// reads the aggregate off aggregateOracle for the same reason.
+func runStateAgreesOracle(have model.RunState, steps []model.StepState, runLevelFailure bool) bool {
+	var allowed []model.RunState
+	switch {
+	case runLevelFailure:
+		allowed = []model.RunState{model.RunFailed}
+	case aggregateOracle(steps) == model.RunRunning:
+		allowed = []model.RunState{model.RunQueued, model.RunRunning}
+	default:
+		allowed = []model.RunState{aggregateOracle(steps)}
+	}
+	return slices.Contains(allowed, have)
+}
+
+// TestRunStateAgreesIsOneToManyOnlyForOutstandingWork counts the permitted
+// stored states for every step list. Work outstanding permits exactly two,
+// queued and running, because the steps cannot see whether anyone has claimed
+// the run. Every other aggregate permits exactly one. The count is the claim
+// the doc comment makes, asserted rather than described: a predicate that
+// excuses too much raises a count, and one that excuses too little lowers the
+// only count that is not one.
+func TestRunStateAgreesIsOneToManyOnlyForOutstandingWork(t *testing.T) {
+	t.Parallel()
+
+	const maxSteps = 3
+
+	var walk func(prefix []model.StepState)
+	walk = func(prefix []model.StepState) {
+		for _, runLevelFailure := range []bool{false, true} {
+			var agreeing []model.RunState
+			for _, have := range model.AllRunStates() {
+				if model.RunStateAgrees(have, prefix, runLevelFailure) {
+					agreeing = append(agreeing, have)
+				}
+			}
+			want := []model.RunState{model.RunAggregate(prefix, runLevelFailure)}
+			if want[0] == model.RunRunning {
+				want = []model.RunState{model.RunQueued, model.RunRunning}
+			}
+			if !slices.Equal(agreeing, want) {
+				t.Fatalf("steps %v (run-level failure %t) agree with %v, want %v",
+					prefix, runLevelFailure, agreeing, want)
+			}
+		}
+		if len(prefix) == maxSteps {
+			return
+		}
+		for _, s := range model.AllStepStates() {
+			next := make([]model.StepState, 0, len(prefix)+1)
+			next = append(next, prefix...)
+			walk(append(next, s))
+		}
+	}
+	walk(nil)
+}
+
+// TestRunStateAgreesLeavesTheQueueAtRestAlone is the load-bearing half stated
+// on its own, because it is the one a reader will look for. A materialised run
+// nobody has claimed reads queued over pending steps, and so does every run a
+// requeue puts back. That is the resting state of the whole queue, not a
+// recovery window, and a checker that reported it would report the queue.
+func TestRunStateAgreesLeavesTheQueueAtRestAlone(t *testing.T) {
+	t.Parallel()
+
+	for _, steps := range [][]model.StepState{
+		{model.StepPending},
+		{model.StepPending, model.StepPending},
+		{model.StepSucceeded, model.StepPending},
+		{model.StepRunning},
+		{model.StepSkipped, model.StepRunning, model.StepPending},
+	} {
+		if !model.RunStateAgrees(model.RunQueued, steps, false) {
+			t.Errorf("a queued run over %v disagrees; the queue at rest reads as drift", steps)
+		}
+		if !model.RunStateAgrees(model.RunRunning, steps, false) {
+			t.Errorf("a running run over %v disagrees; a claimed run reads as drift", steps)
+		}
+	}
+}
+
+// TestRunStateAgreesRefusesEveryOtherDisagreement is the other half. Outside
+// the one region, a stored state that is not the aggregate is drift and must
+// be reported, including a queued row carrying a run-level failure: that flag
+// outranks the steps, so the aggregate is failed and the queued exemption
+// never reaches it.
+func TestRunStateAgreesRefusesEveryOtherDisagreement(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		have            model.RunState
+		steps           []model.StepState
+		runLevelFailure bool
+	}{
+		{model.RunQueued, []model.StepState{model.StepSucceeded}, false},
+		{model.RunQueued, []model.StepState{model.StepFailed}, false},
+		{model.RunQueued, []model.StepState{model.StepCancelled}, false},
+		{model.RunQueued, nil, false},
+		{model.RunQueued, []model.StepState{model.StepPending}, true},
+		{model.RunRunning, []model.StepState{model.StepSucceeded}, false},
+		{model.RunRunning, []model.StepState{model.StepFailed}, false},
+		{model.RunSucceeded, []model.StepState{model.StepFailed}, false},
+		{model.RunSucceeded, []model.StepState{model.StepPending}, false},
+		{model.RunFailed, []model.StepState{model.StepSucceeded}, false},
+		{model.RunFailed, []model.StepState{model.StepPending}, false},
+		{model.RunCancelled, []model.StepState{model.StepFailed}, false},
+		{model.RunCancelled, []model.StepState{model.StepPending}, false},
+	}
+	for _, tc := range cases {
+		if model.RunStateAgrees(tc.have, tc.steps, tc.runLevelFailure) {
+			t.Errorf("a %s run over %v (run-level failure %t) agrees, want it reported; "+
+				"the aggregate is %q",
+				tc.have, tc.steps, tc.runLevelFailure,
+				model.RunAggregate(tc.steps, tc.runLevelFailure))
+		}
+	}
+}
