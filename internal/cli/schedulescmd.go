@@ -522,6 +522,10 @@ func runSchedulesPause(ctx context.Context, env Env, g *globals, out *ui, ref st
 	} else {
 		out.note(1, "no daemon socket; writing directly to the database")
 	}
+	if stop := daemonHoldsState(ctx, env, g,
+		sch.JobName+"/"+sch.Name+" was not paused"); stop != nil {
+		return stop
+	}
 
 	s, err := store.OpenState(ctx, stateDir, store.Options{Clock: clockForEnv(env)})
 	if err != nil {
@@ -599,6 +603,10 @@ func runSchedulesResume(ctx context.Context, env Env, g *globals, out *ui, ref s
 		out.note(1, "daemon unreachable; writing directly to the database")
 	} else {
 		out.note(1, "no daemon socket; writing directly to the database")
+	}
+	if stop := daemonHoldsState(ctx, env, g,
+		sch.JobName+"/"+sch.Name+" was not resumed"); stop != nil {
+		return stop
 	}
 
 	s, err := store.OpenState(ctx, stateDir, store.Options{Clock: clockForEnv(env)})

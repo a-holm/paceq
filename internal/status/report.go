@@ -66,10 +66,10 @@ type Maint struct {
 	BackupVerified bool   `json:"backup_verified,omitempty"`
 }
 
-// Daemon says what the command observed about the daemon. Up is a live socket
-// dial, carried here so a --json consumer sees the same fact the text form
-// marks. Since and Version come from the daemon's own session row and are
-// absent when the daemon is down.
+// Daemon says what the command observed about the daemon. Up means a daemon
+// holds this state directory, carried here so a --json consumer sees the same
+// fact the text form marks. Since and Version come from the daemon's own
+// session row and are absent when the daemon is down.
 type Daemon struct {
 	Up      bool   `json:"up"`
 	Since   string `json:"since,omitempty"`

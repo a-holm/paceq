@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"runtime"
 	"time"
 
@@ -152,8 +153,13 @@ func writeDoctorReport(out *ui, report doctor.Report) error {
 // checkDaemonVersion asks the running daemon for its version and compares.
 // A CLI that predates its daemon (or the reverse) answers questions from a
 // schema the other side may not share, so a mismatch is worth naming before
-// it becomes a confusing answer. No socket at all is the healthy case for a
-// machine that runs only the CLI side.
+// it becomes a confusing answer.
+//
+// Whether a daemon exists at all is not this check's own decision (#215). An
+// absent socket file used to read as an absent daemon, which put "no daemon is
+// running" in the same report as the write lock held by that daemon's pid. The
+// open session row answers it, the same row the lock finding names, so one
+// report makes one statement.
 func checkDaemonVersion(ctx context.Context, env Env, g *globals, cliVersion string) doctor.Finding {
 	const title = "daemon version"
 	socketPath, err := daemonSocket(env, g)
@@ -161,7 +167,7 @@ func checkDaemonVersion(ctx context.Context, env Env, g *globals, cliVersion str
 		return refusedSocketFinding(title, err)
 	}
 	if socketPath == "" {
-		return doctor.Finding{Level: doctor.OK, Title: title, Detail: "no daemon is running"}
+		return unreachableDaemonFinding(ctx, title, env, g)
 	}
 	version, err := daemonVersion(ctx, socketPath)
 	if err != nil {
@@ -188,6 +194,53 @@ func checkDaemonVersion(ctx context.Context, env Env, g *globals, cliVersion str
 		Detail: fmt.Sprintf("this CLI is %s, the daemon is %s: answers may come from a schema "+
 			"the other side does not share", cliVersion, version),
 		Next: []string{"restart the service so both sides are the same build: systemctl restart paceq"},
+	}
+}
+
+// unreachableDaemonFinding is what the report says when there is no socket to
+// ask. A daemon may still be holding this state directory: --socket defaults to
+// empty and the shipped unit does not pass it, so the healthy installation and
+// the unreachable one look identical from the filesystem. The session row
+// tells them apart, and naming the flag is what makes the silence fixable.
+func unreachableDaemonFinding(ctx context.Context, title string, env Env, g *globals) doctor.Finding {
+	ro, err := openReadOnlyStore(ctx, env, g)
+	if err != nil {
+		if isNotFound(err) {
+			// No state, so nothing can be serving it. Every other finding in
+			// this report already covers a state that should be there.
+			return doctor.Finding{Level: doctor.OK, Title: title, Detail: "no daemon is running"}
+		}
+		return doctor.Finding{
+			Level:  doctor.Warn,
+			Title:  title,
+			Detail: fmt.Sprintf("the state could not be read, so this report cannot say whether a daemon holds it: %v", err),
+			Next:   []string{"the findings above name what is wrong with the state directory"},
+		}
+	}
+	defer func() { _ = ro.Close() }()
+
+	owner, running, err := ro.DaemonSession(ctx)
+	switch {
+	case err != nil:
+		return doctor.Finding{
+			Level:  doctor.Warn,
+			Title:  title,
+			Detail: fmt.Sprintf("the session row could not be read, so this report cannot say whether a daemon holds it: %v", err),
+			Next:   []string{"the findings above name what is wrong with the state directory"},
+		}
+	case !running:
+		return doctor.Finding{Level: doctor.OK, Title: title, Detail: "no daemon is running"}
+	}
+	return doctor.Finding{
+		Level: doctor.Warn,
+		Title: title,
+		Detail: fmt.Sprintf("a daemon holds this state (pid %d, paceq %s, started %s) but exposes no socket",
+			owner.PID, owner.Version, owner.StartedAt.Format(time.RFC3339)),
+		Next: []string{
+			"start it with --socket so the CLI can reach it: paceq serve --socket " +
+				filepath.Join(g.stateDirOrEmpty(env), socketName),
+			"until then every command that writes has to wait for that daemon",
+		},
 	}
 }
 

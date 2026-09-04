@@ -10,6 +10,7 @@ import (
 
 	"github.com/a-holm/paceq/internal/explain"
 	"github.com/a-holm/paceq/internal/status"
+	"github.com/a-holm/paceq/internal/store"
 )
 
 // status is the morning view (#30): one line per job on one screen, problems
@@ -72,17 +73,25 @@ func runStatus(ctx context.Context, env Env, g *globals, out *ui, ref string, f 
 	return runStatusOverview(ctx, env, g, out, f)
 }
 
-// probeDaemon asks whether a daemon answers right now: a socket file paceq
-// trusts gets one short dial, everything else reads as down. A socket it
-// refuses is named on stderr and then read as down too, because a status
-// report that will not print is a worse answer than one that says so.
-func probeDaemon(env Env, g *globals, out *ui) bool {
-	socketPath, err := daemonSocket(env, g)
-	if err != nil {
+// probeDaemon asks whether a daemon serves this state directory. The open
+// session row is the fact, and the socket is only how to talk to one: the
+// shipped systemd unit starts `paceq serve` with no --socket, so a correctly
+// running daemon has no socket file and reading the file as the answer printed
+// it as down (#215).
+//
+// A socket paceq refuses is still named on stderr, because a status report
+// that will not print is a worse answer than one that says so. It does not
+// change the verdict: whoever planted that file does not decide whether this
+// project's daemon is up.
+func probeDaemon(ctx context.Context, st *store.Store, env Env, g *globals, out *ui) bool {
+	if _, err := daemonSocket(env, g); err != nil {
 		fmt.Fprintf(out.err, "paceq: %v\n", err)
+	}
+	_, running, err := st.DaemonSession(ctx)
+	if err != nil {
 		return false
 	}
-	return daemonResponds(socketPath)
+	return running
 }
 
 // runStatusOverview builds and renders the whole-project report.
@@ -92,7 +101,7 @@ func runStatusOverview(ctx context.Context, env Env, g *globals, out *ui, f stat
 		return err
 	}
 
-	daemonUp := probeDaemon(env, g, out)
+	daemonUp := probeDaemon(ctx, ro, env, g, out)
 	rep, err := status.Build(ctx, ro, status.Options{
 		Clock:    clkOf(env),
 		DaemonUp: daemonUp,
@@ -160,7 +169,7 @@ func runStatusRef(ctx context.Context, env Env, g *globals, out *ui, ref string)
 		return explainResolveError(err)
 	}
 
-	daemonUp := probeDaemon(env, g, out)
+	daemonUp := probeDaemon(ctx, ro, env, g, out)
 	rep, err := status.BuildSubject(ctx, ro, status.SubjectRef{
 		Kind:     string(resolved.Kind),
 		Job:      resolved.Job,

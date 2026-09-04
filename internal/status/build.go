@@ -97,9 +97,10 @@ func buildMaintenance(ctx context.Context, st *store.Store) Maint {
 	return m
 }
 
-// buildDaemon fills the daemon block: up is what the caller observed by
-// dialling; since and version come from the daemon's own open session row,
-// so they are absent exactly when there is nothing alive to describe.
+// buildDaemon fills the daemon block: up is the caller's answer to whether a
+// daemon holds this state; since and version come from the daemon's own open
+// session row, so they are absent exactly when there is nothing alive to
+// describe.
 func buildDaemon(ctx context.Context, st *store.Store, opts Options) Daemon {
 	d := Daemon{Up: opts.DaemonUp}
 	if !opts.DaemonUp {

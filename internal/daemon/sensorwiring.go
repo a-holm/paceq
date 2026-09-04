@@ -18,8 +18,10 @@ import (
 // database, and the store may not import it, so the adapters that read a row
 // into a Spec and write a Result back live here, where both are in scope.
 //
-// The runtime owns concurrency, the per-sensor claim, the circuit breaker and
-// truncation. Everything below is the database.
+// The runtime owns concurrency, the per-sensor claim and the circuit breaker.
+// Everything below is the database, including the trigger ceiling: it belongs
+// to the commit, which is the one thing both a daemon wake and a forced
+// `paceq sensors tick` go through.
 
 // sensorStore is what the sensor wiring needs of the store.
 type sensorStore interface {
@@ -120,13 +122,33 @@ type SensorEvaluation struct {
 	Now    time.Time
 }
 
+// SensorCommitResult is what one recorded evaluation did: the store's answer,
+// plus the two facts the caller cannot recover from it. Outcome is the word
+// written to ticks.outcome, and the truncation pair says whether the ceiling
+// cut this batch, so a forced tick can tell the operator it was partial.
+type SensorCommitResult struct {
+	store.SensorTickCommitResult
+
+	Outcome   string
+	Truncated bool
+	Dropped   int
+}
+
 // CommitSensorEvaluation translates one evaluation into the store's commit
 // input and writes it. It is the single translation from a sensor.Result into
 // tick, trigger, run and cursor rows, so a daemon evaluation and a forced
-// `paceq sensors tick` can never disagree about an outcome, a reason code or
-// when the sensor is due again.
-func CommitSensorEvaluation(ctx context.Context, st SensorCommitter, in SensorEvaluation) (store.SensorTickCommitResult, error) {
+// `paceq sensors tick` can never disagree about an outcome, a reason code, a
+// skip reason, the trigger ceiling or when the sensor is due again.
+//
+// The ceiling is applied here rather than by either caller (#215). It is the
+// one point both evaluations pass through, and applying it twice would erase
+// its own record: the second pass sees a batch inside the budget and reports
+// nothing was dropped.
+func CommitSensorEvaluation(ctx context.Context, st SensorCommitter, in SensorEvaluation) (SensorCommitResult, error) {
 	res := in.Result
+	truncated := sensor.ApplyLimit(&res, in.Row.MaxTriggersPerTick)
+	dropped := len(in.Result.Triggers) - len(res.Triggers)
+
 	outcome := store.OutcomeSkipped
 	switch res.Outcome {
 	case sensor.Triggered:
@@ -155,14 +177,48 @@ func CommitSensorEvaluation(ctx context.Context, st SensorCommitter, in SensorEv
 		Outcome:       outcome,
 		ReasonCode:    res.ReasonCode,
 		ReasonText:    res.ReasonText,
+		ReasonData:    sensorReasonData(res.ReasonData),
 		NextEvalAt:    in.Now.Add(time.Duration(in.Row.IntervalMS) * time.Millisecond).UnixMilli(),
 		DurationMs:    res.DurationMS,
 		Now:           in.Now,
 	})
 	if err != nil {
-		return store.SensorTickCommitResult{}, fmt.Errorf("commit the sensor tick for %s: %w", in.Row.Name, err)
+		return SensorCommitResult{}, fmt.Errorf("commit the sensor tick for %s: %w", in.Row.Name, err)
 	}
-	return out, nil
+	return SensorCommitResult{
+		SensorTickCommitResult: out,
+		Outcome:                outcome,
+		Truncated:              truncated,
+		Dropped:                dropped,
+	}, nil
+}
+
+// sensorReasonData renders the evaluation's detail object for ticks.reason_data.
+// A batch that was not cut says nothing about truncation: the marker is a fact
+// about this evaluation, not a field every tick carries.
+//
+// An object that will not marshal is dropped rather than failing the commit:
+// the tick is the record of what happened, and losing its detail is a smaller
+// harm than losing the whole evaluation.
+func sensorReasonData(data map[string]any) string {
+	if len(data) == 0 {
+		return ""
+	}
+	kept := make(map[string]any, len(data))
+	for key, value := range data {
+		if key == "truncated" && value == false {
+			continue
+		}
+		kept[key] = value
+	}
+	if len(kept) == 0 {
+		return ""
+	}
+	encoded, err := json.Marshal(kept)
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
 }
 
 // SensorSpecFromRow turns a sensor row into the runnable shape the evaluator

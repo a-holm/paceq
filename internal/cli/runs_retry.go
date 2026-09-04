@@ -184,6 +184,9 @@ func retryRunOnce(ctx context.Context, env Env, g *globals, stateDir, runID stri
 			return store.ReopenResult{}, err
 		}
 	}
+	if stop := daemonHoldsState(ctx, env, g, runID+" was not retried"); stop != nil {
+		return store.ReopenResult{}, stop
+	}
 	s, err := store.OpenState(ctx, stateDir, store.Options{Clock: clockForEnv(env)})
 	if err != nil {
 		return store.ReopenResult{}, err

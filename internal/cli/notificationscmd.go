@@ -252,6 +252,10 @@ func runNotificationsRetry(ctx context.Context, env Env, g *globals, out *ui, id
 		}
 		out.note(1, "daemon unreachable (%v); writing directly to the database", serr)
 	}
+	if stop := daemonHoldsState(ctx, env, g,
+		fmt.Sprintf("notification %d was not handed back for delivery", id)); stop != nil {
+		return stop
+	}
 	st, err := store.OpenState(ctx, stateDir, store.Options{})
 	if err != nil {
 		return err

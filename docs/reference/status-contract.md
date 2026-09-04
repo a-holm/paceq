@@ -58,8 +58,10 @@ ignored.
 
 `-o json` writes one object with `schema_version: 1`. Timestamps are RFC3339
 strings in UTC. The overview document carries `daemon`, `summary` and `jobs`;
-`daemon.up` is a live socket dial made while answering, so it is honest even
-when the daemon went down between two cron lines. A reference report adds
+`daemon.up` says whether a daemon holds this state directory, read from the
+open session row while answering, so it is honest even when the daemon went
+down between two cron lines and whether or not that daemon was given a socket
+to listen on. A reference report adds
 `subject` and kind-specific facts (`schedule`, `sensor`, `run`). Fields a
 subject does not have are absent, never null-filled.
 

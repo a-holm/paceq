@@ -190,6 +190,42 @@ func (s *Store) OpenSession(ctx context.Context) (Session, bool, error) {
 	return found, ok, nil
 }
 
+// DaemonSession answers which paceq daemon serves this state directory: the
+// open session row, and whether the process it names is still there.
+//
+// The session row is the fact a socket file is not. A socket is an artefact of
+// one optional flag, so a correctly running daemon may have none, while
+// StartSession always writes this row and closes whatever the last run left
+// behind. A row still open therefore belongs either to a live daemon or to one
+// that died without saying goodbye, and the process check is what separates
+// them. The boot id is what makes the process id trustworthy: a pid recorded
+// before a restart names whatever holds that number now.
+func (s *Store) DaemonSession(ctx context.Context) (Session, bool, error) {
+	session, found, err := s.OpenSession(ctx)
+	if err != nil || !found {
+		return Session{}, false, err
+	}
+	if !sessionAlive(session, s.bootIdentity()) {
+		// The row belongs to a run that never got to say goodbye. Naming it
+		// would be naming a daemon that is not there.
+		return Session{}, false, nil
+	}
+	return session, true, nil
+}
+
+// sessionAlive reports whether the process a session row names still runs on
+// this boot. It is deliberately the same shape as holderAlive: a pid alone is
+// not evidence, and a pid from another boot is evidence of the opposite.
+func sessionAlive(sess Session, boot string) bool {
+	if sess.PID <= 0 {
+		return false
+	}
+	if boot != "" && sess.BootID != "" && sess.BootID != boot {
+		return false
+	}
+	return processAlive(sess.PID)
+}
+
 // LatestSession is the most recent session row, open or closed. It is how an
 // operator or the health surface asks "who ran here last, and how did it
 // end": a closed row carries its stop_reason, an open one means the process
