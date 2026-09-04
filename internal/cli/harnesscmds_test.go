@@ -318,24 +318,26 @@ func cmdWriteID(ts *testscript.TestScript, neg bool, args []string) {
 //
 // With -update a mismatch rewrites the golden inside the script instead of
 // failing it, which is the whole regeneration story: one command refreshes
-// every expectation, and git diff shows what moved.
+// every expectation, and git diff shows what moved. The rewrite is queued
+// rather than performed here; goldenState says why.
 func cmdCmpJSON(ts *testscript.TestScript, neg bool, args []string) {
 	if neg || len(args) != 2 {
 		ts.Fatalf("usage: cmpjson ACTUAL EXPECTED")
 	}
 	actual := []byte(ts.ReadFile(args[0]))
 	expected := []byte(ts.ReadFile(args[1]))
+	goldens := goldensOf(ts)
 	equal, err := jsonEqual(actual, expected)
 	if err != nil {
 		// An unreadable right side with -update is a golden waiting to
 		// be born, so write it instead of failing. A broken LEFT side
 		// is always a bug in the script.
-		if *updateGoldens {
+		if goldens.update {
 			canonicalActual, canonErr := canonicalJSON(actual)
 			if canonErr != nil {
 				ts.Fatalf("%s is not JSON: %v", args[0], canonErr)
 			}
-			if err := updateScriptGolden(ts, args[1], canonicalActual); err != nil {
+			if err := goldens.queue(ts, args[1], canonicalActual); err != nil {
 				ts.Fatalf("could not regenerate %s: %v", args[1], err)
 			}
 			return
@@ -350,8 +352,8 @@ func cmdCmpJSON(ts *testscript.TestScript, neg bool, args []string) {
 	if errA != nil || errB != nil {
 		ts.Fatalf("%s and %s hold different JSON shapes", args[0], args[1])
 	}
-	if *updateGoldens {
-		if err := updateScriptGolden(ts, args[1], canonicalActual); err != nil {
+	if goldens.update {
+		if err := goldens.queue(ts, args[1], canonicalActual); err != nil {
 			ts.Fatalf("could not regenerate %s: %v", args[1], err)
 		}
 		return
@@ -362,27 +364,72 @@ func cmdCmpJSON(ts *testscript.TestScript, neg bool, args []string) {
 	ts.Fatalf("%s does not match %s:\n%s", args[0], args[1], patch)
 }
 
-// updateScriptGolden rewrites one embedded file section of the running
-// script with new content. A golden that is not embedded lands as a plain
-// file in the work directory instead.
-func updateScriptGolden(ts *testscript.TestScript, name string, content []byte) error {
-	scriptPath := filepath.Join("testdata", "script", ts.Name()+".txtar")
+// goldenStateKey addresses the golden update state a suite's Setup puts in
+// the script environment.
+type goldenStateKey struct{}
+
+// goldenState carries one running script's golden rewrites. testscript keeps
+// the script in an archive it parses at setup and, when cmp has recorded an
+// update, serialises that archive over the script file as the run ends.
+// Anything written to the same file while the script runs is discarded by
+// that write, which is why cmpjson only queues here. The archive is not
+// reachable from a custom command: TestScript exposes neither it nor the
+// update map. What it does expose is ordering, since ts.Defer runs after the
+// serialisation, so the queued goldens are applied to the file testscript
+// just wrote and one -update pass carries both kinds.
+type goldenState struct {
+	dir     string
+	update  bool
+	t       testscript.T
+	pending map[string][]byte
+}
+
+// goldensOf returns the golden state of the running script.
+func goldensOf(ts *testscript.TestScript) *goldenState {
+	state, ok := ts.Value(goldenStateKey{}).(*goldenState)
+	if !ok {
+		ts.Fatalf("this suite installs no golden state; cmpjson needs the Setup scriptParams builds")
+	}
+	return state
+}
+
+// queue records one embedded file section of the running script for
+// rewriting after the run. A golden the script never declared is a mistake
+// in the script, and it is reported on the line that made it.
+func (g *goldenState) queue(ts *testscript.TestScript, name string, content []byte) error {
+	scriptPath := filepath.Join(g.dir, ts.Name()+".txtar")
 	data, err := os.ReadFile(scriptPath)
 	if err != nil {
 		return err
 	}
-	archive := txtar.Parse(data)
-	found := false
-	for i := range archive.Files {
-		if archive.Files[i].Name == name {
-			archive.Files[i].Data = append(bytes.TrimRight(content, "\n"), '\n')
-			found = true
-		}
-	}
-	if !found {
+	if _, ok := txtarFile(data, name); !ok {
 		return fmt.Errorf("no section named %s in %s", name, scriptPath)
 	}
-	return os.WriteFile(scriptPath, txtar.Format(archive), 0o644)
+	if g.pending == nil {
+		g.pending = map[string][]byte{}
+		ts.Defer(func() { g.apply(scriptPath) })
+	}
+	g.pending[name] = append(bytes.TrimRight(content, "\n"), '\n')
+	return nil
+}
+
+// apply writes the queued goldens into the script file, re-reading it first
+// so testscript's own updates from the same run survive.
+func (g *goldenState) apply(scriptPath string) {
+	data, err := os.ReadFile(scriptPath)
+	if err != nil {
+		g.t.Fatal(fmt.Sprintf("could not reread %s to update its JSON goldens: %v", scriptPath, err))
+		return
+	}
+	archive := txtar.Parse(data)
+	for i := range archive.Files {
+		if content, ok := g.pending[archive.Files[i].Name]; ok {
+			archive.Files[i].Data = content
+		}
+	}
+	if err := os.WriteFile(scriptPath, txtar.Format(archive), 0o644); err != nil {
+		g.t.Fatal(fmt.Sprintf("could not update the JSON goldens in %s: %v", scriptPath, err))
+	}
 }
 
 // sigProcess is one backgrounded paceq run this harness controls.
