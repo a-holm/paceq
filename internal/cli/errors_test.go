@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/a-holm/paceq/internal/spec"
 	"github.com/a-holm/paceq/internal/store"
 )
 
@@ -29,6 +30,7 @@ func TestEveryErrorCarriesAllThreeParts(t *testing.T) {
 	perm := &store.PermissionError{Path: "/tmp/x/.paceq", Got: 0o755, Want: store.DirMode}
 	refused := peerVerdict("/run/user/1000/paceq.sock", 0, true, 1000)
 	held, _ := daemonHoldsStateRefusal(t, "finder was not paused")
+	stolen, _, _ := sensorNameTakenRefusal()
 
 	built := map[string]*Error{
 		"usageError":       usageError("the flag --nope is not a paceq flag", "paceq --help lists every flag"),
@@ -41,7 +43,8 @@ func TestEveryErrorCarriesAllThreeParts(t *testing.T) {
 		"cutoverFailure": cutoverFailure("the crontab was not changed: the write failed after the backup was taken", errors.New("disk full"),
 			"the state before the cutover is in .paceq/crontab.backup.2027-01-12T09-14-03",
 			"restore it with:  paceq cutover --rollback --from .paceq/crontab.backup.2027-01-12T09-14-03"),
-		"pathError": pathError(validateCatalog, "jobs/nightly.yaml", fs.ErrNotExist),
+		"pathError":            pathError(validateCatalog, "jobs/nightly.yaml", fs.ErrNotExist),
+		"sensorNameTakenError": stolen,
 
 		"socketRefusedError": socketRefusedError(refused),
 		"stopOnRefusal":      stopOnRefusal(fmt.Errorf("dial the daemon: %w", refused)),
@@ -220,4 +223,52 @@ func errorConstructors(t *testing.T) []string {
 		t.Fatal("no error constructors found, the completeness check would pass vacuously")
 	}
 	return found
+}
+
+// sensorNameTakenRefusal builds the refusal an apply meets when the state
+// database already holds a sensor name under another job: two job files in one
+// batch, the name owned by the first and declared by the second. It returns
+// the store refusal and the file the declaring job was read from, so a test
+// asserts against the conflict that is really there rather than against words
+// copied out of the message.
+func sensorNameTakenRefusal() (*Error, *store.SensorNameTakenError, string) {
+	taken := &store.SensorNameTakenError{Sensor: "dropzone", Owner: "alpha", Taker: "beta"}
+	loaded := []loadedSpec{
+		{display: "jobs/a.yaml", input: store.JobVersionInput{JobName: taken.Owner}},
+		{display: "jobs/b.yaml", input: store.JobVersionInput{JobName: taken.Taker}},
+	}
+	return sensorNameTakenError(loaded, taken), taken, loaded[1].display
+}
+
+// TestSensorNameTakenNamesTheOwnerAndTheFileToEdit reads the message an
+// operator meets when apply refuses a sensor name the database holds under
+// another job. Saying the name is taken is not enough: the refusal has to
+// separate the job whose row owns the name, which is the job that has to give
+// it up, from the file that declares it, which is the file to open. It also
+// has to say the batch wrote nothing, because the alternative is an operator
+// hunting for a half applied job (#206).
+func TestSensorNameTakenNamesTheOwnerAndTheFileToEdit(t *testing.T) {
+	refusal, taken, file := sensorNameTakenRefusal()
+	message := refusal.Error()
+
+	if refusal.code != ExitValidation {
+		t.Errorf("the refusal exits %d, want %d: a spec has to be corrected, nothing is broken", refusal.code, ExitValidation)
+	}
+
+	parts := []struct{ want, why string }{
+		{
+			fmt.Sprintf("%s: the sensor %s is already owned by the job %s", spec.CodeSensorNameTaken, taken.Sensor, taken.Owner),
+			"the code to look up, the contested name, and the job that owns it today",
+		},
+		{"\n  at " + file, "the file declaring the name, which is the file to edit"},
+		{"the primary key its row lives under", "why no way out leaves both jobs owning the name"},
+		{"take it out of " + taken.Owner + " first", "the way out, naming the job that has to give the name up"},
+		{"nothing was written", "whether a half applied batch has to be cleaned up"},
+		{"paceq error " + spec.CodeSensorNameTaken, "where that code is explained in full"},
+	}
+	for _, part := range parts {
+		if !strings.Contains(message, part.want) {
+			t.Errorf("the refusal never says %q (%s):\n%s", part.want, part.why, message)
+		}
+	}
 }
