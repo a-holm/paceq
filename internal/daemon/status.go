@@ -11,8 +11,8 @@ import (
 // that touched the database would turn a locked database into a restart loop,
 // which is exactly backwards (06 section 7.1).
 //
-// This surface is deliberately small. M2-08 puts a protocol on top of it; the
-// facts it needs are collected here from the first loop that starts.
+// This surface is deliberately small: the facts the endpoints report are
+// collected here from the first loop that starts.
 type statuses struct {
 	mu  sync.Mutex
 	m   map[string]*loopStat
