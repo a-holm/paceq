@@ -31,23 +31,18 @@ import (
 // explanations for real holes, not one row per quick restart.
 const GapThreshold = time.Minute
 
-// criticalChecks are the invariants whose violation means the database is in
-// a state the code cannot reason about: dedup ambiguous (I3), tick history
-// duplicated (I6), or a dependency graph with no legal order (I9). Startup
-// refuses on any of them, naming the repair path.
-var criticalChecks = map[string]bool{"I3": true, "I6": true, "I9": true}
-
 // CriticalViolationSummary renders the refusal line from a list of store
-// violations: which critical checks failed and on what, first detail included
-// so the operator knows where to look. It returns an empty string when there
-// are no critical violations.
+// violations: which findings the catalogue grades Critical and on what, first
+// detail included so the operator knows where to look. It returns an empty
+// string when nothing in the list refuses a start.
+//
+// The grade comes from store.CriticalViolations, the one place that answers
+// "does this refuse a boot", so a regrade in the catalogue moves this gate
+// and the health report together.
 func CriticalViolationSummary(all []store.Violation) string {
 	var named []string
 	detail := ""
-	for _, v := range all {
-		if !criticalChecks[v.Check] {
-			continue
-		}
+	for _, v := range store.CriticalViolations(all) {
 		named = append(named, v.Check+" ("+v.Subject+")")
 		if detail == "" {
 			detail = v.Detail

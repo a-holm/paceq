@@ -389,10 +389,12 @@ func CheckFilesystem(dir string, probe MagicProber) Finding {
 	}
 }
 
-// CheckCriticalInvariants is the fsck line in the report: the critical subset
-// of the sweep, the one that refuses a startup. Doctor exits 1 on it, which
-// is the whole point: the same fact that stops the daemon should stop the
-// script that runs doctor.
+// CheckCriticalInvariants is the fsck line in the report: the startup subset
+// of the sweep, graded by the same catalogue the daemon reads. Doctor exits 1
+// on a critical finding, which is the whole point: the same fact that stops
+// the daemon should stop the script that runs doctor. A finding the daemon
+// serves through is a warning here, because a health script that fails on a
+// state the daemon accepts is reporting on something else.
 func CheckCriticalInvariants(ctx context.Context, db DB) Finding {
 	const title = "fsck"
 	violations, err := db.QuickFsck(ctx)
@@ -405,22 +407,44 @@ func CheckCriticalInvariants(ctx context.Context, db DB) Finding {
 		}
 	}
 	if len(violations) == 0 {
-		return Finding{Level: OK, Title: title, Detail: fmt.Sprintf("%d invariants, no critical findings", len(store.Invariants))}
+		return Finding{
+			Level:  OK,
+			Title:  title,
+			Detail: fmt.Sprintf("%d startup invariants, no findings", len(store.QuickFsckChecks)),
+		}
 	}
+	if critical := store.CriticalViolations(violations); len(critical) > 0 {
+		return Finding{
+			Level:  Fail,
+			Title:  title,
+			Detail: fmt.Sprintf("%d critical findings: %s", len(critical), strings.Join(namedViolations(critical), ", ")),
+			Next: []string{
+				"startup is refused while these stand",
+				"paceq fsck --json  keeps the evidence",
+				"paceq fsck --repair --confirm  repairs what is safely repairable, after you confirm",
+			},
+		}
+	}
+	return Finding{
+		Level:  Warn,
+		Title:  title,
+		Detail: fmt.Sprintf("%d findings the daemon serves through: %s", len(violations), strings.Join(namedViolations(violations), ", ")),
+		Next: []string{
+			"the daemon starts on these and the reconciler converges what it can",
+			"paceq fsck  runs the full sweep and names every finding",
+			"paceq fsck --repair --confirm  repairs what is safely repairable, after you confirm",
+		},
+	}
+}
+
+// namedViolations renders findings as "check subject", the shape the fsck
+// line has always used.
+func namedViolations(violations []store.Violation) []string {
 	names := make([]string, 0, len(violations))
 	for _, v := range violations {
 		names = append(names, v.Check+" "+v.Subject)
 	}
-	return Finding{
-		Level:  Fail,
-		Title:  title,
-		Detail: fmt.Sprintf("%d critical findings: %s", len(violations), strings.Join(names, ", ")),
-		Next: []string{
-			"startup is refused while these stand",
-			"paceq fsck --json  keeps the evidence",
-			"paceq fsck --repair --confirm  repairs what is safely repairable, after you confirm",
-		},
-	}
+	return names
 }
 
 // readSystemTzdataVersion is the production reader: the zone database's own

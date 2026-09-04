@@ -24,6 +24,12 @@ type MetricsHook interface {
 	// ObserveLeaseReclaims records n runs whose leases the reaper took
 	// away from a dead holder.
 	ObserveLeaseReclaims(n int)
+
+	// ObserveNotificationGaveUp records one notification given up on for
+	// good. It is an event, not a row state: an operator retry clears the
+	// row's failed_at and a delivered row is eventually pruned, so no
+	// query over the outbox can count how often we gave up.
+	ObserveNotificationGaveUp()
 }
 
 const (
@@ -59,6 +65,14 @@ func (s *Store) observeLeaseReclaims(n int) {
 		return
 	}
 	s.metrics.ObserveLeaseReclaims(n)
+}
+
+// observeNotificationGaveUp forwards one permanent notification failure.
+func (s *Store) observeNotificationGaveUp() {
+	if s.metrics == nil {
+		return
+	}
+	s.metrics.ObserveNotificationGaveUp()
 }
 
 // TakeWriteWaitMax returns the wall time of the slowest write transaction

@@ -7,9 +7,10 @@ import (
 )
 
 // The quick health check behind startup reconciliation (#62): the small,
-// read-only subset of the fsck invariants whose violation means the database
-// is in a state the code cannot reason about safely. Full fsck with repair
-// is M6-06; this file exists so a boot can refuse to make things worse.
+// read-only subset of the fsck invariants a boot can afford to evaluate
+// before it writes anything. The catalogue grades what the subset finds;
+// only a Critical grade refuses the boot. Full fsck with repair is M6-06;
+// this file exists so a boot can refuse to make things worse.
 //
 //   - I3  One run per dedup identity (source, epoch, run_key). The run_keys
 //         primary key grants each identity its own row, so the direction with
@@ -29,9 +30,9 @@ import (
 // Every check here reads only. A checker that writes would belong to
 // whatever it is checking.
 //
-// The three critical sweeps are the exact functions the full fsck calls, so
-// the boot gate and the operator's sweep can never disagree about what a
-// critical violation is.
+// The sweeps are the exact functions the full fsck calls, so the boot gate
+// and the operator's sweep can never disagree about what a finding is, and
+// both grade it through the same catalogue.
 
 // The critical subset's statements, shared by the boot gate and the full
 // sweep. The EQP gate explains these same constants.
@@ -52,8 +53,16 @@ WHERE s.name IS NULL`
 	fsckI9EdgesSQL = `SELECT run_id, step_name, depends_on FROM step_deps`
 )
 
-// QuickFsck returns every critical violation it finds, empty when the state
-// is sound enough to serve.
+// QuickFsckChecks names the invariants the quick sweep evaluates, in the
+// order it runs them. It answers "what did this sweep look at", which the
+// full catalogue cannot: the sweep covers a subset of it. Any surface that
+// reports a count of checked invariants reads it from here.
+var QuickFsckChecks = []string{"I3", "I6", "I9", "I12"}
+
+// QuickFsck returns every violation the startup subset can see, empty when
+// the state is sound enough to serve. Not every finding is critical: the
+// catalogue grades each one, and CriticalViolations names the subset that
+// refuses a boot.
 func (s *Store) QuickFsck(ctx context.Context) ([]Violation, error) {
 	var out []Violation
 

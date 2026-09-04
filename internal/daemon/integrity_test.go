@@ -15,8 +15,8 @@ import (
 	"github.com/a-holm/paceq/internal/store"
 )
 
-// The integrity surface (M6-06): the hourly sweep records what it finds, the
-// health line moves, and a clean hour writes nothing.
+// The integrity surface (M6-06): the hourly sweep records that it ran and
+// what it found, and the health line moves with it.
 
 type fsckStubSweeper struct {
 	violations []store.Violation
@@ -30,7 +30,7 @@ func (s *fsckStubSweeper) Fsck(context.Context) ([]store.Violation, error) {
 	return s.violations, nil
 }
 
-func (s *fsckStubSweeper) RecordIntegrityFindings(_ context.Context, at time.Time, findings []store.IntegrityFinding) error {
+func (s *fsckStubSweeper) RecordIntegritySweep(_ context.Context, at time.Time, findings []store.IntegrityFinding) error {
 	s.stamps = append(s.stamps, at)
 	s.recorded = append(s.recorded, findings)
 	return nil
@@ -94,7 +94,12 @@ func TestHourlySweepRecordsFindingsOncePerHour(t *testing.T) {
 	}
 }
 
-func TestCleanSweepsWriteNothing(t *testing.T) {
+// TestACleanHourSweepsOnceAndRecordsItOnce keeps the two promises a clean
+// hour still owes. The cadence does not move with the state: one sweep an
+// hour, however often the loop wakes. Neither does the write: one record per
+// sweep, carrying no finding, so a clean hour costs one stamp and leaves the
+// findings table alone.
+func TestACleanHourSweepsOnceAndRecordsItOnce(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&strings.Builder{}, nil))
 	clk := clock.NewFake(time.Date(2027, 1, 21, 8, 0, 0, 0, time.UTC))
 	sts := newStatuses(func() time.Time { return clk.Now() })
@@ -111,9 +116,15 @@ func TestCleanSweepsWriteNothing(t *testing.T) {
 	cancel()
 	<-done
 
-	if sweeper.sweeps != 1 || len(sweeper.recorded) != 0 {
-		t.Fatalf("a clean sweep swept %d times and wrote %d times, want 1 and 0",
-			sweeper.sweeps, len(sweeper.recorded))
+	if sweeper.sweeps != 1 {
+		t.Fatalf("a clean hour swept %d times, want exactly 1", sweeper.sweeps)
+	}
+	if len(sweeper.recorded) != 1 {
+		t.Fatalf("a clean hour recorded %d sweeps, want exactly 1: an unrecorded sweep leaves the gauges unable to tell a sound database from one nobody has looked at",
+			len(sweeper.recorded))
+	}
+	if len(sweeper.recorded[0]) != 0 {
+		t.Errorf("a clean sweep carried findings into the event log: %+v", sweeper.recorded[0])
 	}
 }
 
@@ -138,7 +149,7 @@ func (f *erroringSweeper) Fsck(context.Context) ([]store.Violation, error) {
 	return nil, errors.New("database is busy")
 }
 
-func (f *erroringSweeper) RecordIntegrityFindings(context.Context, time.Time, []store.IntegrityFinding) error {
+func (f *erroringSweeper) RecordIntegritySweep(context.Context, time.Time, []store.IntegrityFinding) error {
 	return nil
 }
 
@@ -170,10 +181,13 @@ func TestStartupSweepRecordsFindingsAndRefusesCriticals(t *testing.T) {
 
 	// The findings land in the log through the store, exactly as the hourly
 	// sweep records them.
-	dir := t.TempDir()
+	dir := filepath.Join(t.TempDir(), "state")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("create the state directory: %v", err)
+	}
 	st, err := store.OpenState(context.Background(), dir, store.Options{Clock: clk})
 	if err != nil {
-		t.Skipf("the state fixture does not fit this environment: %v", err)
+		t.Fatalf("open the state: %v", err)
 	}
 	defer func() { _ = st.Close() }()
 	if err := st.Migrate(context.Background()); err != nil {
@@ -183,20 +197,32 @@ func TestStartupSweepRecordsFindingsAndRefusesCriticals(t *testing.T) {
 		{Check: "I1", Subject: "run 01A", Detail: "no live lease"},
 		{Check: "I1", Subject: "run 01B", Detail: "no live lease"},
 	}
-	if err := recordStartupFindings(context.Background(), st, clk, logger, violations); err != nil {
+	if err := recordStartupSweep(context.Background(), st, clk, logger, violations); err != nil {
 		t.Fatalf("record the startup findings: %v", err)
 	}
 	read, err := st.MetricsIntegrityViolations(context.Background())
 	if err != nil || len(read) != 1 || read[0].Invariant != "I1" || read[0].Violations != 2 {
 		t.Fatalf("the event log holds %+v (err=%v)", read, err)
 	}
-	// A clean startup writes nothing.
-	if err := recordStartupFindings(context.Background(), st, clk, logger, nil); err != nil {
+	dirty, ok, err := st.MetricsFsckLastRun(context.Background())
+	if err != nil || !ok {
+		t.Fatalf("the startup findings left no sweep stamp: ok=%v err=%v", ok, err)
+	}
+
+	// A clean startup records that it ran and retires the repaired finding.
+	if err := recordStartupSweep(context.Background(), st, clk, logger, nil); err != nil {
 		t.Fatalf("record a clean startup: %v", err)
 	}
 	read2, err := st.MetricsIntegrityViolations(context.Background())
-	if err != nil || len(read2) != 1 {
-		t.Fatalf("a clean startup moved the log: %+v (err=%v)", read2, err)
+	if err != nil || len(read2) != 0 {
+		t.Fatalf("a clean startup still reports the repaired invariant: %+v (err=%v)", read2, err)
+	}
+	clean, ok, err := st.MetricsFsckLastRun(context.Background())
+	if err != nil || !ok {
+		t.Fatalf("the clean startup left no sweep stamp: ok=%v err=%v", ok, err)
+	}
+	if !clean.After(dirty) {
+		t.Errorf("the clean startup stamp %s does not move past the dirty one %s", clean, dirty)
 	}
 }
 

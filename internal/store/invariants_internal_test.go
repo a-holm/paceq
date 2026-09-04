@@ -382,10 +382,10 @@ func min(a, b int) int {
 	return b
 }
 
-// TestRecordIntegrityFindingsWritesOneRowPerInvariant covers the event side:
+// TestRecordIntegritySweepWritesOneRowPerInvariant covers the event side:
 // one sweep, three broken invariants, three rows in one transaction, with the
 // subject list capped so a million-row finding cannot bloat the log.
-func TestRecordIntegrityFindingsWritesOneRowPerInvariant(t *testing.T) {
+func TestRecordIntegritySweepWritesOneRowPerInvariant(t *testing.T) {
 	ctx := context.Background()
 	s := internalStore(t)
 
@@ -394,7 +394,7 @@ func TestRecordIntegrityFindingsWritesOneRowPerInvariant(t *testing.T) {
 		manySubjects = append(manySubjects, fmt.Sprintf("run %d", i))
 	}
 	at := time.Date(2027, 1, 21, 8, 2, 0, 0, time.UTC)
-	err := s.RecordIntegrityFindings(ctx, at, []IntegrityFinding{
+	err := s.RecordIntegritySweep(ctx, at, []IntegrityFinding{
 		{Invariant: "I1", Severity: Serious, Violations: 2, Subjects: manySubjects[:2]},
 		{Invariant: "I3", Severity: Critical, Violations: 1, Subjects: manySubjects[:1]},
 		{
@@ -432,23 +432,31 @@ func TestRecordIntegrityFindingsWritesOneRowPerInvariant(t *testing.T) {
 		t.Errorf("the last sweep ran at %s, want %s", last, at)
 	}
 
-	// A sweep with nothing to say writes nothing: the log's silence is the
-	// clean bill, so a quiet sweep must not move the stamp.
-	if err := s.RecordIntegrityFindings(ctx, at.Add(time.Hour), nil); err != nil {
+	// A sweep with nothing to say still writes that it ran, and its findings
+	// are the empty set rather than the previous sweep's.
+	clean := at.Add(time.Hour)
+	if err := s.RecordIntegritySweep(ctx, clean, nil); err != nil {
 		t.Fatalf("record a clean sweep: %v", err)
 	}
 	last2, _, err := s.MetricsFsckLastRun(ctx)
 	if err != nil {
 		t.Fatalf("reread the stamp: %v", err)
 	}
-	if !last2.Equal(at) {
-		t.Errorf("a clean sweep moved the stamp to %s", last2)
+	if !last2.Equal(clean) {
+		t.Errorf("the clean sweep left the stamp at %s, want %s", last2, clean)
+	}
+	after, err := s.MetricsIntegrityViolations(ctx)
+	if err != nil {
+		t.Fatalf("read the findings after the clean sweep: %v", err)
+	}
+	if len(after) != 0 {
+		t.Errorf("the clean sweep still reports %d findings: %+v", len(after), after)
 	}
 }
 
-// TestRecordIntegrityFindingsRefusesAReadOnlyStore pins the write path: the
+// TestRecordIntegritySweepRefusesAReadOnlyStore pins the write path: the
 // read-only pool must not grow an event log, or doctor's RO sweep would write.
-func TestRecordIntegrityFindingsRefusesAReadOnlyStore(t *testing.T) {
+func TestRecordIntegritySweepRefusesAReadOnlyStore(t *testing.T) {
 	s := internalStore(t)
 	dbPath := s.Path()
 	if err := s.Close(); err != nil {
@@ -459,7 +467,7 @@ func TestRecordIntegrityFindingsRefusesAReadOnlyStore(t *testing.T) {
 		t.Fatalf("open the store read-only: %v", err)
 	}
 	defer func() { _ = ro.Close() }()
-	if err := ro.RecordIntegrityFindings(context.Background(), time.Now(), []IntegrityFinding{
+	if err := ro.RecordIntegritySweep(context.Background(), time.Now(), []IntegrityFinding{
 		{Invariant: "I1", Severity: Serious, Violations: 1},
 	}); err == nil {
 		t.Fatal("a read-only store recorded integrity findings")
