@@ -28,6 +28,7 @@ func TestEveryErrorCarriesAllThreeParts(t *testing.T) {
 	locked := &store.LockedError{Path: "/tmp/x/.paceq/paceq.lock"}
 	perm := &store.PermissionError{Path: "/tmp/x/.paceq", Got: 0o755, Want: store.DirMode}
 	refused := peerVerdict("/run/user/1000/paceq.sock", 0, true, 1000)
+	held, _ := daemonHoldsStateRefusal(t, "finder was not paused")
 
 	built := map[string]*Error{
 		"usageError":       usageError("the flag --nope is not a paceq flag", "paceq --help lists every flag"),
@@ -44,6 +45,7 @@ func TestEveryErrorCarriesAllThreeParts(t *testing.T) {
 
 		"socketRefusedError": socketRefusedError(refused),
 		"stopOnRefusal":      stopOnRefusal(fmt.Errorf("dial the daemon: %w", refused)),
+		"daemonHoldsState":   held,
 
 		"repairConfirmError": repairConfirmError(&store.RepairConfirmError{Critical: []store.Violation{
 			{
@@ -82,6 +84,57 @@ func TestEveryErrorCarriesAllThreeParts(t *testing.T) {
 	for _, name := range errorConstructors(t) {
 		if _, ok := built[name]; !ok {
 			t.Errorf("%s returns an *Error but no test builds one, so its message is unchecked", name)
+		}
+	}
+}
+
+// daemonHoldsStateRefusal builds the refusal a direct write meets when a
+// daemon owns this state directory, in the shape the shipped unit runs: an
+// open session row naming a live process and no socket file anywhere. It
+// returns the session too, so a test asserts against the daemon that is really
+// there rather than against words copied out of the message.
+func daemonHoldsStateRefusal(t *testing.T, what string) (*Error, store.Session) {
+	t.Helper()
+
+	dir := t.TempDir()
+	if got := runCLI(t, dir, nil, "init"); got.code != ExitOK {
+		t.Fatalf("init = %d\n%s%s", got.code, got.stdout, got.stderr)
+	}
+	session := holdStateAsDaemon(t, dir, "0.9.0")
+
+	env := Env{Dir: dir, Getenv: lookup(nil)}
+	held := daemonHoldsState(t.Context(), env, &globals{}, what)
+	if held == nil {
+		t.Fatal("a daemon holds the state and exposes no socket, and the direct write was let through")
+	}
+	return held, session
+}
+
+// TestDaemonHoldsStateNamesTheDaemonAndTheWayIn reads the message an operator
+// meets when a write cannot be routed. Telling them the write did not happen
+// is not enough: the refusal has to name the process that holds the state and
+// both ways past it, because the alternative is the flock's refusal, which
+// names a lock file and a pid and no flag (#215).
+func TestDaemonHoldsStateNamesTheDaemonAndTheWayIn(t *testing.T) {
+	held, session := daemonHoldsStateRefusal(t, "finder was not paused")
+	message := held.Error()
+
+	if held.code != ExitBusy {
+		t.Errorf("the refusal exits %d, want %d: the state is held, nothing is broken", held.code, ExitBusy)
+	}
+
+	parts := []struct{ want, why string }{
+		{"finder was not paused", "which write did not happen"},
+		{fmt.Sprintf("pid %d", session.PID), "the process holding the state"},
+		{fmt.Sprintf("paceq %s", session.Version), "which build holds it"},
+		{session.StartedAt.Format(time.RFC3339), "since when"},
+		{"exposes no socket", "why the write could not be routed to that daemon"},
+		{"--socket", "the flag that routes the next write instead of refusing it"},
+		{fmt.Sprintf("kill %d", session.PID), "the other way out, naming the same process"},
+	}
+	for _, part := range parts {
+		if !strings.Contains(message, part.want) {
+			t.Errorf("the refusal never says %q (%s):\n%s", part.want, part.why, message)
 		}
 	}
 }
