@@ -618,7 +618,7 @@ func (d *decoder) schedules(node ast.Node) []Schedule {
 				"A schedule is a cron expression and the zone it is read in:\n\n"+
 					"    cron: \"0 3 * * *\"\n"+
 					"    timezone: Europe/Oslo\n\n"+
-					"The expression itself is checked by the scheduler, which arrives in M2.")
+					"The expression itself is checked by the scheduler, not here.")
 		}
 		schedules = append(schedules, schedule)
 	}
@@ -744,7 +744,7 @@ func (d *decoder) sensorKind(node ast.Node, where string) string {
 	}
 	d.error(CodeSensorKind, position(node),
 		fmt.Sprintf("%s is %q, and exec is the only kind paceq accepts in 1.0", where, value),
-		"The built in sensor types file, http and sql arrive in v0.3 (M7-03). Until then a\n"+
+		"The built in sensor types file, http and sql arrive in v0.3. Until then a\n"+
 			"sensor runs a subprocess that writes JSON to stdout:\n\n"+
 			"    kind: exec\n"+
 			"    run: [\"/srv/etl/nye-objekter.sh\"]")

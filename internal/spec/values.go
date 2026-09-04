@@ -563,8 +563,9 @@ func needHint(need string, steps []Step) string {
 	if suggestion := diag.Suggest(need, known); suggestion != "" {
 		hint = fmt.Sprintf("Did you mean %q?\n\n    needs: [%s]\n\n%s", suggestion, suggestion, hint)
 	}
-	return hint + "\n\nneeds parses in M1 and is enforced in M4-01, where it becomes the graph. Until\n" +
-		"then the steps run in the order they are written."
+	return hint + "\n\nneeds is the job's dependency graph: this step waits until every step it\n" +
+		"names has succeeded, and is skipped if one of them fails. Written order only\n" +
+		"breaks ties between steps that are ready together."
 }
 
 func (d *decoder) stepPosition(i int) diag.Position {

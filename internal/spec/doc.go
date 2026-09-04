@@ -40,8 +40,9 @@
 //
 // # What is deliberately not here
 //
-// No templating, in any form (SYNTESE section 3.3). No needs semantics: the
-// field is parsed and carried into the IR, and the cycle detection that gives
-// it meaning is M4-01. Schedules and sensors parse and validate but activate in
-// M2 and M3. Nothing in this package reads a database or starts a process.
+// No templating, in any form (SYNTESE section 3.3). No execution semantics:
+// needs is validated here, cycle check included, but the engine is what gates
+// a step on its edges. Schedules and sensors validate here and fire from the
+// scheduler and the sensor runtime. Nothing in this package reads a database
+// or starts a process.
 package spec

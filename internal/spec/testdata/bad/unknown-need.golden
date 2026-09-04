@@ -11,7 +11,8 @@ FAIL testdata/bad/unknown-need.yaml:7:13  PQ2002: step "transform" needs "extrct
 
    The steps in this job are: extract, transform.
 
-   needs parses in M1 and is enforced in M4-01, where it becomes the graph. Until
-   then the steps run in the order they are written.
+   needs is the job's dependency graph: this step waits until every step it
+   names has succeeded, and is skipped if one of them fails. Written order only
+   breaks ties between steps that are ready together.
 
    paceq error PQ2002  for the full explanation
