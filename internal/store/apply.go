@@ -208,6 +208,8 @@ func refuseTakenSensorNames(tx *sql.Tx, inputs []JobVersionInput) error {
 		return nil
 	}
 
+	// #nosec G202 - the concatenated segment adds only "?" placeholder marks,
+	// one per declared name; the names themselves travel as bound arguments.
 	rows, err := tx.Query(`SELECT name, job_name FROM sensors WHERE name IN (`+
 		strings.TrimSuffix(strings.Repeat("?, ", len(args)), ", ")+`) ORDER BY name`, args...)
 	if err != nil {
