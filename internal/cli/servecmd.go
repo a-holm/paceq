@@ -14,6 +14,7 @@ import (
 	"github.com/a-holm/paceq/internal/buildinfo"
 	"github.com/a-holm/paceq/internal/daemon"
 	"github.com/a-holm/paceq/internal/scheduler"
+	"github.com/a-holm/paceq/internal/sockpath"
 )
 
 // serveFlags are the knobs the serve command takes. They mirror the serve
@@ -139,5 +140,23 @@ func runServe(ctx context.Context, env Env, g *globals, f serveFlags) error {
 		Signals:          sigs,
 		Logger:           slog.New(slog.NewJSONHandler(env.Stderr, nil)),
 	}
+	// A socket the kernel cannot name is refused before the daemon starts,
+	// for the same reason --metrics-listen is: the length is knowable from
+	// the string, and a daemon that came up without the health endpoints and
+	// the write API its operator configured is worse than one that refused
+	// to start (#234). The resolved path is what is measured, not the flag,
+	// because a path derived from the state directory can exceed the limit
+	// on its own. Go returns EINVAL for an over-long name before the bind
+	// syscall runs, so an operator would otherwise read "invalid argument"
+	// about a path that looks ordinary.
+	if cfg.SocketPath != "" {
+		if err := sockpath.Validate(cfg.SocketPath); err != nil {
+			return usageError(err.Error(),
+				fmt.Sprintf("sockaddr_un holds %d bytes including its terminator, so a longer name never reaches the kernel.",
+					sockpath.MaxLen+1),
+				"Give --socket a shorter path, or move the state directory closer to the root.")
+		}
+	}
+
 	return daemon.Serve(ctx, cfg, clkOf(env))
 }

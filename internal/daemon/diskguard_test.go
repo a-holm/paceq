@@ -29,9 +29,9 @@ func TestReadyzDegradesWithTheDiskAndLivezDoesNot(t *testing.T) {
 	sts.mark("diskguard")
 
 	degraded := false
-	stop := startHealthEndpoint(cfg, sts, cfg.Logger, nil, nil, func() bool { return degraded })
-	if stop == nil {
-		t.Fatal("a configured socket did not start the endpoints")
+	stop, _, err := startHealthEndpoint(cfg, sts, cfg.Logger, nil, nil, func() bool { return degraded })
+	if err != nil {
+		t.Fatalf("a configured socket did not start the endpoints: %v", err)
 	}
 	t.Cleanup(func() { stop(context.Background()) })
 

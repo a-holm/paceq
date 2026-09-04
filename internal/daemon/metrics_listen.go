@@ -49,11 +49,10 @@ func ValidateMetricsListen(addr string) error {
 
 // startMetricsTCP serves /metrics on the operator's opt-in loopback bind.
 // The address is validated again here even though the CLI already did: the
-// daemon must not trust that every caller asked. Unlike a failed unix-socket
-// health listener - which degrades to nothing because the socket was never
-// promised - an explicitly requested TCP bind that cannot start fails the
-// daemon loudly: an operator who believes metrics are flowing must not
-// discover otherwise from an empty graph.
+// daemon must not trust that every caller asked. A bind that cannot start
+// fails the daemon loudly, the same way a configured unix socket that cannot
+// listen does: an operator who believes metrics are flowing must not discover
+// otherwise from an empty graph.
 func startMetricsTCP(addr string, collector *obs.Collector) error {
 	if addr == "" || collector == nil {
 		return nil
