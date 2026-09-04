@@ -456,11 +456,14 @@ var catalogue = map[string]explanation{
 		Code:  spec.CodeSensorNameTaken,
 		Title: "the sensor name is already in use",
 		Explanation: "A sensor name is the primary key its row lives under across every job, so two " +
-			"sensors cannot share one, whether in the same job or in two different jobs. Two owners " +
-			"of one name cannot both materialise; the later apply would silently move the row.",
+			"sensors cannot share one, whether in the same job or in two different jobs. The cursor, " +
+			"the dedup epoch and the breaker counters live on that row, so a name changing hands " +
+			"would hand the old owner's evaluation position to whoever took it. apply refuses the " +
+			"second claim instead, whether the two arrive in one command or in two.",
 		Next: []string{
-			"the message names the file that already owns the name",
-			"rename the sensor in one of the two files",
+			"the message names what already holds it: the other job file, or the job that owns the row",
+			"rename the sensor in one of the two jobs",
+			"a name a job stops declaring is free again for another job on the next apply",
 		},
 	},
 	spec.CodeSensorKind: {

@@ -50,13 +50,10 @@ func writeFile(t *testing.T, dir, name, body string) error {
 	return os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600)
 }
 
-// TestApplyRefusesTwoFilesThatShareOneSensorName is the sensor contract as it
-// reaches an operator: a sensor name is a primary key across every job, so a
-// directory where two files claim the same one cannot apply. The later file is
-// refused and named, while the first still loads.
-func TestApplyRefusesTwoFilesThatShareOneSensorName(t *testing.T) {
-	sensorJob := func(name string) string {
-		return `name: ` + name + `
+// sensorOwnerJob is a job file that claims the sensor name dropzone. The
+// ownership tests use two of them under two job names.
+func sensorOwnerJob(job string) string {
+	return `name: ` + job + `
 steps:
   - name: build
     run: ["/bin/true"]
@@ -66,10 +63,102 @@ sensors:
     run: ["/srv/etl/probe.sh"]
     interval: 15s
 `
+}
+
+// readSensor reads one sensor row, opening and closing the state database so a
+// later apply in the same test can still take the state lock.
+func readSensor(t *testing.T, dir, name string) store.SensorSummary {
+	t.Helper()
+
+	s, err := store.OpenState(context.Background(), filepath.Join(dir, stateDirName), store.Options{})
+	if err != nil {
+		t.Fatalf("open the state store: %v", err)
 	}
+	defer func() { _ = s.Close() }()
+
+	got, err := s.GetSensor(context.Background(), name)
+	if err != nil {
+		t.Fatalf("read the sensor %s: %v", name, err)
+	}
+	return got
+}
+
+// stageSensorDrift moves a sensor's dedup epoch and cursor, the state a stolen
+// row would carry to whoever took it.
+func stageSensorDrift(t *testing.T, dir, name, cursor string) {
+	t.Helper()
+
+	s, err := store.OpenState(context.Background(), filepath.Join(dir, stateDirName), store.Options{})
+	if err != nil {
+		t.Fatalf("open the state store: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	if _, err := s.ResetSensor(context.Background(), store.ResetSensorInput{Name: name}); err != nil {
+		t.Fatalf("bump the dedup epoch of %s: %v", name, err)
+	}
+	if err := s.SetSensorCursor(context.Background(), store.CursorInput{Name: name, Cursor: cursor}); err != nil {
+		t.Fatalf("set the cursor of %s: %v", name, err)
+	}
+}
+
+// TestApplySensorNameOwnershipIsTheSameInOneBatchAndTwo is the pair the rule
+// has to answer identically. Two job files claim the sensor name dropzone.
+// Applied as one command the batch check refuses the second file; applied as
+// two commands the second command has to refuse it too, and for the same
+// reason, or the answer would be decided by how the operator split the files.
+func TestApplySensorNameOwnershipIsTheSameInOneBatchAndTwo(t *testing.T) {
+	files := map[string]string{
+		"jobs/a.yaml": sensorOwnerJob("alpha"),
+		"jobs/b.yaml": sensorOwnerJob("beta"),
+	}
+
+	one := applyProject(t, files)
+	batch := runCLI(t, one, nil, "apply", "-o", "text")
+	if batch.code != ExitValidation {
+		t.Fatalf("apply of both files = %d, want %d\n%s%s", batch.code, ExitValidation, batch.stdout, batch.stderr)
+	}
+
+	two := applyProject(t, files)
+	if got := runCLI(t, two, nil, "apply", "-o", "text", "jobs/a.yaml"); got.code != ExitOK {
+		t.Fatalf("apply jobs/a.yaml = %d, want %d\n%s%s", got.code, ExitOK, got.stdout, got.stderr)
+	}
+	stageSensorDrift(t, two, "dropzone", "c-42")
+
+	second := runCLI(t, two, nil, "apply", "-o", "text", "jobs/b.yaml")
+	if second.code != ExitValidation {
+		t.Errorf("apply jobs/b.yaml = %d, want %d: dropzone belongs to alpha\n%s%s",
+			second.code, ExitValidation, second.stdout, second.stderr)
+	}
+	message := second.stdout + second.stderr
+	if !strings.Contains(message, "alpha") || !strings.Contains(message, "dropzone") {
+		t.Errorf("the refusal names neither the sensor nor its owner:\n%s", message)
+	}
+	if !strings.Contains(message, spec.CodeSensorNameTaken) {
+		t.Errorf("the refusal does not carry %s:\n%s", spec.CodeSensorNameTaken, message)
+	}
+
+	split, whole := readSensor(t, two, "dropzone"), readSensor(t, one, "dropzone")
+	if split.JobName != whole.JobName {
+		t.Errorf("two commands left dropzone with %s and one command left it with %s",
+			split.JobName, whole.JobName)
+	}
+	if split.JobName != "alpha" {
+		t.Errorf("dropzone belongs to %s, want alpha", split.JobName)
+	}
+	if split.Cursor == nil || *split.Cursor != "c-42" || split.DedupEpoch != 1 {
+		t.Errorf("the refusal moved the drift state: cursor=%v epoch=%d", split.Cursor, split.DedupEpoch)
+	}
+}
+
+// TestApplyRefusesTwoFilesThatShareOneSensorName is the sensor contract as it
+// reaches an operator: a sensor name is a primary key across every job, so a
+// directory where two files claim the same one cannot apply. The later file is
+// refused and named, while the first still loads.
+func TestApplyRefusesTwoFilesThatShareOneSensorName(t *testing.T) {
 	dir := applyProject(t, map[string]string{
-		"jobs/first.yaml":  sensorJob("first"),
-		"jobs/second.yaml": sensorJob("second"),
+		"jobs/first.yaml":  sensorOwnerJob("first"),
+		"jobs/second.yaml": sensorOwnerJob("second"),
 	})
 
 	got := runCLI(t, dir, nil, "apply", "-o", "text")

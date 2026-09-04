@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -211,5 +213,222 @@ func TestPausedSensorWithoutAReasonIsRefusedByTheTrigger(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "paused") {
 		t.Errorf("the trigger says why it refused: %v", err)
+	}
+}
+
+// sensorJobInput is one job file as apply hands it to the store: a job, the
+// hash of its spec, and the sensors it declares.
+func sensorJobInput(job, hash string, sensors ...spec.Sensor) JobVersionInput {
+	return JobVersionInput{
+		JobName:  job,
+		SpecHash: "sha256:" + hash,
+		SpecJSON: `{"schema":"paceq.job.v1","name":"` + job + `","steps":[{"name":"build","run":["true"]}]}`,
+		Sensors:  sensors,
+	}
+}
+
+// sensorRow is the owner and the drift state of one sensor row. The ownership
+// tests compare whole rows, because a name that changes hands and a cursor
+// that travels with it are one fact, not two.
+type sensorRow struct {
+	job    string
+	cursor sql.NullString
+	epoch  int64
+}
+
+func readSensorRow(t *testing.T, s *Store, name string) sensorRow {
+	t.Helper()
+
+	var out sensorRow
+	if err := s.w.QueryRow(`SELECT job_name, cursor, dedup_epoch FROM sensors WHERE name = ?`, name).
+		Scan(&out.job, &out.cursor, &out.epoch); err != nil {
+		t.Fatalf("read the sensor row %s: %v", name, err)
+	}
+	return out
+}
+
+// TestApplyJobsRefusesASensorNameAnotherJobOwns is the cross-batch half of the
+// rule the in-batch check states: a sensor name is owned by one job, and the
+// job that does not own it is refused rather than handed the row, its cursor
+// and its dedup epoch.
+func TestApplyJobsRefusesASensorNameAnotherJobOwns(t *testing.T) {
+	ctx := context.Background()
+	s := migratedStore(t)
+
+	if _, err := s.ApplyJobs(ctx, []JobVersionInput{
+		sensorJobInput("alpha", "a1", sensorFixture("dropzone", 15*time.Second)),
+	}); err != nil {
+		t.Fatalf("seed alpha: %v", err)
+	}
+	if _, err := s.w.Exec(`UPDATE sensors SET cursor='c-42', dedup_epoch=3, consecutive_failures=2
+WHERE name='dropzone'`); err != nil {
+		t.Fatalf("stage drift: %v", err)
+	}
+
+	res, err := s.ApplyJobs(ctx, []JobVersionInput{
+		sensorJobInput("beta", "b1", sensorFixture("dropzone", 30*time.Second)),
+	})
+	if err == nil {
+		t.Fatalf("beta took the sensor name alpha owns, and apply reported %+v", res)
+	}
+	var taken *SensorNameTakenError
+	if !errors.As(err, &taken) {
+		t.Fatalf("the refusal is %T (%v), want a *SensorNameTakenError", err, err)
+	}
+	if taken.Sensor != "dropzone" || taken.Owner != "alpha" || taken.Taker != "beta" {
+		t.Errorf("the refusal reads %+v, want dropzone owned by alpha and declared by beta", *taken)
+	}
+
+	var failures, interval int64
+	got := readSensorRow(t, s, "dropzone")
+	if err := s.w.QueryRow(`SELECT consecutive_failures, interval_ms FROM sensors WHERE name='dropzone'`).
+		Scan(&failures, &interval); err != nil {
+		t.Fatalf("read the definition columns: %v", err)
+	}
+	if got.job != "alpha" {
+		t.Errorf("the row moved to %s", got.job)
+	}
+	if got.cursor.String != "c-42" || got.epoch != 3 || failures != 2 {
+		t.Errorf("the refusal moved drift state: %+v failures=%d", got, failures)
+	}
+	if interval != 15000 {
+		t.Errorf("the refusal wrote beta's definition anyway: interval_ms=%d", interval)
+	}
+
+	var versions int
+	if err := s.w.QueryRow(`SELECT COUNT(*) FROM job_versions WHERE job_name='beta'`).Scan(&versions); err != nil {
+		t.Fatalf("count beta versions: %v", err)
+	}
+	if versions != 0 {
+		t.Errorf("the refused batch left %d versions of beta behind", versions)
+	}
+}
+
+// TestSyncSensorsRefusesANameAnotherJobOwns proves the guard in the upsert
+// itself, not the check in front of it: a caller that reaches the SQL with a
+// name somebody else owns writes nothing and is told why.
+func TestSyncSensorsRefusesANameAnotherJobOwns(t *testing.T) {
+	ctx := context.Background()
+	s := migratedStore(t)
+
+	seedSensorsJob(t, s, "alpha")
+	seedSensorsJob(t, s, "beta")
+	if _, err := s.SyncSensors(ctx, "alpha", []spec.Sensor{sensorFixture("dropzone", 15*time.Second)}); err != nil {
+		t.Fatalf("seed alpha: %v", err)
+	}
+
+	res, err := s.SyncSensors(ctx, "beta", []spec.Sensor{sensorFixture("dropzone", 30*time.Second)})
+	if err == nil {
+		t.Fatalf("the upsert moved the row to beta and reported %+v", res)
+	}
+	var taken *SensorNameTakenError
+	if !errors.As(err, &taken) {
+		t.Fatalf("the refusal is %T (%v), want a *SensorNameTakenError", err, err)
+	}
+	if got := readSensorRow(t, s, "dropzone"); got.job != "alpha" {
+		t.Errorf("the row moved to %s", got.job)
+	}
+	var events int
+	if err := s.w.QueryRow(`SELECT COUNT(*) FROM sensor_events WHERE job_name='beta'`).Scan(&events); err != nil {
+		t.Fatalf("count events: %v", err)
+	}
+	if events != 0 {
+		t.Errorf("the refused sync wrote %d lifecycle events for beta", events)
+	}
+}
+
+// TestSensorHandoverIsTheSameInOneBatchAndTwo is the pair the rule has to
+// answer identically. One job releases a sensor name and another declares it:
+// as one apply, as two applies, and with the two job files in either order.
+func TestSensorHandoverIsTheSameInOneBatchAndTwo(t *testing.T) {
+	ctx := context.Background()
+	dropzone := sensorFixture("dropzone", 15*time.Second)
+
+	// Every case starts from alpha owning the name with a cursor on the row,
+	// so a hand-over that carries the cursor is visible in the end state.
+	start := func() *Store {
+		t.Helper()
+		s := migratedStore(t)
+		if _, err := s.ApplyJobs(ctx, []JobVersionInput{sensorJobInput("alpha", "a1", dropzone)}); err != nil {
+			t.Fatalf("seed alpha: %v", err)
+		}
+		if _, err := s.w.Exec(`UPDATE sensors SET cursor='c-42', dedup_epoch=3 WHERE name='dropzone'`); err != nil {
+			t.Fatalf("stage drift: %v", err)
+		}
+		return s
+	}
+
+	one := start()
+	if _, err := one.ApplyJobs(ctx, []JobVersionInput{
+		sensorJobInput("alpha", "a2"),
+		sensorJobInput("beta", "b1", dropzone),
+	}); err != nil {
+		t.Fatalf("hand-over in one batch: %v", err)
+	}
+
+	two := start()
+	if _, err := two.ApplyJobs(ctx, []JobVersionInput{sensorJobInput("alpha", "a2")}); err != nil {
+		t.Fatalf("hand-over, first command: %v", err)
+	}
+	if _, err := two.ApplyJobs(ctx, []JobVersionInput{sensorJobInput("beta", "b1", dropzone)}); err != nil {
+		t.Fatalf("hand-over, second command: %v", err)
+	}
+
+	gotOne, gotTwo := readSensorRow(t, one, "dropzone"), readSensorRow(t, two, "dropzone")
+	if gotOne != gotTwo {
+		t.Fatalf("one batch left %+v and two batches left %+v", gotOne, gotTwo)
+	}
+	if gotOne.job != "beta" {
+		t.Errorf("the released name did not reach beta: %+v", gotOne)
+	}
+	if gotOne.cursor.Valid || gotOne.epoch != 0 {
+		t.Errorf("the new owner inherited the old owner's cursor state: %+v", gotOne)
+	}
+
+	reversed := start()
+	if _, err := reversed.ApplyJobs(ctx, []JobVersionInput{
+		sensorJobInput("beta", "b1", dropzone),
+		sensorJobInput("alpha", "a2"),
+	}); err != nil {
+		t.Fatalf("hand-over with the files in the other order: %v", err)
+	}
+	if got := readSensorRow(t, reversed, "dropzone"); got != gotOne {
+		t.Errorf("the file order changed the outcome: %+v, want %+v", got, gotOne)
+	}
+}
+
+// TestSyncSensorsRenamesWithinOneJob is the move the ownership rule must not
+// stand in the way of: one job drops a sensor name and takes another in the
+// same sync, and the new row starts with no cursor and no epoch behind it.
+func TestSyncSensorsRenamesWithinOneJob(t *testing.T) {
+	ctx := context.Background()
+	s := migratedStore(t)
+
+	seedSensorsJob(t, s, "import")
+	if _, err := s.SyncSensors(ctx, "import", []spec.Sensor{sensorFixture("dropzone", 15*time.Second)}); err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+	if _, err := s.w.Exec(`UPDATE sensors SET cursor='c-42', dedup_epoch=3 WHERE name='dropzone'`); err != nil {
+		t.Fatalf("stage drift: %v", err)
+	}
+
+	res, err := s.SyncSensors(ctx, "import", []spec.Sensor{sensorFixture("landing", 15*time.Second)})
+	if err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	if len(res.Created) != 1 || res.Created[0] != "landing" ||
+		len(res.Removed) != 1 || res.Removed[0] != "dropzone" {
+		t.Errorf("the rename reports %+v", res)
+	}
+
+	var left int
+	if err := s.w.QueryRow(`SELECT COUNT(*) FROM sensors WHERE name='dropzone'`).Scan(&left); err != nil {
+		t.Fatalf("count the old name: %v", err)
+	}
+	if left != 0 {
+		t.Errorf("the old name is still a row")
+	}
+	if got := readSensorRow(t, s, "landing"); got.job != "import" || got.cursor.Valid || got.epoch != 0 {
+		t.Errorf("the renamed sensor did not start clean: %+v", got)
 	}
 }
