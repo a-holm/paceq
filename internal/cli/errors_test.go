@@ -40,7 +40,7 @@ func TestEveryErrorCarriesAllThreeParts(t *testing.T) {
 		"cutoverFailure": cutoverFailure("the crontab was not changed: the write failed after the backup was taken", errors.New("disk full"),
 			"the state before the cutover is in .paceq/crontab.backup.2027-01-12T09-14-03",
 			"restore it with:  paceq cutover --rollback --from .paceq/crontab.backup.2027-01-12T09-14-03"),
-		"pathError": pathError("jobs/nightly.yaml", fs.ErrNotExist),
+		"pathError": pathError(validateCatalog, "jobs/nightly.yaml", fs.ErrNotExist),
 
 		"socketRefusedError": socketRefusedError(refused),
 		"stopOnRefusal":      stopOnRefusal(fmt.Errorf("dial the daemon: %w", refused)),

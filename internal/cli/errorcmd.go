@@ -329,11 +329,12 @@ var catalogue = map[string]explanation{
 	},
 	spec.CodeUnknownTimezone: {
 		Code:  spec.CodeUnknownTimezone,
-		Title: "the time zone is not one this machine knows",
+		Title: "the time zone is not one paceq can schedule in",
 		Explanation: "A schedule's zone is an IANA name, region and city, such as Europe/Oslo. " +
-			"Three letter abbreviations are ambiguous and are not accepted. A zone that does not " +
-			"load here will not load in the scheduler either, so it is refused now rather than " +
-			"at three in the morning.",
+			"Three letter abbreviations are ambiguous and are not accepted, and Local names " +
+			"whatever the machine running the daemon is set to, so one file would mean different " +
+			"hours on different machines. The decoder asks the same function the scheduler asks, " +
+			"so the answer arrives with a file and a line rather than at three in the morning.",
 		Next: []string{
 			"timezone: Europe/Oslo",
 			"paceq doctor  reports whether the zone database is readable at all",

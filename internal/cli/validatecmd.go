@@ -2,12 +2,7 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io/fs"
-	"os"
-	"path/filepath"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -21,12 +16,18 @@ func newValidateCmd(env Env, g *globals) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "validate [path...]",
 		Short: "Check job files and say exactly what is wrong with them",
-		Long: `Check job files: read them, apply every rule, and report what is wrong with
-each one by file, line and column, with the line quoted and a way forward.
+		Long: `Check job files: read them, apply every rule that the files themselves can
+answer, and report what is wrong with each one by file, line and column, with
+the line quoted and a way forward.
 
-With no arguments it checks the jobs directory. A path that names a file checks
-that file; a path that names a directory checks every .yaml and .yml file under
-it, in a fixed order.
+With no arguments it checks the catalog apply loads: the directory named by
+PACEQ_JOBS_DIR, or the jobs directory beside the project. A path that names a
+file checks that file; a path that names a directory checks every .yaml and
+.yml file under it, in a fixed order.
+
+The rules run over each file alone and then over the files together: a sensor
+name is a primary key across every job, so two files claiming one are refused
+here exactly as apply refuses them.
 
 validate reads nothing but the files it is given. It touches no database, starts
 no process and needs no daemon.
@@ -43,14 +44,6 @@ pipeline wants.`,
 	return cmd
 }
 
-// jobFile is one file to check: the path to open, and the path to print. They
-// differ because a report reads better relative to the project than as a string
-// of absolute paths, while opening a file needs the real one.
-type jobFile struct {
-	path    string
-	display string
-}
-
 // validateReport is what -o json writes. The shape is the contract: a script
 // reads .diagnostics[].code and branches on it, so nothing here is renamed
 // without a major version.
@@ -59,7 +52,7 @@ type validateReport struct {
 }
 
 func runValidate(env Env, g *globals, out *ui, args []string, strict bool) error {
-	files, err := jobFilesFor(env, args)
+	files, err := catalogFilesFor(env, args, validateCatalog)
 	if err != nil {
 		return err
 	}
@@ -67,6 +60,7 @@ func runValidate(env Env, g *globals, out *ui, args []string, strict bool) error
 	out.note(1, "checking %d job files", len(files))
 	var diags diag.List
 	sources := make(map[string][]byte, len(files))
+	parsed := make([]spec.NamedJob, 0, len(files))
 	for _, file := range files {
 		out.note(2, "reading %s", file.display)
 		source, readDiags := spec.ReadFile(file.path)
@@ -75,9 +69,17 @@ func runValidate(env Env, g *globals, out *ui, args []string, strict bool) error
 			continue
 		}
 		sources[file.display] = source.Bytes
-		_, fileDiags := spec.Parse(file.display, source.Bytes)
+		job, fileDiags := spec.Parse(file.display, source.Bytes)
 		diags = append(diags, fileDiags...)
+		if job != nil && !fileDiags.HasErrors() {
+			parsed = append(parsed, spec.NamedJob{Path: file.display, Job: job})
+		}
 	}
+	// The rules that need more than one file run over what was given, after
+	// every file has been read. apply refuses a batch on this one, so validate
+	// has to reach the same verdict: a gate that passes what the deploy step
+	// refuses costs more than no gate.
+	diags = append(diags, spec.CheckGlobalSensorNames(parsed)...)
 	if strict {
 		diags = diags.Promote()
 	}
@@ -131,67 +133,6 @@ func writeValidateReport(out *ui, diags diag.List, sources map[string][]byte) er
 		out.print("%s %s", out.symbols.ok, "no problems")
 	}
 	return nil
-}
-
-// jobFilesFor turns what was typed into the list of files to read, and refuses
-// in the two ways that are not a job file's fault: a path that is not there,
-// and a place with no job files in it.
-func jobFilesFor(env Env, args []string) ([]jobFile, error) {
-	roots := args
-	if len(roots) == 0 {
-		defaultDir := filepath.Join(env.Dir, jobsDir)
-		info, err := os.Stat(defaultDir)
-		if err != nil || !info.IsDir() {
-			return nil, usageError(
-				fmt.Sprintf("no paths given, and there is no %s directory here", jobsDir),
-				"name what to check: paceq validate jobs/ or paceq validate jobs/nightly.yaml",
-				"paceq init  creates a project with a "+jobsDir+" directory and an example job",
-			)
-		}
-		roots = []string{defaultDir}
-	}
-
-	resolved := make([]string, 0, len(roots))
-	for _, root := range roots {
-		path := root
-		if !filepath.IsAbs(path) {
-			path = filepath.Join(env.Dir, path)
-		}
-		if _, err := os.Stat(path); err != nil {
-			return nil, pathError(root, err)
-		}
-		resolved = append(resolved, path)
-	}
-
-	paths, err := spec.Collect(resolved)
-	if err != nil {
-		return nil, internalError("could not list the job files", err)
-	}
-	if len(paths) == 0 {
-		return nil, notFoundError(
-			"no job files to check",
-			strings.Join(roots, ", "),
-			"paceq reads files ending in "+strings.Join(spec.Extensions, " or "),
-			"paceq init  creates a project with an example job that runs as it stands",
-		)
-	}
-
-	files := make([]jobFile, 0, len(paths))
-	for _, path := range paths {
-		files = append(files, jobFile{path: path, display: relative(env.Dir, path)})
-	}
-	return files, nil
-}
-
-func pathError(named string, err error) *Error {
-	if errors.Is(err, fs.ErrPermission) {
-		return validationError(fmt.Sprintf("%s cannot be read: %v", named, err), err,
-			"ls -l "+named+"  shows who owns it",
-			"paceq reads job files as the user it runs as, and does not elevate")
-	}
-	return notFoundError(fmt.Sprintf("%s is not a path on this machine", named), named,
-		"check the spelling, or leave it out: paceq validate  checks the "+jobsDir+" directory",
-		"paceq init  creates a project with a "+jobsDir+" directory")
 }
 
 // rename points diagnostics at the path the report prints, for the failures

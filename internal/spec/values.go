@@ -7,6 +7,7 @@ import (
 
 	"github.com/goccy/go-yaml/ast"
 
+	"github.com/a-holm/paceq/internal/cronx"
 	"github.com/a-holm/paceq/internal/diag"
 )
 
@@ -471,14 +472,15 @@ func (d *decoder) timezone(node ast.Node, where string) string {
 	if !ok {
 		return DefaultTimezone
 	}
-	// LoadLocation reads the zone database this machine has, which is the same
-	// database the scheduler will read. A zone that does not load here would
-	// not load there either.
-	if _, err := time.LoadLocation(value); err != nil {
-		d.error(CodeUnknownTimezone, position(node),
-			fmt.Sprintf("%q is not a time zone this machine knows: %v", value, err),
+	// cronx.LoadZone is the one authority on a zone name: the scheduler, the
+	// reconciler and schedules show all ask it. Asking anything wider here
+	// would take names that fail on every wake, where there is no file and no
+	// line left to point at.
+	if _, err := cronx.LoadZone(value); err != nil {
+		d.error(CodeUnknownTimezone, position(node), err.Error(),
 			"Zones are IANA names, region and city, such as Europe/Oslo or America/New_York.\n"+
-				"Three letter abbreviations are ambiguous and are not accepted.\n\n"+
+				"Three letter abbreviations are ambiguous and are not accepted, and Local\n"+
+				"names whatever the machine running the daemon is set to.\n\n"+
 				"    timezone: Europe/Oslo\n\n"+
 				"    paceq doctor    reports whether the zone database is readable at all")
 		return DefaultTimezone

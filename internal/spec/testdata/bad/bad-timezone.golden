@@ -1,4 +1,4 @@
-FAIL testdata/bad/bad-timezone.yaml:8:15  PQ2010: "CET+1" is not a time zone this machine knows: unknown time zone CET+1
+FAIL testdata/bad/bad-timezone.yaml:8:15  PQ2010: invalid time zone name "CET+1": did you mean "CET"? use an IANA zone name such as Europe/Oslo, Asia/Kolkata or UTC
 
    6 |   - name: nightly
    7 |     cron: "0 3 * * *"
@@ -6,7 +6,8 @@ FAIL testdata/bad/bad-timezone.yaml:8:15  PQ2010: "CET+1" is not a time zone thi
                      ^
 
    Zones are IANA names, region and city, such as Europe/Oslo or America/New_York.
-   Three letter abbreviations are ambiguous and are not accepted.
+   Three letter abbreviations are ambiguous and are not accepted, and Local
+   names whatever the machine running the daemon is set to.
 
        timezone: Europe/Oslo
 

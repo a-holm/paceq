@@ -5,6 +5,8 @@ import (
 	"io"
 	"strings"
 	"time"
+
+	"github.com/a-holm/paceq/internal/cronx"
 )
 
 // Report is the count side of an import pass: what was read, what became a
@@ -129,9 +131,9 @@ func pad(n int) string {
 	return " "
 }
 
-// loadZone checks a timezone name against the embedded tzdata, so a bad
-// --tz value becomes a verbatim-line decision instead of YAML that would
+// loadZone checks a timezone name through the one authority on zone names, so
+// a bad --tz value becomes a verbatim-line decision instead of YAML that would
 // refuse later with a worse story.
 func loadZone(name string) (*time.Location, error) {
-	return time.LoadLocation(name)
+	return cronx.LoadZone(name)
 }
