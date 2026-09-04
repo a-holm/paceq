@@ -319,19 +319,10 @@ func TestSensorWriteNamesTheDaemonItCannotReach(t *testing.T) {
 // nobody has thought of yet.
 func TestEveryDirectWriteAsksWhetherADaemonHoldsTheState(t *testing.T) {
 	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, ".", func(f os.FileInfo) bool {
-		return !strings.HasSuffix(f.Name(), "_test.go")
-	}, 0)
-	if err != nil {
-		t.Fatalf("parse the package: %v", err)
-	}
-	pkg, ok := pkgs["cli"]
-	if !ok {
-		t.Fatal("the cli package did not parse")
-	}
+	files := parsePackageFiles(t, fset, ".")
 
 	checked := 0
-	for _, file := range pkg.Files {
+	for _, file := range files {
 		for _, decl := range file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
 			if !ok || fn.Body == nil {
@@ -353,6 +344,38 @@ func TestEveryDirectWriteAsksWhetherADaemonHoldsTheState(t *testing.T) {
 	if checked == 0 {
 		t.Fatal("no function resolves the socket and then opens the state; the guard matched nothing")
 	}
+}
+
+// parsePackageFiles parses every non-test source file of the cli package in
+// dir. It reads the files a build constraint excludes on this platform too, so
+// a write site behind //go:build is still held to the rule.
+func parsePackageFiles(t *testing.T, fset *token.FileSet, dir string) []*ast.File {
+	t.Helper()
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read the package directory: %v", err)
+	}
+
+	var files []*ast.File
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		if file.Name.Name != "cli" {
+			continue
+		}
+		files = append(files, file)
+	}
+	if len(files) == 0 {
+		t.Fatal("the cli package did not parse")
+	}
+	return files
 }
 
 // calledNames collects the function names called inside a body, with a
