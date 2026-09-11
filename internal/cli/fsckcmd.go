@@ -113,13 +113,13 @@ func runFsck(ctx context.Context, env Env, g *globals, out *ui,
 			if errors.As(err, &need) {
 				return repairConfirmError(need, env, stateDir)
 			}
-			return internalError("could not repair the state", err)
+			return storeFailure(ctx, "could not repair the state", err)
 		}
 		// Re-sweep after the repairs, so the report says what still stands
 		// rather than what stood before them.
 		violations, err = s.Fsck(ctx)
 		if err != nil {
-			return internalError("could not sweep the state", err)
+			return storeFailure(ctx, "could not sweep the state", err)
 		}
 		if !out.quiet {
 			for _, o := range outcomes {
@@ -138,7 +138,7 @@ func runFsck(ctx context.Context, env Env, g *globals, out *ui,
 		defer func() { _ = ro.Close() }()
 		violations, err = ro.Fsck(ctx)
 		if err != nil {
-			return internalError("could not sweep the state", err)
+			return storeFailure(ctx, "could not sweep the state", err)
 		}
 	}
 

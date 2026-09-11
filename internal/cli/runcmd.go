@@ -116,7 +116,7 @@ func runRun(ctx context.Context, env Env, g *globals, out *ui, jobName string, f
 		if errors.As(err, &held) {
 			return diskHoldError(held)
 		}
-		return internalError("could not queue the run", err)
+		return storeFailure(ctx, "could not queue the run", err)
 	}
 
 	// Signals arrive on their own channel and become cancellation requests.
@@ -166,9 +166,10 @@ func runRun(ctx context.Context, env Env, g *globals, out *ui, jobName string, f
 		return err
 	}
 
-	detail, err := s.GetRun(context.WithoutCancel(execCtx), queued.Run.ID)
+	readCtx := context.WithoutCancel(execCtx)
+	detail, err := s.GetRun(readCtx, queued.Run.ID)
 	if err != nil {
-		return internalError("could not read back the finished run", err)
+		return storeFailure(readCtx, "could not read back the finished run", err)
 	}
 	if err := writeRunRecord(out, detail); err != nil {
 		return err

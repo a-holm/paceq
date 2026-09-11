@@ -114,7 +114,7 @@ func runStatusOverview(ctx context.Context, env Env, g *globals, out *ui, f stat
 	}
 	_ = ro.Close()
 	if err != nil {
-		return internalError("could not read the status", err)
+		return storeFailure(ctx, "could not read the status", err)
 	}
 
 	if out.mode == modeJSON {
@@ -166,7 +166,7 @@ func runStatusRef(ctx context.Context, env Env, g *globals, out *ui, ref string)
 	resolved, err := explain.Resolve(ctx, ro, ref)
 	if err != nil {
 		_ = ro.Close()
-		return explainResolveError(err)
+		return explainResolveError(ctx, err)
 	}
 
 	daemonUp := probeDaemon(ctx, ro, env, g, out)
@@ -179,7 +179,7 @@ func runStatusRef(ctx context.Context, env Env, g *globals, out *ui, ref string)
 	}, status.Options{Clock: clkOf(env), DaemonUp: daemonUp})
 	_ = ro.Close()
 	if err != nil {
-		return internalError("could not read the status of "+ref, err)
+		return storeFailure(ctx, "could not read the status of "+ref, err)
 	}
 
 	if out.mode == modeJSON {

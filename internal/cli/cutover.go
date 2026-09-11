@@ -257,7 +257,7 @@ func writeCrontabFile(path, content string) error {
 func resolveCutoverJobs(ctx context.Context, s *store.Store, wanted []string) ([]cutoverJob, []cutoverSkip, error) {
 	sources, err := s.ListJobSources(ctx)
 	if err != nil {
-		return nil, nil, internalError("could not list the jobs", err)
+		return nil, nil, storeFailure(ctx, "could not list the jobs", err)
 	}
 
 	if len(wanted) > 0 {
@@ -413,7 +413,7 @@ func loadCutoverStore(ctx context.Context, env Env, g *globals, writable bool) (
 func readyJobs(ctx context.Context, s *store.Store, jobs []cutoverJob, force bool, now time.Time) ([]cutoverJob, []cutoverSkip, []string, error) {
 	successes, err := s.MetricsLastSuccesses(ctx)
 	if err != nil {
-		return nil, nil, nil, internalError("could not read the run history", err)
+		return nil, nil, nil, storeFailure(ctx, "could not read the run history", err)
 	}
 	succeeded := make(map[string]bool, len(successes))
 	for _, st := range successes {
@@ -422,7 +422,7 @@ func readyJobs(ctx context.Context, s *store.Store, jobs []cutoverJob, force boo
 
 	deviations, err := shadowDeviations(ctx, s, now)
 	if err != nil {
-		return nil, nil, nil, internalError("could not read the shadow report", err)
+		return nil, nil, nil, storeFailure(ctx, "could not read the shadow report", err)
 	}
 
 	var ready []cutoverJob
@@ -591,11 +591,11 @@ func runCutoverStatus(ctx context.Context, env Env, g *globals, out *ui, f cutov
 	markers := cutover.MarkerJobs(src.content)
 	sources, err := ro.ListJobSources(ctx)
 	if err != nil {
-		return internalError("could not list the jobs", err)
+		return storeFailure(ctx, "could not list the jobs", err)
 	}
 	events, err := ro.ListCutoverEvents(ctx, 10)
 	if err != nil {
-		return internalError("could not read the cutover trail", err)
+		return storeFailure(ctx, "could not read the cutover trail", err)
 	}
 
 	if out.mode == modeJSON {

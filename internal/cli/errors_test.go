@@ -57,7 +57,8 @@ func TestEveryErrorCarriesAllThreeParts(t *testing.T) {
 			},
 		}}, Env{}, "/tmp/x/.paceq"),
 
-		"classify": classify(ctx, errors.New("something nobody classified")),
+		"classify":     classify(ctx, errors.New("something nobody classified")),
+		"storeFailure": storeFailure(ctx, "could not list schedules", errors.New("something nobody classified")),
 	}
 
 	for name, err := range built {

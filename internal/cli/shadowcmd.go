@@ -174,7 +174,7 @@ func runShadowReport(ctx context.Context, env Env, g *globals, out *ui, f shadow
 	now := clkOf(env).Now().UTC()
 	info, err := ro.ShadowRuntime(ctx)
 	if err != nil {
-		return internalError("could not read shadow state", err)
+		return storeFailure(ctx, "could not read shadow state", err)
 	}
 	in := explain.ShadowInput{
 		SinceMs:       now.Add(-window).UnixMilli(),
@@ -184,11 +184,11 @@ func runShadowReport(ctx context.Context, env Env, g *globals, out *ui, f shadow
 	}
 	rep, err := explain.BuildShadowReport(ctx, ro, in)
 	if err != nil {
-		return internalError("could not build the shadow report", err)
+		return storeFailure(ctx, "could not build the shadow report", err)
 	}
 	ev, err := ro.ShadowEvidence(ctx)
 	if err != nil {
-		return internalError("could not read shadow evidence", err)
+		return storeFailure(ctx, "could not read shadow evidence", err)
 	}
 
 	if out.mode == modeJSON || f.json {
@@ -436,15 +436,15 @@ func runShadowStatus(ctx context.Context, env Env, g *globals, out *ui) error {
 
 	info, err := ro.ShadowRuntime(ctx)
 	if err != nil {
-		return internalError("could not read shadow state", err)
+		return storeFailure(ctx, "could not read shadow state", err)
 	}
 	ev, err := ro.ShadowEvidence(ctx)
 	if err != nil {
-		return internalError("could not read shadow evidence", err)
+		return storeFailure(ctx, "could not read shadow evidence", err)
 	}
 	rows, err := ro.ListAllSchedules(ctx)
 	if err != nil {
-		return internalError("could not list schedules", err)
+		return storeFailure(ctx, "could not list schedules", err)
 	}
 	var shadowRows int
 	names := []string{}

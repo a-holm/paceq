@@ -115,7 +115,7 @@ func runRunsList(ctx context.Context, env Env, g *globals, out *ui, f runsListFl
 		Limit:   f.limit,
 	})
 	if err != nil {
-		return internalError("could not read the run history", err)
+		return storeFailure(ctx, "could not read the run history", err)
 	}
 
 	// Recent is measured on the clock the command was given, never on the
@@ -490,7 +490,7 @@ func runRunsCancel(ctx context.Context, env Env, g *globals, out *ui, runArg str
 				"check the id: paceq explains it on every failure it reports",
 			)
 		}
-		return internalError("could not cancel the run", err)
+		return storeFailure(ctx, "could not cancel the run", err)
 	}
 
 	if detail.State == "queued" {

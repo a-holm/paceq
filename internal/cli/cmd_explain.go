@@ -115,7 +115,7 @@ func runExplain(ctx context.Context, env Env, g *globals, out *ui, noun, ref str
 
 	resolved, err := explain.Resolve(ctx, ro, ref)
 	if err != nil {
-		return explainResolveError(err)
+		return explainResolveError(ctx, err)
 	}
 
 	socketPath, socketErr := daemonSocket(env, g)
@@ -135,7 +135,7 @@ func runExplain(ctx context.Context, env Env, g *globals, out *ui, noun, ref str
 		DaemonUp: daemonUp,
 	})
 	if err != nil {
-		return internalError("could not build the explanation", err)
+		return storeFailure(ctx, "could not build the explanation", err)
 	}
 	_ = ro.Close()
 
@@ -184,7 +184,7 @@ func refKindMismatch(noun, ref string) string {
 
 // explainResolveError maps the resolver's typed refusals onto the pinned exit
 // codes, carrying the candidate lists into the message.
-func explainResolveError(err error) error {
+func explainResolveError(ctx context.Context, err error) error {
 	var syntax *explain.Syntax
 	if errors.As(err, &syntax) {
 		return usageError(syntax.What,
@@ -205,5 +205,5 @@ func explainResolveError(err error) error {
 		}
 		return notFoundError(missing.What, "", next...)
 	}
-	return internalError("could not resolve the reference", err)
+	return storeFailure(ctx, "could not resolve the reference", err)
 }
