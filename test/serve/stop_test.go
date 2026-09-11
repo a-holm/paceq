@@ -43,6 +43,14 @@ func TestOneStopSignalDrainsTheRunningWork(t *testing.T) {
 
 	requireNoOrphan(t, runID)
 
+	// The operator's own check, run the way a human would run it: doctor
+	// classifies every live process carrying a run id against this
+	// database's attempt baselines, so it names an orphan of this
+	// installation if the stop left one.
+	if procs := doctorFindings(t, ws)["processes"]; !doctorSeesNothingOfThisInstallation(procs) {
+		t.Errorf("doctor says %q after a clean stop, want no job process of this installation", procs)
+	}
+
 	detail := readRun(t, ws, runID)
 	if detail.Run.State != string(model.RunQueued) {
 		t.Errorf("the interrupted run is %s, want queued\ndaemon stderr:\n%s",

@@ -1658,6 +1658,7 @@ Flags:
 |---|---|---|
 | `--drain-timeout` | `- ` | how long running steps may finish on a stop |
 | `--jobs-dir` | `- ` | directory the scheduler reads job files from |
+| `--kill-grace` | `- ` | the SIGTERM to SIGKILL gap inside a step's process group (0: 10s) |
 | `--metrics-listen` | `- ` | opt-in TCP bind for /metrics; loopback only, e.g. 127.0.0.1:9753 (default: unix socket only) |
 | `--no-notify-bus` | `- ` | disable the wake-up bus and run on tickers alone (a test switch that must change nothing) |
 | `--observe` | `- ` | with --shadow, where observed cron starts come from: none, journald or file=<path> |

@@ -396,18 +396,22 @@ func (p *serveProc) waitExit(t *testing.T, within time.Duration) int {
 	}
 }
 
-// waitForChildRunning polls until the seeded run's step is executing AND its
-// process is alive on the machine: proof that the daemon claimed the run and
-// that the process this row is going to stop really exists. The row state
-// alone is not enough: it turns running a moment before the spawn lands, and
-// a stop signal that arrives in that window would drain an empty pool.
+// waitForChildRunning polls until the seeded run's step is executing AND the
+// step's own command is alive on the machine: proof that the daemon claimed
+// the run and that the process this row is going to stop really exists. Two
+// weaker readings are deliberately not enough. The row turns running a moment
+// before the spawn lands, and the exec shim carries the run id in its
+// environment for the whole of its own startup, before the command it exists
+// to launch has been spawned at all. A stop signal fired in either window
+// would drain a pool with no process group in it, which is not what any row
+// here means to measure.
 func waitForChildRunning(t *testing.T, ws *workspace, p *serveProc, runID string) {
 	t.Helper()
 	deadline := time.Now().Add(20 * time.Second)
 	for {
 		detail := readRun(t, ws, runID)
 		rowRunning := len(detail.Steps) == 1 && detail.Steps[0].State == "running"
-		if rowRunning && procCarriesRunID(runID) {
+		if rowRunning && stepCommandAlive(t, runID) {
 			return
 		}
 		if time.Now().After(deadline) {
@@ -462,6 +466,81 @@ func procCarriesRunID(runID string) bool {
 		}
 	}
 	return false
+}
+
+// stepCommandAlive reports whether the step's own command, not the shim in
+// front of it, is running under this run id. Both processes carry
+// PACEQ_RUN_ID; only one of them is the process group a stop has to wait for.
+func stepCommandAlive(t *testing.T, runID string) bool {
+	t.Helper()
+	marker := []byte("PACEQ_RUN_ID=" + runID)
+	shim := []byte(paceqBinary(t))
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if _, err := strconv.Atoi(entry.Name()); err != nil {
+			continue
+		}
+		raw, err := os.ReadFile("/proc/" + entry.Name() + "/environ")
+		if err != nil || !bytes.Contains(raw, marker) {
+			continue
+		}
+		argv, err := os.ReadFile("/proc/" + entry.Name() + "/cmdline")
+		if err != nil {
+			continue // gone between listing and reading
+		}
+		if argv0, _, _ := bytes.Cut(argv, []byte{0}); !bytes.Equal(argv0, shim) {
+			return true
+		}
+	}
+	return false
+}
+
+// doctorFindings runs the shipped doctor against a workspace and returns its
+// findings by title. It is the operator's own view of the machine, taken
+// through the command a human would run rather than through a second
+// implementation of the same /proc scan. A failing report is still a report:
+// doctor exits 1 on a failure and the document is what the row reads.
+func doctorFindings(t *testing.T, ws *workspace) map[string]string {
+	t.Helper()
+	cmd := exec.Command(paceqBinary(t), "doctor", "--json")
+	cmd.Dir = ws.Dir
+	out, err := cmd.Output()
+	var exit *exec.ExitError
+	if err != nil && !errors.As(err, &exit) {
+		t.Fatalf("run paceq doctor: %v", err)
+	}
+	var report struct {
+		Findings []struct {
+			Title  string `json:"title"`
+			Detail string `json:"detail"`
+		} `json:"findings"`
+	}
+	if err := json.Unmarshal(out, &report); err != nil {
+		t.Fatalf("decode the doctor report: %v\n%s", err, out)
+	}
+	byTitle := make(map[string]string, len(report.Findings))
+	for _, f := range report.Findings {
+		byTitle[f.Title] = f.Detail
+	}
+	return byTitle
+}
+
+// doctorSeesNothingOfThisInstallation reads doctor's process finding as an
+// answer to one question: is any job process of this installation running?
+//
+// Doctor spells its healthy answer two ways, and which one an operator gets
+// depends on what else is on the machine rather than on anything this daemon
+// did. A box with no job process on it at all is told so outright; a box
+// carrying another installation's jobs is told none of them are ours. Both
+// are the answer a stopped daemon owes. Everything else is not: a count of
+// processes active attempts still name, and the orphan finding itself, both
+// say a job process of ours is running.
+func doctorSeesNothingOfThisInstallation(detail string) bool {
+	return strings.HasPrefix(detail, "no job processes running") ||
+		strings.HasPrefix(detail, "no job processes of this installation")
 }
 
 // requireNoOrphanFails if anything carrying the run id is still alive after a

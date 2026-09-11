@@ -631,6 +631,7 @@ func (e *Engine) stepSpec(d *drive, name string, timeout time.Duration, outputPa
 		Env:        d.job.Env,
 		InheritEnv: d.job.InheritEnv,
 		Timeout:    timeout,
+		KillGrace:  e.KillGrace,
 		Clock:      e.Clock,
 		OutputPath: outputPath,
 		InputsJSON: inputsJSON,
