@@ -126,6 +126,7 @@ Every dependency added later needs a line in this table. The choices below are f
 | `github.com/google/go-cmp` | test | readable diffs in tests |
 | `github.com/rogpeppe/go-internal` v1.14.1 | test | `testscript` for CLI golden tests, where `--json` output is a public interface |
 | `pgregory.net/rapid` | test | property tests for the state machine against real SQLite |
+| `golang.org/x/tools` v0.47.0 | test | `go/packages` for the layer-seam guard in `internal/arch` (#274). It resolves a field selector to the field it actually names, which name matching cannot: four of `daemon.Config`'s six dead fields share a name with a field `internal/engine` reads. Loaded with `Tests: false`, so dependencies come from export data and the pass costs about a second |
 
 That is six runtime dependencies of eight, four of them spent, leaving two slots. Anything beyond needs an ADR that says what it replaced.
 
