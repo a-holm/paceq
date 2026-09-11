@@ -72,7 +72,7 @@ type sensorEvaluation struct {
 	Triggers   []SensorTrigger
 }
 
-func runSensorEvaluation(t *testing.T, s *Store, ev sensorEvaluation) {
+func runSensorEvaluation(t *testing.T, s *Store, ev sensorEvaluation) SensorTickCommitResult {
 	t.Helper()
 	ctx := context.Background()
 	cursor := ev.Cursor
@@ -106,6 +106,7 @@ func runSensorEvaluation(t *testing.T, s *Store, ev sensorEvaluation) {
 	if out.Fenced {
 		t.Fatalf("the commit at %s was fenced; these evaluations are sequential", ev.At)
 	}
+	return out
 }
 
 // skipAt is one evaluation that ran and found nothing.
@@ -139,7 +140,12 @@ func TestSensorSkipsCoalesceOntoOneRow(t *testing.T) {
 	const evaluations = 100
 	base := time.UnixMilli(1_700_000_000_000).UTC()
 	for i := range evaluations {
-		runSensorEvaluation(t, s, skipAt(base.Add(time.Duration(i)*30*time.Second), "no new files"))
+		out := runSensorEvaluation(t, s, skipAt(base.Add(time.Duration(i)*30*time.Second), "no new files"))
+		// The caller is told which of its evaluations left a row, because a
+		// forced tick that folds looks like a tick that did nothing.
+		if want := i > 0; out.Coalesced != want {
+			t.Fatalf("evaluation %d reports Coalesced %v, want %v", i, out.Coalesced, want)
+		}
 	}
 
 	rows := sensorTickRows(t, s)

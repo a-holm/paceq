@@ -638,9 +638,11 @@ FROM ticks WHERE id = ?`, in.TickID).Scan(&startedAt, &cursorBefore, &session); 
 }
 
 // closeSensorTickTx writes a tick's outcome. It is the only place a sensor tick
-// gets closed, used by every exit of CommitSensorTick so the 'running'
-// intention row never lingers. A skipped sensor's own reason is stored verbatim
-// (reasonText), because only the sensor knows what its skip meant.
+// gets closed, used by every exit of CommitSensorTick that keeps its row, so
+// the 'running' intention row never lingers; the one exit that does not keep it
+// is a fold, which deletes the row instead. A skipped sensor's own reason is
+// stored verbatim (reasonText), because only the sensor knows what its skip
+// meant.
 func closeSensorTickTx(tx *sql.Tx, tickID string, at int64, outcome string,
 	code reason.Code, durationMs int64, cursorAfter string, accepted, deduped int,
 	reasonText, reasonData string,

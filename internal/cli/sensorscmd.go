@@ -667,6 +667,7 @@ func runSensorsTick(ctx context.Context, env Env, g *globals, out *ui, name stri
 			ReasonCode string `json:"reason_code,omitempty"`
 			Accepted   int    `json:"accepted"`
 			Deduped    int    `json:"deduped"`
+			Coalesced  bool   `json:"coalesced"`
 			DurationMS int64  `json:"duration_ms"`
 			Truncated  bool   `json:"truncated"`
 			Dropped    int    `json:"dropped,omitempty"`
@@ -675,6 +676,7 @@ func runSensorsTick(ctx context.Context, env Env, g *globals, out *ui, name stri
 			Sensor: name, Outcome: commit.Outcome, ReasonCode: code,
 			Accepted: commit.Accepted, Deduped: commit.Deduped, DurationMS: res.DurationMS,
 			Truncated: commit.Truncated, Dropped: commit.Dropped,
+			Coalesced: commit.Coalesced,
 		})
 	}
 
@@ -684,6 +686,9 @@ func runSensorsTick(ctx context.Context, env Env, g *globals, out *ui, name stri
 	}
 	out.print("  accepted %d run(s), %d deduped, in %dms",
 		commit.Accepted, commit.Deduped, res.DurationMS)
+	if commit.Coalesced {
+		out.print("  coalesced onto the previous tick; no new row")
+	}
 	// A forced tick that quietly dropped most of its batch is worse than one
 	// that says so: the operator asked for this evaluation and has to know
 	// the rest is still waiting.

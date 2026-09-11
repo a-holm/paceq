@@ -61,6 +61,15 @@ plantsensorskip dropzone 'no new files' -at=2m
 exec paceq sensors show dropzone -o text
 stdout 'x2 through 2026-09-24 09:02:00'
 
+# A forced tick that folds says so, because the operator would otherwise look
+# for a new row that is never written.
+plantsensor quiet polling-job '["/bin/true"]'
+exec paceq sensors tick quiet
+stdout '"outcome":"skipped"'
+stdout '"coalesced":false'
+exec paceq sensors tick quiet -o text
+stdout 'coalesced onto the previous tick'
+
 -- expected_list.json --
 [
   {
