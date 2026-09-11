@@ -382,17 +382,29 @@ func applyStepOutcomeTx(tx *sql.Tx, runID, name string, out StepOutcome, finishe
 	if state == model.StepPending {
 		// The retry transition: back to pending, runnable when the
 		// plan says, or at once without one.
-		if out.Retry != nil && !out.Retry.NextAttemptAt.IsZero() {
-			nextAttempt = out.Retry.NextAttemptAt.UTC().UnixMilli()
+		plan := out.Retry
+		if plan == nil && verdictObserved(out.OutcomeSource) {
+			// The caller watched this attempt end but holds no
+			// policy to schedule the next one by. Both spool
+			// entry points are in that position, and the policy
+			// is frozen in the run, so the store applies it
+			// rather than making the step runnable at once (#213).
+			plan, err = plannedRetryTx(tx, runID, name, step.Attempt, finishedAt, detail)
+			if err != nil {
+				return err
+			}
+		}
+		if plan != nil && !plan.NextAttemptAt.IsZero() {
+			nextAttempt = plan.NextAttemptAt.UTC().UnixMilli()
 		} else {
 			nextAttempt = finishedAt.UnixMilli()
 		}
-		if out.Retry != nil {
-			if out.Retry.ReasonCode != "" {
-				rowReason = out.Retry.ReasonCode
+		if plan != nil {
+			if plan.ReasonCode != "" {
+				rowReason = plan.ReasonCode
 			}
-			if out.Retry.DetailJSON != "" {
-				rowDetail = out.Retry.DetailJSON
+			if plan.DetailJSON != "" {
+				rowDetail = plan.DetailJSON
 			}
 		}
 	}

@@ -132,9 +132,10 @@ func TestARetryPlanParksTheStepPastNextAttemptAt(t *testing.T) {
 	testutil.AssertNoUnknownReasons(t, ctx, s)
 }
 
-// Without a plan the old behaviour stands: runnable again at once. Nothing
-// outside the engine hands plans in today, but the store does not invent
-// delays either.
+// Without a plan, and without a source that says the attempt's ending was
+// watched, the old behaviour stands: runnable again at once. The store
+// schedules a backoff for a verdict somebody read (#213); it invents none for
+// a caller that claims nothing about how the attempt ended.
 func TestWithoutAPlanTheRetryIsImmediatelyRunnable(t *testing.T) {
 	ctx := context.Background()
 	s, clk := coreStore(t)

@@ -544,7 +544,7 @@ func (e *Engine) runStep(ctx context.Context, d *drive, name string, h *heldRun)
 			break
 		}
 		if attempt < before.MaxAttempts {
-			policy := retryPolicyOf(d.stepsByName[name].Retry)
+			policy := store.RetryPolicyOf(d.stepsByName[name].Retry)
 			delayed := retry.Delay(policy, attempt, e.rnd())
 			finished := outcome.FinishedAt
 			if finished.IsZero() {

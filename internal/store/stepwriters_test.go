@@ -160,3 +160,61 @@ func TestTheReaperClosesTheDownstreamOfAStepItFails(t *testing.T) {
 			load.ReasonCode, reason.STEPSkippedUpstreamSkipped)
 	}
 }
+
+// C. The same failing attempt, committed from the spool instead of watched,
+// takes the retry policy the run froze. Without it the step is runnable the
+// millisecond the verdict lands, and a step failing against a service that is
+// down re-fires at once for exactly the attempts a crash interrupted.
+func TestASpoolCommittedFailureTakesThePolicyBackoff(t *testing.T) {
+	ctx := context.Background()
+	s, clk := coreStore(t)
+	runID := aRetryingRun(t, s)
+
+	if _, _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: "doomed", TTL: time.Minute}); err != nil {
+		t.Fatalf("ClaimRun: %v", err)
+	}
+	if err := s.StartStep(ctx, runID, "build", ref("doomed", 1)); err != nil {
+		t.Fatalf("StartStep: %v", err)
+	}
+	clk.Advance(time.Second)
+	finishedAt := clk.Now()
+	// The executor died between the child's exit and its verdict
+	// transaction. The shim's file is the whole story of the attempt.
+	outWaitTheLease(clk)
+
+	exit := 1
+	if err := s.CommitSpooledOutcome(ctx, store.SpoolOutcome{
+		RunID:      runID,
+		Step:       "build",
+		Attempt:    1,
+		ClaimEpoch: 1,
+		Outcome: store.StepOutcome{
+			Event:         "step_failed",
+			ReasonCode:    reason.STEPFailedNonzeroExit,
+			ExitCode:      &exit,
+			FinishedAt:    finishedAt,
+			OutcomeSource: "spool",
+		},
+	}); err != nil {
+		t.Fatalf("CommitSpooledOutcome: %v", err)
+	}
+
+	step := mustStep(t, ctx, s, runID, "build")
+	if step.State != string(model.StepPending) {
+		t.Fatalf("state = %s, want pending: three retries are left", step.State)
+	}
+	due := finishedAt.Add(2 * time.Second)
+	if !step.NextAttemptAt.Equal(due) {
+		t.Errorf("next_attempt_at = %s, want %s: the frozen policy is fixed 2s with no jitter",
+			step.NextAttemptAt, due)
+	}
+	if step.ReasonCode != string(reason.STEPRetryScheduled) {
+		t.Errorf("reason_code = %q, want %q, the code the live path writes for the same exit",
+			step.ReasonCode, reason.STEPRetryScheduled)
+	}
+	for _, key := range []string{`"backoff_ms":2000`, `"next_attempt_at":` + i64(due.UnixMilli())} {
+		if !strings.Contains(step.ReasonData, key) {
+			t.Errorf("reason_data = %s, want it to carry %s", step.ReasonData, key)
+		}
+	}
+}

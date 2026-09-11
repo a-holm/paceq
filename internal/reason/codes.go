@@ -862,7 +862,9 @@ func newCatalog() map[Code]Entry {
 			Explanation: "The executor running this attempt crashed, or was killed, between starting " +
 				"the step and recording what it did. The attempt's own verdict was lost with it, so " +
 				"the restart closes the dead attempt with this code instead of inventing a result. " +
-				"The step may then be attempted again under its retry policy, and the effect " +
+				"With a budget left the step is due again at once rather than after its retry " +
+				"backoff: nothing about the command is known to have failed, and the run's own " +
+				"requeue delay is what spaces the next try. The effect " +
 				"contract applies as for any retry: a step runs at least once, not exactly once.",
 			Remedy: []string{
 				"read the run's events: run.requeued beside this code is the restart closing a crash out",
