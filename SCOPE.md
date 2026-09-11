@@ -56,15 +56,16 @@ The DAG milestone ships static dependencies only (plans: 00 §3.1, 10 §6):
 
 ## Budgets
 
-A breach means something gets removed, not that the budget gets raised. The rule is from 10 §7. The figures are from 00 §4.9, which raised 10 §7's stricter caps of 5 dependencies, 8000 lines and 25 MB; the same section accepts cobra as the one heavy dependency. The figures below govern. The rule is not raised again.
+A breach means something gets removed, not that the budget gets raised. The rule is from 10 §7. The figures are from 00 §4.9, which raised 10 §7's stricter caps of 5 dependencies and 25 MB; the same section accepts cobra as the one heavy dependency. The figures below govern. The rule is not raised again.
 
 | Budget | Cap |
 |---|---|
 | Direct runtime dependencies in `go.mod` | 8 |
-| Core Go, excluding tests and generated code | 12000 lines |
 | Binary size | 30 MB |
 | Daemon cold start | 200 ms |
 | `paceq status` | 100 ms |
+
+The size of the source tree is not budgeted, and no line count is reported for it. That is deliberate: [ADR-0004](docs/adr/0004-retire-core-go-line-budget.md) gives the reasoning, and a cap on it can only come back through a new ADR.
 
 Test-only dependencies do not count against the dependency budget. Every new direct runtime dependency needs an ADR (plans: 08 §5).
 
