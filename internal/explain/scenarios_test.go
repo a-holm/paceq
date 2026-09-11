@@ -955,6 +955,33 @@ var scenarios = []scenario{
 	},
 
 	{
+		name:       "step_skipped_run_abandoned",
+		subjectJob: "abandoned",
+		code:       reason.STEPSkippedRunAbandoned,
+		level:      reason.LevelStep,
+		setup: func(w *world) {
+			// Two steps with no edge between them, and a crash ceiling
+			// of one: the first crash is absorbed, the second
+			// quarantines the run while the second step is still
+			// waiting for a turn it never gets.
+			w.seedJob("abandoned", 1, "",
+				stepSpec("held", "/bin/true", nil, 3),
+				stepSpec("waiting", "/bin/true", nil, -1))
+			run := w.scheduledRun("abandoned", "ab")
+			for i := 0; i < 2; i++ {
+				ref := w.claim(run.ID, "dead-holder", time.Second)
+				w.beginStep(run.ID, ref)
+				w.expireLease()
+				if _, err := w.st.ReapExpiredRuns(w.ctx, store.ReapOptions{MaxCrashCount: 1}); err != nil {
+					w.t.Fatalf("reap: %v", err)
+				}
+				w.clk.Advance(store.DefaultRequeueBackoff)
+			}
+		},
+		wantIn: []string{"before the reaper gave up"},
+	},
+
+	{
 		name:       "step_skipped_upstream_failed",
 		subjectJob: "diamond",
 		code:       reason.STEPSkippedUpstreamFailed,

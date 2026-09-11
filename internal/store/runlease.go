@@ -750,6 +750,22 @@ func reapToQueuedTx(tx *sql.Tx, run Run, now time.Time, backoff time.Duration) (
 	if err := failRunningStepsTx(tx, run.ID, now, false); err != nil {
 		return ReapedRun{}, err
 	}
+	// The lost step may have ended the whole graph: with no budget left it
+	// fails, and the failure closes its downstream in the same write. A run
+	// with nothing left to run is not a run to offer a new holder, it is a
+	// run whose conclusion is already on its steps, so it takes the fold
+	// #188 built for the same situation on the failure arm (#213).
+	after, err := readStepsTx(tx, run.ID)
+	if err != nil {
+		return ReapedRun{}, err
+	}
+	states, err := stepStatesOf(after)
+	if err != nil {
+		return ReapedRun{}, err
+	}
+	if allStepsTerminal(states) {
+		return reapToAggregateTx(tx, run, now, after)
+	}
 	epoch := run.LeaseEpoch + 1
 	due := now.Add(backoff)
 	if _, err := tx.Exec(`UPDATE runs SET
@@ -826,7 +842,12 @@ func reapToFailedTx(tx *sql.Tx, run Run, now time.Time, code reason.Code, kind, 
 	if err := failRunningStepsTx(tx, run.ID, now, true); err != nil {
 		return ReapedRun{}, err
 	}
-	if err := skipPendingStepsTx(tx, run.ID, now, string(reason.STEPSkippedUpstreamFailed)); err != nil {
+	// What is left after the lost steps closed is a step with no failed
+	// ancestor: a failure closes its own transitive dependants inside the
+	// write above, so anything still pending here was waiting its turn
+	// when the reaper ended the run around it. Calling that an upstream
+	// failure is a lie; the run's own ending is what closed it (#213).
+	if err := skipPendingStepsTx(tx, run.ID, now, string(reason.STEPSkippedRunAbandoned)); err != nil {
 		return ReapedRun{}, err
 	}
 	epoch := run.LeaseEpoch + 1
@@ -980,10 +1001,18 @@ func reapToCancelledTx(tx *sql.Tx, run Run, now time.Time) (ReapedRun, error) {
 }
 
 // failRunningStepsTx closes every running step of a run the reaper is taking.
-// With a budget left the lost attempt goes back to pending for its next try
-// (parked at once, the same answer recovery gives); with terminal set, or no
-// budget left, the step fails under STEP_FAILED_EXECUTOR_LOST: the verdict
-// was lost with the executor, and recording exactly that beats inventing one.
+// With a budget left the lost attempt goes back to pending for its next try;
+// with terminal set, or no budget left, the step fails under
+// STEP_FAILED_EXECUTOR_LOST: the verdict was lost with the executor, and
+// recording exactly that beats inventing one.
+//
+// The write itself is applyStepOutcomeTx, the same one RecordStepOutcome and
+// the spool committer take, so the reaper cannot keep private answers to the
+// questions that writer already settles (#213): whether a step going back to
+// pending may carry a finish stamp, and whether a step landing on failed
+// closes its downstream in this transaction. The reaper's own facts are
+// arguments rather than a second copy of the rules: that this ending buys no
+// further attempt, and that the reaper wrote it.
 func failRunningStepsTx(tx *sql.Tx, runID string, now time.Time, terminal bool) error {
 	steps, err := readStepsTx(tx, runID)
 	if err != nil {
@@ -993,41 +1022,15 @@ func failRunningStepsTx(tx *sql.Tx, runID string, now time.Time, terminal bool) 
 		if model.StepState(step.State) != model.StepRunning {
 			continue
 		}
-		left := !terminal && step.Attempt < step.MaxAttempts
-		state, effects, err := model.NextStepState(model.StepRunning, model.EvStepFailed, model.Guards{
-			ReasonCode:   string(reason.STEPFailedExecutorLost),
-			AttemptsLeft: left,
-		})
-		if err != nil {
-			return fmt.Errorf("close the lost step %s of run %s: %w", step.Name, runID, err)
-		}
-		var nextAttempt any
-		if state == model.StepPending {
-			nextAttempt = now.UnixMilli()
-		}
 		// nolint:fencing: the sweep transaction already proved this run's
 		// lease expired past the skew; steps carry no token of their own.
-		if _, err := tx.Exec(`UPDATE steps SET
-			state = ?, reason_code = ?, reason_data = '{}',
-			finished_at = ?,
-			duration_ms = CASE WHEN started_at IS NULL THEN NULL ELSE ? - started_at END,
-			next_attempt_at = ?
-			WHERE run_id = ? AND name = ? AND state = 'running'`,
-			string(state), string(reason.STEPFailedExecutorLost), now.UnixMilli(),
-			now.UnixMilli(), nextAttempt, runID, step.Name); err != nil {
+		if err := applyStepOutcomeTx(tx, runID, step.Name, StepOutcome{
+			Event:            string(model.EvStepFailed),
+			ReasonCode:       reason.STEPFailedExecutorLost,
+			NoFurtherAttempt: terminal,
+			Actor:            "reaper",
+		}, now, "{}"); err != nil {
 			return fmt.Errorf("close the lost step %s of run %s: %w", step.Name, runID, err)
-		}
-		if err := appendRunEvent(tx, RunEvent{
-			RunID:      runID,
-			StepName:   step.Name,
-			At:         now,
-			Kind:       emitKind(effects),
-			FromState:  string(model.StepRunning),
-			ToState:    string(state),
-			ReasonCode: string(reason.STEPFailedExecutorLost),
-			Actor:      "reaper",
-		}); err != nil {
-			return err
 		}
 	}
 	return nil

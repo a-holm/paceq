@@ -210,8 +210,8 @@ func TestRunsRetryWithStepReopensOnlyTheClosure(t *testing.T) {
 }
 
 // unknownOutcomeProject makes one paceq project whose store runs on a clock
-// the test moves, so a reaped run's requeue backoff can pass between two
-// statements instead of being slept through.
+// the test moves, so the gap between an executor dying and the sweep noticing
+// can pass between two statements instead of being slept through.
 func unknownOutcomeProject(t *testing.T) (string, *store.Store, *clock.Fake) {
 	t.Helper()
 	dir := t.TempDir()
@@ -232,12 +232,12 @@ func unknownOutcomeProject(t *testing.T) (string, *store.Store, *clock.Fake) {
 }
 
 // plantUnknownOutcomeRun queues a second run of the same job whose executor
-// dies mid flight on step a. The reaper closes the lost attempt (crash_count
-// 1, a's verdict lost with its executor), the run tries once more the normal
-// way after its backoff, and c's ordinary failure ends it. What is left is
-// exactly the run AC-10 guards: a terminal failure that carries an unknown
-// outcome nobody can rule out.
-func plantUnknownOutcomeRun(t *testing.T, s *store.Store, clk *clock.Fake) string {
+// dies mid flight. Steps a and b are already done by then; the reaper closes
+// the lost attempt on c and, in the same transaction, the downstream c never
+// reached (#213). The next holder finds nothing left to run and only records
+// the verdict. What is left is exactly the run AC-10 guards: a terminal
+// failure that carries an unknown outcome nobody can rule out.
+func plantUnknownOutcomeRun(t *testing.T, s *store.Store) string {
 	t.Helper()
 	ctx := context.Background()
 	recordRetryChainJob(t, s)
@@ -247,12 +247,26 @@ func plantUnknownOutcomeRun(t *testing.T, s *store.Store, clk *clock.Fake) strin
 	}
 	runID := queued.Run.ID
 
-	// Generation one: claimed, mid flight on a, executor dies, reaped.
 	if _, _, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: "reaped:test", TTL: time.Hour}); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if err := s.StartStep(ctx, runID, "a", store.LeaseRef{Owner: "reaped:test", Epoch: 1}); err != nil {
-		t.Fatalf("start a: %v", err)
+	ref := store.LeaseRef{Owner: "reaped:test", Epoch: 1}
+	for _, step := range []string{"a", "b"} {
+		if err := s.StartStep(ctx, runID, step, ref); err != nil {
+			t.Fatalf("start %s: %v", step, err)
+		}
+		if err := s.RecordStepOutcome(ctx, runID, step, store.StepOutcome{
+			Event: "step_succeeded", ReasonCode: reason.STEPSucceeded,
+			ExitCode: new(int), FinishedAt: time.Now(),
+		}, ref); err != nil {
+			t.Fatalf("record %s: %v", step, err)
+		}
+	}
+
+	// The executor dies holding c. Its verdict goes with it, and the
+	// reaper closes d and e beside it in one transaction.
+	if err := s.StartStep(ctx, runID, "c", ref); err != nil {
+		t.Fatalf("start c: %v", err)
 	}
 	reaped, err := s.ReapExpiredRuns(ctx, store.ReapOptions{IgnoreLease: true})
 	if err != nil {
@@ -262,37 +276,10 @@ func plantUnknownOutcomeRun(t *testing.T, s *store.Store, clk *clock.Fake) strin
 		t.Fatalf("the reaper did not count the loss: %+v", reaped)
 	}
 
-	// Generation two: the ordinary way down, so the only unusual thing
-	// left about this run is the death it already had. The backoff a
-	// reaped run waits out passes on the clock the test holds.
-	clk.Advance(2 * store.DefaultRequeueBackoff)
-	_, epoch, err := s.ClaimRun(ctx, runID, store.LeaseInput{Owner: "cli:test", TTL: time.Hour})
-	if err != nil {
-		t.Fatalf("reclaim: %v", err)
-	}
-	ref := store.LeaseRef{Owner: "cli:test", Epoch: epoch}
-	if err := s.StartStep(ctx, runID, "b", ref); err != nil {
-		t.Fatalf("start b: %v", err)
-	}
-	if err := s.RecordStepOutcome(ctx, runID, "b", store.StepOutcome{
-		Event: "step_succeeded", ReasonCode: reason.STEPSucceeded,
-		ExitCode: new(int), FinishedAt: time.Now(),
-	}, ref); err != nil {
-		t.Fatalf("record b: %v", err)
-	}
-	if err := s.StartStep(ctx, runID, "c", ref); err != nil {
-		t.Fatalf("start c: %v", err)
-	}
-	if err := s.RecordStepOutcome(ctx, runID, "c", store.StepOutcome{
-		Event: "step_failed", ReasonCode: reason.STEPFailedNonzeroExit,
-		ExitCode: new(int), FinishedAt: time.Now(),
-	}, ref); err != nil {
-		t.Fatalf("record c: %v", err)
-	}
-	if _, err := s.FinishRun(ctx, runID, ref, store.FinishReason{
-		Code: reason.RUNFailedStep, Data: `{"step":"c"}`,
-	}); err != nil {
-		t.Fatalf("finish: %v", err)
+	// Nothing is left to run, so the sweep writes the verdict the run's own
+	// steps aggregate to rather than offering it to a new holder.
+	if reaped[0].State != "failed" {
+		t.Fatalf("the sweep left the run %s, want failed over a closed graph", reaped[0].State)
 	}
 
 	detail, err := s.GetRun(ctx, runID)
@@ -304,8 +291,8 @@ func plantUnknownOutcomeRun(t *testing.T, s *store.Store, clk *clock.Fake) strin
 			detail.State, detail.CrashCount)
 	}
 	for _, step := range detail.Steps {
-		if step.Name == "a" && step.ReasonCode != string(reason.STEPFailedExecutorLost) {
-			t.Fatalf("step a carries %q, want the lost verdict", step.ReasonCode)
+		if step.Name == "c" && step.ReasonCode != string(reason.STEPFailedExecutorLost) {
+			t.Fatalf("step c carries %q, want the lost verdict", step.ReasonCode)
 		}
 	}
 	return runID
@@ -316,8 +303,8 @@ func plantUnknownOutcomeRun(t *testing.T, s *store.Store, clk *clock.Fake) strin
 // the facts and only --force gets past the warning. The refusal must leave
 // the run exactly as it was; nothing reopens behind the operator's back.
 func TestRunsRetryWarnsOnAnUnknownOutcome(t *testing.T) {
-	dir, s, clk := unknownOutcomeProject(t)
-	runID := plantUnknownOutcomeRun(t, s, clk)
+	dir, s, _ := unknownOutcomeProject(t)
+	runID := plantUnknownOutcomeRun(t, s)
 
 	got := runCLI(t, dir, nil, "runs", "retry", runID)
 
@@ -353,9 +340,9 @@ func TestRunsRetryWarnsOnAnUnknownOutcome(t *testing.T) {
 	if doc.RunID != runID {
 		t.Errorf("forced reopen named %s, want %s", doc.RunID, runID)
 	}
-	if len(doc.Reopened) != 4 || doc.Reopened[0] != "a" || doc.Reopened[1] != "c" ||
-		doc.Reopened[2] != "d" || doc.Reopened[3] != "e" {
-		t.Errorf("reopened = %v, want exactly [a c d e]: b succeeded and stays", doc.Reopened)
+	if len(doc.Reopened) != 3 || doc.Reopened[0] != "c" || doc.Reopened[1] != "d" ||
+		doc.Reopened[2] != "e" {
+		t.Errorf("reopened = %v, want exactly [c d e]: a and b succeeded and stay", doc.Reopened)
 	}
 }
 

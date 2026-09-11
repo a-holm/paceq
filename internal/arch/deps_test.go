@@ -55,7 +55,7 @@ var allowedImports = map[string][]string{
 	"notify":    {"model", "clock"},
 	"cronx":     {},
 	"sockpath":  {},
-	"store":     {"model", "spec", "clock", "id", "reason", "faults", "procfs", "spool"},
+	"store":     {"model", "spec", "clock", "id", "reason", "faults", "procfs", "spool", "retry"},
 	"scheduler": {"store", "clock", "cronx", "reason"},
 	"leases":    {"store", "clock", "reason"},
 	"janitor":   {"store", "clock"},

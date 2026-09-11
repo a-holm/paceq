@@ -370,3 +370,26 @@ func hasCheck(violations []Violation, check string) bool {
 	}
 	return false
 }
+
+// A pending step carrying a finish stamp is a contradiction the schema
+// permits and nothing used to check: the step has not ended, so there is no
+// instant it ended at. I13 is where a timestamp that cannot be true belongs
+// (#213).
+func TestFsckCatchesAPendingStepThatClaimsToHaveFinished(t *testing.T) {
+	ctx := context.Background()
+	s, runID := plantSeededRun(t)
+
+	if _, err := s.w.ExecContext(ctx, `UPDATE steps
+SET started_at = 1000, finished_at = 81000, duration_ms = 80000
+WHERE run_id = ? AND name = 'build'`, runID); err != nil {
+		t.Fatalf("plant the violation: %v", err)
+	}
+
+	violations, err := s.Fsck(ctx)
+	if err != nil {
+		t.Fatalf("fsck: %v", err)
+	}
+	if !hasCheck(violations, "I13") {
+		t.Fatalf("fsck missed a pending step with a finish stamp: %+v", violations)
+	}
+}

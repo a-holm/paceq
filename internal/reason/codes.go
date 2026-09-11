@@ -79,6 +79,7 @@ var (
 
 	STEPSucceeded              = stepCode("SUCCEEDED")
 	STEPSkippedReplayReused    = stepCode("SKIPPED_REPLAY_REUSED")
+	STEPSkippedRunAbandoned    = stepCode("SKIPPED_RUN_ABANDONED")
 	STEPSkippedRunTimedOut     = stepCode("SKIPPED_RUN_TIMED_OUT")
 	STEPSkippedUpstreamFailed  = stepCode("SKIPPED_UPSTREAM_FAILED")
 	STEPSkippedUpstreamSkipped = stepCode("SKIPPED_UPSTREAM_SKIPPED")
@@ -672,6 +673,22 @@ func newCatalog() map[Code]Entry {
 			Terminal: true,
 		},
 		{
+			Code:  STEPSkippedRunAbandoned,
+			Level: LevelStep,
+			Short: "the run was closed before this step started",
+			Explanation: "The reaper closed this run because its executor never came back: either " +
+				"repeated crashes quarantined it, or its attempt budget ran out with the work " +
+				"still unclaimed. This step was waiting its turn and never started. Nothing it " +
+				"needs failed, because a failed step closes its own dependants under the upstream " +
+				"codes; the run ended around this one.",
+			Remedy: []string{
+				"the run's own reason_code says which ending closed it: RUN_POISONED or RUN_ORPHANED_RECONCILED",
+				"the run.requeued events count the attempts that died before the reaper gave up",
+				"nothing here ran, so a fresh run of the job starts this step from the beginning",
+			},
+			Terminal: true,
+		},
+		{
 			Code:  STEPSkippedRunTimedOut,
 			Level: LevelStep,
 			Short: "the run ran out of time before this step started",
@@ -862,8 +879,11 @@ func newCatalog() map[Code]Entry {
 			Explanation: "The executor running this attempt crashed, or was killed, between starting " +
 				"the step and recording what it did. The attempt's own verdict was lost with it, so " +
 				"the restart closes the dead attempt with this code instead of inventing a result. " +
-				"The step may then be attempted again under its retry policy, and the effect " +
-				"contract applies as for any retry: a step runs at least once, not exactly once.",
+				"With a budget left the step is due again at once rather than after its retry " +
+				"backoff: nothing about the command is known to have failed, and the run's own " +
+				"requeue delay is what spaces the next try. The effect contract applies as for " +
+				"any retry: a step runs at least once, and an attempt whose verdict was lost may " +
+				"already have done its work.",
 			Remedy: []string{
 				"read the run's events: run.requeued beside this code is the restart closing a crash out",
 				"the attempt's log file may exist without log metadata; the next attempt writes its own file",

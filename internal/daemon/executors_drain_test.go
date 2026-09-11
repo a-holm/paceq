@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"testing"
@@ -203,10 +204,15 @@ func TestAFinishedRunIsNeverTouchedByTheHandbackCheck(t *testing.T) {
 // daemon that froze, lost its run to the reaper and thawed mid stop believes
 // it still holds the lease, but the row disagrees inside the handback
 // transaction, so nothing of the old attempt lands.
+//
+// The step keeps a retry budget so the reaper hands the run back to the queue
+// instead of closing it. A terminal run turns every writer away on its state
+// alone, and a fence asked only about runs that are already finished proves
+// nothing; the run this test drains is one a holder could still take.
 func TestAStaleBeliefDrainsNothing(t *testing.T) {
 	clk := clock.NewFake(time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC))
 	st := openServeStore(t, clk)
-	runID := seedClaimedRunningRun(t, st)
+	runID := seedClaimedRunningRunRetrying(t, st, 1)
 
 	// The reaper takes the run while our belief still names us as holder.
 	clk.Advance(10 * time.Minute)
@@ -214,8 +220,17 @@ func TestAStaleBeliefDrainsNothing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reap: %v", err)
 	}
-	if len(reaped) != 1 {
-		t.Fatalf("reaped %+v, want the run", reaped)
+	if len(reaped) != 1 || reaped[0].State != string(model.RunQueued) {
+		t.Fatalf("reaped %+v, want the run back in the queue", reaped)
+	}
+	before := snapshotRun(t, st, runID)
+	if before.Run.LeaseEpoch != 2 {
+		t.Fatalf("the reaper left epoch %d, want 2: the old belief must be stale",
+			before.Run.LeaseEpoch)
+	}
+	eventsBefore, err := st.RunEvents(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("events: %v", err)
 	}
 
 	drainer := &stubEngine{ref: store.LeaseRef{Owner: "serve:test", Epoch: 1}, held: true, st: st}
@@ -223,13 +238,45 @@ func TestAStaleBeliefDrainsNothing(t *testing.T) {
 	if err := p.handBackWhenOwed(context.Background(), runID); err != nil {
 		t.Fatalf("a stale handback must be quiet, got %v", err)
 	}
+	if drainer.drains != 1 {
+		t.Fatalf("%d drains, want 1: the refusal must happen in the store, not before it",
+			drainer.drains)
+	}
+
+	after := snapshotRun(t, st, runID)
+	if fmt.Sprintf("%+v", after) != fmt.Sprintf("%+v", before) {
+		t.Errorf("the stale drain moved the reaper's work:\n after %+v\nbefore %+v", after, before)
+	}
+	eventsAfter, err := st.RunEvents(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	if len(eventsAfter) != len(eventsBefore) {
+		t.Errorf("the stale drain appended %d events, want none",
+			len(eventsAfter)-len(eventsBefore))
+	}
+
+	// The row the fence defends has to be one the database calls legal: a
+	// baseline the integrity sweep reports as a bug would make the refusal
+	// above a proof about nothing.
+	violations, err := st.Fsck(context.Background())
+	if err != nil {
+		t.Fatalf("fsck: %v", err)
+	}
+	if len(violations) != 0 {
+		t.Errorf("the reaper left a database fsck rejects: %+v", violations)
+	}
+}
+
+// snapshotRun reads a run and every step it owns, so a caller can hold the
+// whole row against what it looked like before a write that must not land.
+func snapshotRun(t *testing.T, st *store.Store, runID string) store.RunDetail {
+	t.Helper()
 	detail, err := st.GetRun(context.Background(), runID)
 	if err != nil {
-		t.Fatalf("read back: %v", err)
+		t.Fatalf("read run %s: %v", runID, err)
 	}
-	if detail.Run.State != string(model.RunQueued) || detail.Run.LeaseEpoch != 2 {
-		t.Errorf("the stale drain moved the reaper's work: %+v", detail.Run)
-	}
+	return detail
 }
 
 // requireDrainEvents asserts the event pair every clean handback leaves
