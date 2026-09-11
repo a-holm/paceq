@@ -628,8 +628,8 @@ it, so the restart closes the dead attempt with this code instead of
 inventing a result. With a budget left the step is due again at once rather
 than after its retry backoff: nothing about the command is known to have
 failed, and the run's own requeue delay is what spaces the next try. The
-effect contract applies as for any retry: a step runs at least once, not
-exactly once.
+effect contract applies as for any retry: a step runs at least once, and an
+attempt whose verdict was lost may already have done its work.
 
 What to do next:
 - read the run's events: run.requeued beside this code is the restart closing a crash out
