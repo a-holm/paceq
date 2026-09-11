@@ -94,8 +94,4 @@ The K1 answer stops the start of M6. It does not stop tagging v0.1.0:
 milestone M5's value (plan section E: "v0.1-verdien beskyttes alltid" - the
 v0.1 value is always protected) is independent of whether the owner already
 runs the tool in production, and the release checklist's technical gates were
-run and recorded in the issue. The budget deviation measured during the
-checklist (core Go 48 764 total lines, 35 824 code lines excluding tests,
-against the <= 12 000 budget, SYNTESE §4.9) is a separate port finding that
-follows the K4 doctrine ("something is removed, the budget is not raised")
-and is handled before 1.0 - it does not change the v0.1 feature set.
+run and recorded in the issue.
