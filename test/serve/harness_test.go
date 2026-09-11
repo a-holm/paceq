@@ -528,6 +528,21 @@ func doctorFindings(t *testing.T, ws *workspace) map[string]string {
 	return byTitle
 }
 
+// doctorSeesNothingOfThisInstallation reads doctor's process finding as an
+// answer to one question: is any job process of this installation running?
+//
+// Doctor spells its healthy answer two ways, and which one an operator gets
+// depends on what else is on the machine rather than on anything this daemon
+// did. A box with no job process on it at all is told so outright; a box
+// carrying another installation's jobs is told none of them are ours. Both
+// are the answer a stopped daemon owes. Everything else is not: a count of
+// processes active attempts still name, and the orphan finding itself, both
+// say a job process of ours is running.
+func doctorSeesNothingOfThisInstallation(detail string) bool {
+	return strings.HasPrefix(detail, "no job processes running") ||
+		strings.HasPrefix(detail, "no job processes of this installation")
+}
+
 // requireNoOrphanFails if anything carrying the run id is still alive after a
 // bounded wait: a clean stop may take a moment to be seen by /proc, but it
 // may never fail to happen.

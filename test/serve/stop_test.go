@@ -47,7 +47,7 @@ func TestOneStopSignalDrainsTheRunningWork(t *testing.T) {
 	// classifies every live process carrying a run id against this
 	// database's attempt baselines, so it names an orphan of this
 	// installation if the stop left one.
-	if procs := doctorFindings(t, ws)["processes"]; !strings.HasPrefix(procs, "no job processes of this installation") {
+	if procs := doctorFindings(t, ws)["processes"]; !doctorSeesNothingOfThisInstallation(procs) {
 		t.Errorf("doctor says %q after a clean stop, want no job process of this installation", procs)
 	}
 
