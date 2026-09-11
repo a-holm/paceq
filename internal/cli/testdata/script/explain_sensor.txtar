@@ -1,13 +1,13 @@
 # explain sensor is the product's signature surface (10 section 5): the last
 # evaluations, the cursor, the breaker, and the job's standing, one screen.
-# Skipped ticks read as separate lines here because sensors do not fold their
-# skips in this milestone; a coalesced fold shows as xN on the job form.
+# Three identical skips are one line saying how many, because the writer folds
+# them onto one row.
 
 exec paceq init
 plantsensor nye-filer prosesser-fil '["/bin/echo","{}"]'
-# The triggered tick comes first: its helper leaves a fixed cursor stamp
-# behind, and the later skips move next_eval_at to the fixture clock.
-plantsensortick nye-filer
+# The triggered tick comes first in time: its helper leaves a fixed cursor
+# stamp behind, and the later skips move next_eval_at to the fixture clock.
+plantsensortick nye-filer -at=-4m
 plantsensorskip nye-filer 'no new files since 04:00' -at=-3m
 plantsensorskip nye-filer 'no new files since 04:00' -at=-2m
 plantsensorskip nye-filer 'no new files since 04:00' -at=-1m
@@ -32,46 +32,51 @@ grep 'nothing named' nb_err.txt
 
 -- expected_sensor.txt --
 sensor nye-filer (of job prosesser-fil)
-summary: never succeeded, last outcome triggered, next 2026-09-24 09:01 (1m00s from now) paused=false active runs 1/10 freshness=unknown
+summary: never succeeded, last outcome skipped, next 2026-09-24 09:01 (1m00s from now) paused=false active runs 1/10 freshness=unknown
 
-  2026-09-24 09:00:00Z  triggered tick         01M39A98M0  OK
+  2026-09-24 08:57:00Z  skipped tick         01M39A3RV0  x2 coalesced  WARN
+       TICK_SKIPPED_SENSOR
+       no new files since 04:00
+       -> read reason_text on this tick: the sensor's own wording is kept there
+  2026-09-24 08:56:00Z  triggered tick         01M39A1Y80  OK
        cursor "a" -> "b"
-      2026-09-24 09:00:00Z  accepted trigger      01M39A98M0  OK
+      2026-09-24 08:56:00Z  accepted trigger      01M39A1Y80  OK
                TRIGGER_ACCEPTED
                became a run
                -> nothing to fix; follow the run id on the trigger row
                -> dedup keys stay until retention clears them, so a deliberate rerun needs a new key or a bumped epoch
-          2026-09-24 09:00:00Z  queued  run          01M39A98M0  WARN
-  2026-09-24 08:59:00Z  skipped tick         01M39A7E10  WARN
-       TICK_SKIPPED_SENSOR
-       no new files since 04:00
-       -> read reason_text on this tick: the sensor's own wording is kept there
-  2026-09-24 08:58:00Z  skipped tick         01M39A5KE0  WARN
-       TICK_SKIPPED_SENSOR
-       no new files since 04:00
-       -> read reason_text on this tick: the sensor's own wording is kept there
-  2026-09-24 08:57:00Z  skipped tick         01M39A3RV0  WARN
-       TICK_SKIPPED_SENSOR
-       no new files since 04:00
-       -> read reason_text on this tick: the sensor's own wording is kept there
+          2026-09-24 08:56:00Z  queued  run          01M39A1Y80  WARN
 -- expected_sensor.json --
 {
   "daemon_up": false,
   "entries": [
     {
       "actor": "sensor",
-      "at_ms": 1790240400000,
+      "at_ms": 1790240220000,
+      "hints": [
+        "read reason_text on this tick: the sensor's own wording is kept there"
+      ],
+      "kind": "tick",
+      "outcome": "skipped",
+      "reason_code": "TICK_SKIPPED_SENSOR",
+      "reason_text": "no new files since 04:00",
+      "ref": "<RUN1>",
+      "repeat_count": 3
+    },
+    {
+      "actor": "sensor",
+      "at_ms": 1790240160000,
       "children": [
         {
           "actor": "sensor",
-          "at_ms": 1790240400000,
+          "at_ms": 1790240160000,
           "children": [
             {
               "actor": "sensor",
-              "at_ms": 1790240400000,
+              "at_ms": 1790240160000,
               "kind": "run",
               "outcome": "queued",
-              "ref": "<RUN3>"
+              "ref": "<RUN4>"
             }
           ],
           "hints": [
@@ -85,7 +90,7 @@ summary: never succeeded, last outcome triggered, next 2026-09-24 09:01 (1m00s f
             "run_key": "file:1"
           },
           "reason_text": "became a run",
-          "ref": "<RUN2>"
+          "ref": "<RUN3>"
         }
       ],
       "kind": "tick",
@@ -95,46 +100,7 @@ summary: never succeeded, last outcome triggered, next 2026-09-24 09:01 (1m00s f
         "cursor_before": "a",
         "trigger_count": 1
       },
-      "ref": "<RUN1>",
-      "repeat_count": 1
-    },
-    {
-      "actor": "sensor",
-      "at_ms": 1790240340000,
-      "hints": [
-        "read reason_text on this tick: the sensor's own wording is kept there"
-      ],
-      "kind": "tick",
-      "outcome": "skipped",
-      "reason_code": "TICK_SKIPPED_SENSOR",
-      "reason_text": "no new files since 04:00",
-      "ref": "<RUN4>",
-      "repeat_count": 1
-    },
-    {
-      "actor": "sensor",
-      "at_ms": 1790240280000,
-      "hints": [
-        "read reason_text on this tick: the sensor's own wording is kept there"
-      ],
-      "kind": "tick",
-      "outcome": "skipped",
-      "reason_code": "TICK_SKIPPED_SENSOR",
-      "reason_text": "no new files since 04:00",
-      "ref": "<RUN5>",
-      "repeat_count": 1
-    },
-    {
-      "actor": "sensor",
-      "at_ms": 1790240220000,
-      "hints": [
-        "read reason_text on this tick: the sensor's own wording is kept there"
-      ],
-      "kind": "tick",
-      "outcome": "skipped",
-      "reason_code": "TICK_SKIPPED_SENSOR",
-      "reason_text": "no new files since 04:00",
-      "ref": "<RUN6>",
+      "ref": "<RUN2>",
       "repeat_count": 1
     }
   ],
@@ -150,7 +116,7 @@ summary: never succeeded, last outcome triggered, next 2026-09-24 09:01 (1m00s f
   "summary": {
     "active_runs": 1,
     "freshness_state": "unknown",
-    "last_outcome": "triggered",
+    "last_outcome": "skipped",
     "max_concurrent": 10,
     "next_tick_at_ms": 1790240460000,
     "paused": false

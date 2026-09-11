@@ -208,6 +208,10 @@ type SensorTickCommitResult struct {
 	// Rejected is how many triggers a held concurrency key refused (#17):
 	// no run behind them, only the trigger row recording the refusal.
 	Rejected int
+
+	// Coalesced is true when the sensor's previous tick took this evaluation
+	// in as another repeat_count step instead of keeping a row of its own.
+	Coalesced bool
 }
 
 // CommitSensorTick records one finished sensor evaluation, all or nothing: the
@@ -314,6 +318,16 @@ WHERE name = ? AND cursor_version = ?`,
 		// the cursor_version has already been bumped, which is what fences a
 		// concurrently committed evaluation's replay.
 		if in.Outcome != OutcomeTriggered {
+			if in.Outcome == OutcomeSkipped {
+				folded, err := foldSensorSkipTx(tx, in, at)
+				if err != nil {
+					return err
+				}
+				if folded {
+					out.Coalesced = true
+					return nil
+				}
+			}
 			return closeSensorTickTx(tx, in.TickID, at, in.Outcome,
 				in.ReasonCode, in.DurationMs, cursorAfter, 0, 0, in.ReasonText, in.ReasonData)
 		}
@@ -565,10 +579,70 @@ func cursorAdvanceOf(outcome, reported string) string {
 	return reported
 }
 
+// coalesceSensorSkipSQL folds one more identical skip into a sensor's latest
+// tick, the sizing property the ticks schema states: a sensor that finds the
+// same nothing every 30 seconds is one legible row rather than 2880 of them.
+// It is the sensor twin of coalesceSkipSQL, which serves schedules only.
+//
+// The subquery names THE latest other row and the outer predicate then demands
+// that row be identical, so a fold can never step over an evaluation that said
+// something else. Every column an operator reads off the row is in the
+// predicate: a different verdict, reason, cursor position or daemon session
+// starts its own row instead of disappearing into this one. Empty RETURNING
+// means there was nothing identical to fold into.
+const coalesceSensorSkipSQL = `UPDATE ticks
+   SET repeat_count = repeat_count + 1, last_started_at = ?, finished_at = ?
+ WHERE id = (SELECT id FROM ticks
+              WHERE source_kind = 'sensor' AND source_name = ? AND id <> ?
+              ORDER BY started_at DESC, id DESC LIMIT 1)
+   AND outcome = 'skipped' AND trigger_count = 0
+   AND reason_code IS ? AND reason_text IS ?
+   AND cursor_before IS ? AND daemon_session_id IS ?
+RETURNING id`
+
+// foldSensorSkipTx offers one finished skip to the sensor's previous tick and
+// reports whether that row absorbed it. On a fold the intention row is deleted,
+// because the evaluation it opened is now recorded on the row it folded into
+// and a second row would be the duplicate the fold exists to prevent.
+//
+// The fold happens on close, never on begin: BeginSensorTick must keep writing
+// a visible 'running' row of its own, or a crash mid evaluation would leave
+// nothing for reconciliation to find. Deleting it here is safe for the same
+// reason it is safe to close it: the evaluation has answered.
+//
+// last_started_at takes the intention row's started_at, not the commit
+// instant, so the row reports when the newest evaluation began rather than
+// when it finished.
+func foldSensorSkipTx(tx *sql.Tx, in SensorTickCommitInput, at int64) (bool, error) {
+	var startedAt int64
+	var cursorBefore, session sql.NullString
+	if err := tx.QueryRow(`SELECT started_at, cursor_before, daemon_session_id
+FROM ticks WHERE id = ?`, in.TickID).Scan(&startedAt, &cursorBefore, &session); err != nil {
+		return false, fmt.Errorf("read the intention tick %s: %w", in.TickID, err)
+	}
+
+	var into string
+	err := tx.QueryRow(coalesceSensorSkipSQL, startedAt, at, in.SensorName, in.TickID,
+		nullableCode(in.ReasonCode), in.ReasonText, cursorBefore, session).Scan(&into)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("coalesce the skip of sensor %s: %w", in.SensorName, err)
+	}
+
+	if _, err := tx.Exec(`DELETE FROM ticks WHERE id = ?`, in.TickID); err != nil {
+		return false, fmt.Errorf("drop the folded intention tick %s: %w", in.TickID, err)
+	}
+	return true, nil
+}
+
 // closeSensorTickTx writes a tick's outcome. It is the only place a sensor tick
-// gets closed, used by every exit of CommitSensorTick so the 'running'
-// intention row never lingers. A skipped sensor's own reason is stored verbatim
-// (reasonText), because only the sensor knows what its skip meant.
+// gets closed, used by every exit of CommitSensorTick that keeps its row, so
+// the 'running' intention row never lingers; the one exit that does not keep it
+// is a fold, which deletes the row instead. A skipped sensor's own reason is
+// stored verbatim (reasonText), because only the sensor knows what its skip
+// meant.
 func closeSensorTickTx(tx *sql.Tx, tickID string, at int64, outcome string,
 	code reason.Code, durationMs int64, cursorAfter string, accepted, deduped int,
 	reasonText, reasonData string,

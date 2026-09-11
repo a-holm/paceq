@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 // The read half of M3-06 (issue #11): the sensors CLI group reads live state
@@ -78,50 +79,47 @@ func TestListSensorsReadsAll(t *testing.T) {
 	}
 }
 
-func TestSensorTicksCoalesced(t *testing.T) {
+// TestSensorTicksReadTheCoalescedHistory is the read half of the coalescing
+// the schema promises. A history that folded at write time is only legible if
+// the reader carries the count: without it `sensors show --limit N` silently
+// spans a different stretch of time per sensor.
+func TestSensorTicksReadTheCoalescedHistory(t *testing.T) {
 	t.Parallel()
 	s := migratedStore(t)
 	seedSensorJob(t, s)
-	seedSensor(t, s, "dropzone", "a", 0)
+	seedSensor(t, s, sensorName, "a", 0)
 
-	// Two ticks on the same sensor, both recorded.
-	ctx := context.Background()
-	in := BeginSensorTickInput{SensorName: "dropzone", CursorBefore: "a"}
-	r1, err := s.BeginSensorTick(ctx, in)
-	if err != nil {
-		t.Fatalf("BeginSensorTick 1: %v", err)
+	base := time.UnixMilli(1_700_000_000_000).UTC()
+	at := func(n int) time.Time { return base.Add(time.Duration(n) * 30 * time.Second) }
+	for i := range 3 {
+		runSensorEvaluation(t, s, skipAt(at(i), "no new files"))
 	}
-	if _, err := s.CommitSensorTick(ctx, SensorTickCommitInput{
-		TickID: r1.TickID, SensorName: "dropzone", JobName: sensorJob,
-		CursorVersion: r1.CursorVersion, CursorAfter: "b", DedupEpoch: 0,
-		Triggers: []SensorTrigger{{RunKey: "k1"}}, Outcome: OutcomeTriggered,
-		NextEvalAt: 60000, DurationMs: 5,
-	}); err != nil {
-		t.Fatalf("CommitSensorTick 1: %v", err)
-	}
+	runSensorEvaluation(t, s, sensorEvaluation{
+		At: at(3), Outcome: OutcomeTriggered, Triggers: []SensorTrigger{{RunKey: "file:1"}},
+	})
 
-	r2, err := s.BeginSensorTick(ctx, in)
-	if err != nil {
-		t.Fatalf("BeginSensorTick 2: %v", err)
-	}
-	if _, err := s.CommitSensorTick(ctx, SensorTickCommitInput{
-		TickID: r2.TickID, SensorName: "dropzone", JobName: sensorJob,
-		CursorVersion: r2.CursorVersion, CursorAfter: "c", DedupEpoch: 0,
-		Triggers: []SensorTrigger{{RunKey: "k2"}}, Outcome: OutcomeTriggered,
-		NextEvalAt: 70000, DurationMs: 5,
-	}); err != nil {
-		t.Fatalf("CommitSensorTick 2: %v", err)
-	}
-
-	ticks, err := s.SensorTicks(context.Background(), "dropzone", 10)
+	ticks, err := s.SensorTicks(context.Background(), sensorName, 10)
 	if err != nil {
 		t.Fatalf("SensorTicks: %v", err)
 	}
 	if len(ticks) != 2 {
-		t.Fatalf("SensorTicks returned %d ticks, want 2", len(ticks))
+		t.Fatalf("SensorTicks returned %d ticks, want 2: three skips are one row", len(ticks))
 	}
-	if ticks[0].Outcome != "triggered" || ticks[0].TriggerCount != 1 {
-		t.Errorf("first tick outcome/count = %s/%d, want triggered/1", ticks[0].Outcome, ticks[0].TriggerCount)
+	if ticks[0].Outcome != OutcomeTriggered || ticks[0].TriggerCount != 1 {
+		t.Errorf("newest tick = %s/%d, want triggered/1", ticks[0].Outcome, ticks[0].TriggerCount)
+	}
+	if ticks[0].RepeatCount != 1 {
+		t.Errorf("the triggered tick reports repeat_count %d, want 1", ticks[0].RepeatCount)
+	}
+	folded := ticks[1]
+	if folded.RepeatCount != 3 {
+		t.Errorf("the coalesced tick reports repeat_count %d, want 3", folded.RepeatCount)
+	}
+	if !folded.StartedAt.Equal(at(0)) {
+		t.Errorf("the coalesced tick starts at %s, want %s", folded.StartedAt, at(0))
+	}
+	if !folded.LastStartedAt.Equal(at(2)) {
+		t.Errorf("the coalesced tick last started at %s, want %s", folded.LastStartedAt, at(2))
 	}
 }
 

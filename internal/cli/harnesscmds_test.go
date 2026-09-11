@@ -784,12 +784,25 @@ func plantClock(ts *testscript.TestScript) clock.Clock {
 }
 
 // cmdPlantSensorTick commits one sensor tick on a planted sensor, so a golden
-// script can give `sensors show` a history to render.
+// script can give `sensors show` a history to render. The optional -at offset
+// moves the evaluation off the fixture instant, so a script can plant a history
+// in the order a daemon would have written it.
 //
-//	plantsensortick finder
+//	plantsensortick finder [-at=-4m]
 func cmdPlantSensorTick(ts *testscript.TestScript, neg bool, args []string) {
-	if neg || len(args) != 1 {
-		ts.Fatalf("usage: plantsensortick SENSOR")
+	if neg || len(args) < 1 || len(args) > 2 {
+		ts.Fatalf("usage: plantsensortick SENSOR [-at=DURATION]")
+	}
+	offset := time.Duration(0)
+	if len(args) == 2 {
+		if !strings.HasPrefix(args[1], "-at=") {
+			ts.Fatalf("%q is not a -at=DURATION option", args[1])
+		}
+		d, err := time.ParseDuration(strings.TrimPrefix(args[1], "-at="))
+		if err != nil {
+			ts.Fatalf("%q is not a duration: %v", args[1], err)
+		}
+		offset = d
 	}
 	ctx := context.Background()
 	dbPath := filepath.Join(workDirOf(ts), stateDirName, store.DatabaseFileName)
@@ -807,8 +820,9 @@ func cmdPlantSensorTick(ts *testscript.TestScript, neg bool, args []string) {
 	}
 	job := sum.JobName
 
+	at := plantClock(ts).Now().UTC().Add(offset)
 	begin, err := s.BeginSensorTick(ctx, store.BeginSensorTickInput{
-		SensorName: args[0], CursorBefore: "a",
+		SensorName: args[0], CursorBefore: "a", Now: at,
 	})
 	if err != nil {
 		ts.Fatalf("could not begin a sensor tick: %v", err)
@@ -824,6 +838,7 @@ func cmdPlantSensorTick(ts *testscript.TestScript, neg bool, args []string) {
 		Outcome:       store.OutcomeTriggered,
 		NextEvalAt:    60000,
 		DurationMs:    5,
+		Now:           at,
 	}); err != nil {
 		ts.Fatalf("could not commit a sensor tick: %v", err)
 	}
