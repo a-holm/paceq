@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -162,5 +163,15 @@ func runServe(ctx context.Context, env Env, g *globals, f serveFlags) error {
 		}
 	}
 
-	return daemon.Serve(ctx, cfg, clkOf(env))
+	if err := daemon.Serve(ctx, cfg, clkOf(env)); err != nil {
+		if errors.Is(err, daemon.ErrStepProcessSurvived) {
+			// A stop signal cancels the process context, so without this
+			// the failure would be classified as "interrupted" and read
+			// as an ordinary stop. It was not one: a job process outlived
+			// the daemon, and the exit code has to say so.
+			return internalError("the stop left a job process running", err)
+		}
+		return err
+	}
+	return nil
 }

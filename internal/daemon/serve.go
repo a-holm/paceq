@@ -481,6 +481,7 @@ func Serve(ctx context.Context, cfg Config, clk clock.Clock) error {
 		intakeAcks:   intakeAcks,
 		stopExec:     stopExec,
 		execDrained:  pool.drained(),
+		runsInFlight: pool.inFlight,
 		apiStopped:   stopHealth,
 		loopsDrained: loopsDone,
 		closeSession: func(c context.Context) error { return st.StopSession(c, sess.ID) },

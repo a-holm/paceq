@@ -199,6 +199,20 @@ func (p *executorPool) handBackWhenOwed(ctx context.Context, runID string) error
 	return lastErr
 }
 
+// inFlight names every run with an execution inside the pool right now. The
+// drain reads it before it cancels anything: a run leaves this book in the
+// executor goroutine's own defer, and that defer runs while the step's
+// process group can still be on the machine (#232).
+func (p *executorPool) inFlight() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]string, 0, len(p.driving))
+	for id := range p.driving {
+		out = append(out, id)
+	}
+	return out
+}
+
 // drained returns a channel closed when every submitted run has finished,
 // including its handback writes. The shutdown waits on it inside the drain
 // budget, never unbounded.

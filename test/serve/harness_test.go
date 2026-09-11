@@ -498,6 +498,36 @@ func stepCommandAlive(t *testing.T, runID string) bool {
 	return false
 }
 
+// doctorFindings runs the shipped doctor against a workspace and returns its
+// findings by title. It is the operator's own view of the machine, taken
+// through the command a human would run rather than through a second
+// implementation of the same /proc scan. A failing report is still a report:
+// doctor exits 1 on a failure and the document is what the row reads.
+func doctorFindings(t *testing.T, ws *workspace) map[string]string {
+	t.Helper()
+	cmd := exec.Command(paceqBinary(t), "doctor", "--json")
+	cmd.Dir = ws.Dir
+	out, err := cmd.Output()
+	var exit *exec.ExitError
+	if err != nil && !errors.As(err, &exit) {
+		t.Fatalf("run paceq doctor: %v", err)
+	}
+	var report struct {
+		Findings []struct {
+			Title  string `json:"title"`
+			Detail string `json:"detail"`
+		} `json:"findings"`
+	}
+	if err := json.Unmarshal(out, &report); err != nil {
+		t.Fatalf("decode the doctor report: %v\n%s", err, out)
+	}
+	byTitle := make(map[string]string, len(report.Findings))
+	for _, f := range report.Findings {
+		byTitle[f.Title] = f.Detail
+	}
+	return byTitle
+}
+
 // requireNoOrphanFails if anything carrying the run id is still alive after a
 // bounded wait: a clean stop may take a moment to be seen by /proc, but it
 // may never fail to happen.

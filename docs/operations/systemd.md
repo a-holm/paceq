@@ -29,8 +29,11 @@ The shipped unit runs paceq as a dedicated user with a hard sandbox:
 - **Type=notify + WatchdogSec=30**: the daemon beats the watchdog; if it
   wedges, systemd kills and restarts it (`Restart=always`, `RestartSec=2s`).
 - **Graceful stops**: SIGTERM starts a drain - running steps get
-  `--drain-timeout` (default 30s per serve; the unit allows 120s) - and
-  `KillMode=mixed` escalates to the process group only after that.
+  `--drain-timeout` (default 30s per serve; the unit allows 120s), then the
+  daemon ends any step process group still on the machine with `--kill-grace`
+  (default 10s) - and `KillMode=mixed` escalates to the process group only
+  after that. A stop that could not end a job process exits 1 and names the
+  pid it left, instead of reporting a clean stop.
 - **Hardening that jobs inherit** (the daemon spawns your steps): 
   `NoNewPrivileges`, `ProtectSystem=strict` (read-only filesystem except
   state), `PrivateTmp`, `RestrictAddressFamilies`, `SystemCallFilter`,

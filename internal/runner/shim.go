@@ -214,6 +214,26 @@ waitLoop:
 			_ = VerifiedGroupKill(res.PID, res.PIDStartTicks, grace, clk)
 			<-done
 			break waitLoop
+		case <-ctx.Done():
+			// The launcher's own context ended. For the shipped command
+			// that context is cancelled by the stop signal itself, and
+			// the signal reaches it before the forwarder above is armed:
+			// a stop that lands in that window is otherwise heard by
+			// nobody here, and the child runs on until somebody kills
+			// this process out from over it (#232). The budget is the
+			// forwarded branch's, half the grace, because the caller is
+			// running its own escalation against this process on the
+			// whole of it.
+			// A signal the forwarder did see names itself; otherwise the
+			// stop is named for what a launcher sends.
+			name := fwd.first()
+			if name == "" {
+				name = sigName(syscall.SIGTERM)
+			}
+			killedBy = "signal:" + name
+			_ = VerifiedGroupKill(res.PID, res.PIDStartTicks, grace/2, clk)
+			<-done
+			break waitLoop
 		case name := <-fwd.received:
 			// The child has the signal already. Give it the grace to
 			// react, then escalate exactly once, so a child that
