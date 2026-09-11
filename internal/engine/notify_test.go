@@ -12,6 +12,7 @@ import (
 	"github.com/a-holm/paceq/internal/clock"
 	"github.com/a-holm/paceq/internal/model"
 	"github.com/a-holm/paceq/internal/notify"
+	"github.com/a-holm/paceq/internal/reason"
 	"github.com/a-holm/paceq/internal/store"
 )
 
@@ -182,5 +183,199 @@ func TestJobHooksOverrideDefaultsPerSide(t *testing.T) {
 	}
 	if len(rows) != 0 {
 		t.Fatalf("success notified despite empty on_success defaults: %+v", rows)
+	}
+}
+
+// aCancelledStepSurvivingARetry builds the shape #194 is about: an attempt
+// leaves one step cancelled and one failed, the run closes, and an operator
+// reopen puts only the failed step back. The cancelled step survives, because
+// a reopen reopens failed and skipped steps alone.
+func (f *engineFixture) aCancelledStepSurvivingARetry(t *testing.T, runID string, cancelled, failed string) {
+	t.Helper()
+
+	ctx := context.Background()
+	_, epoch, err := f.Store.ClaimRun(ctx, runID, store.LeaseInput{Owner: "exec-0", TTL: time.Minute})
+	if err != nil {
+		t.Fatalf("claim the run for the seeding attempt: %v", err)
+	}
+	ref := store.LeaseRef{Owner: "exec-0", Epoch: epoch}
+
+	if err := f.Store.StartStep(ctx, runID, cancelled, ref); err != nil {
+		t.Fatalf("start step %s: %v", cancelled, err)
+	}
+	if err := f.Store.RecordStepOutcome(ctx, runID, cancelled, store.StepOutcome{
+		Event:      string(model.EvCancelObserved),
+		ReasonCode: reason.STEPCancelled,
+	}, ref); err != nil {
+		t.Fatalf("cancel step %s: %v", cancelled, err)
+	}
+
+	if err := f.Store.StartStep(ctx, runID, failed, ref); err != nil {
+		t.Fatalf("start step %s: %v", failed, err)
+	}
+	exit := 3
+	if err := f.Store.RecordStepOutcome(ctx, runID, failed, store.StepOutcome{
+		Event:      string(model.EvStepFailed),
+		ReasonCode: reason.STEPFailedNonzeroExit,
+		ExitCode:   &exit,
+	}, ref); err != nil {
+		t.Fatalf("fail step %s: %v", failed, err)
+	}
+
+	if _, err := f.Store.FinishRun(ctx, runID, ref,
+		store.FinishReason{Code: reason.RUNFailedStep}); err != nil {
+		t.Fatalf("close the seeding attempt: %v", err)
+	}
+	out, err := f.Store.ReopenTerminalRunByOperator(ctx, runID, "cli:1000", store.ReopenOpts{})
+	if err != nil {
+		t.Fatalf("reopen the run: %v", err)
+	}
+	if len(out.Reopened) != 1 || out.Reopened[0] != failed {
+		t.Fatalf("the reopen took %v, want only the failed step %s", out.Reopened, failed)
+	}
+}
+
+// TestACancelledStepFinishesUnderASuccessDefault walks engine, planner,
+// outbox and finish transaction together, which is the only level #194 is
+// visible from. The run ends RUN_CANCELLED_MANUAL, a verdict no notification
+// topic covers, while a daemon-wide on_success default names a target. The
+// run has to finish anyway and leave nothing in the outbox: a notification
+// planned out of that verdict carries an empty topic and subject,
+// insertNotificationsTx refuses such a row inside FinishRun's transaction,
+// and the refusal takes the verdict and the event with it.
+func TestACancelledStepFinishesUnderASuccessDefault(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 9, 17, 6, 0, 0, 0, time.UTC)
+	f := newFixtureWithClock(t, clock.NewFake(now))
+	// A daemon-wide success default over a job with no notify: block. This
+	// is the shape reachable without configuring anything per job.
+	f.Engine.Notify = notify.NewPlanner(model.NotifyDefaults{
+		OnSuccess: []string{"exec:notify-me"},
+		OnFailure: []string{"exec:notify-me"},
+	}, func() time.Time { return now })
+
+	runID := f.aQueuedRunWithHooks(t, "cancelled-step",
+		[]string{"cancelled", "reopened"}, []string{"exit 0", "exit 0"}, nil, 60000, "")
+	f.aCancelledStepSurvivingARetry(t, runID, "cancelled", "reopened")
+
+	state, err := f.Engine.ExecuteRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("the run could not finish: %v", err)
+	}
+	if state != string(model.RunCancelled) {
+		t.Fatalf("run ended %s, want cancelled", state)
+	}
+
+	detail, err := f.Store.GetRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("read the run back: %v", err)
+	}
+	if detail.Run.ReasonCode != string(reason.RUNCancelledManual) {
+		t.Errorf("reason_code is %q, want %s", detail.Run.ReasonCode, reason.RUNCancelledManual)
+	}
+	if detail.Run.CrashCount != 0 {
+		t.Errorf("crash_count is %d: the run finished on its own attempt, "+
+			"not after the reaper burned the budget", detail.Run.CrashCount)
+	}
+
+	rows, err := f.Store.ListNotifications(ctx, store.NotificationFilter{})
+	if err != nil {
+		t.Fatalf("list notifications: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("a cancelled run planned %d notifications, want none:\n%+v", len(rows), rows)
+	}
+
+	violations, err := f.Store.Fsck(ctx)
+	if err != nil {
+		t.Fatalf("fsck: %v", err)
+	}
+	if len(violations) != 0 {
+		t.Errorf("fsck found %d violations over the finished run:\n%+v",
+			len(violations), violations)
+	}
+
+	events, err := f.Store.RunEvents(ctx, runID)
+	if err != nil {
+		t.Fatalf("read the run events: %v", err)
+	}
+	cancelled := 0
+	for _, e := range events {
+		if e.Kind == "run.cancelled" {
+			cancelled++
+		}
+	}
+	if cancelled != 1 {
+		t.Errorf("the run left %d run.cancelled events, want exactly 1", cancelled)
+	}
+}
+
+// TestEveryRunEndingNotifiesWhatItsVerdictSays walks the endings finishReason
+// can reach and reads back what each one left in the outbox. It is the proof
+// that the reason code and the notification topic are decided together and
+// stay in step: a success carries run.succeeded, a failed step and a spent run
+// budget carry run.failed, and a cancellation carries nothing at all.
+func TestEveryRunEndingNotifiesWhatItsVerdictSays(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 9, 17, 7, 0, 0, 0, time.UTC)
+	target := []string{"exec:notify-me"}
+
+	cases := []struct {
+		name       string
+		step       string
+		arg        string
+		timeoutMS  int64
+		wantState  string
+		wantReason string
+		wantTopic  string
+	}{
+		{
+			"succeeded", "work", "exit 0", 60000, "succeeded",
+			string(reason.RUNSucceeded), model.TopicRunSucceeded,
+		},
+		{
+			"failed step", "work", "exit 3", 60000, "failed",
+			string(reason.RUNFailedStep), model.TopicRunFailed,
+		},
+		{
+			"timed out", "hangs", "sleep 5s", 250, "failed",
+			string(reason.RUNTimedOut), model.TopicRunFailed,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixtureWithClock(t, clock.NewFake(now))
+			// Both sides named, so the row that appears proves which side
+			// the verdict routed to rather than which side had a target.
+			f.Engine.Notify = notify.NewPlanner(model.NotifyDefaults{
+				OnSuccess: target,
+				OnFailure: target,
+			}, func() time.Time { return now })
+
+			runID := f.aQueuedRunWithHooks(t, tc.name,
+				[]string{tc.step}, []string{tc.arg}, nil, tc.timeoutMS, "")
+			if state := f.mustFinish(t, runID); state != tc.wantState {
+				t.Fatalf("run ended %s, want %s", state, tc.wantState)
+			}
+
+			detail, err := f.Store.GetRun(ctx, runID)
+			if err != nil {
+				t.Fatalf("read the run back: %v", err)
+			}
+			if detail.Run.ReasonCode != tc.wantReason {
+				t.Errorf("reason_code = %q, want %q", detail.Run.ReasonCode, tc.wantReason)
+			}
+			rows, err := f.Store.ListNotifications(ctx, store.NotificationFilter{})
+			if err != nil {
+				t.Fatalf("list notifications: %v", err)
+			}
+			if len(rows) != 1 {
+				t.Fatalf("%s left %d outbox rows, want 1:\n%+v", tc.wantReason, len(rows), rows)
+			}
+			if rows[0].Topic != tc.wantTopic || rows[0].Subject != "e2e" {
+				t.Errorf("row is %s/%s, want %s/e2e", rows[0].Topic, rows[0].Subject, tc.wantTopic)
+			}
+		})
 	}
 }
