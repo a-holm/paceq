@@ -138,12 +138,18 @@ type SensorCommitResult struct {
 // input and writes it. It is the single translation from a sensor.Result into
 // tick, trigger, run and cursor rows, so a daemon evaluation and a forced
 // `paceq sensors tick` can never disagree about an outcome, a reason code, a
-// skip reason, the trigger ceiling or when the sensor is due again.
+// skip reason, the trigger ceiling, a breaker count or when the sensor is due
+// again.
 //
 // The ceiling is applied here rather than by either caller (#215). It is the
 // one point both evaluations pass through, and applying it twice would erase
 // its own record: the second pass sees a batch inside the budget and reports
 // nothing was dropped.
+//
+// The breaker verdict is read here for the same reason (#220), and the store
+// folds it onto the row inside the commit transaction. Truncation moves
+// neither the outcome nor the exit code, so the verdict is the same either
+// side of the ceiling.
 func CommitSensorEvaluation(ctx context.Context, st SensorCommitter, in SensorEvaluation) (SensorCommitResult, error) {
 	res := in.Result
 	truncated := sensor.ApplyLimit(&res, in.Row.MaxTriggersPerTick)
@@ -178,6 +184,7 @@ func CommitSensorEvaluation(ctx context.Context, st SensorCommitter, in SensorEv
 		ReasonCode:    res.ReasonCode,
 		ReasonText:    res.ReasonText,
 		ReasonData:    sensorReasonData(res.ReasonData),
+		BreakerExempt: sensor.BreakerExempt(sensor.ClassifyFailure(res.ExitCode)),
 		NextEvalAt:    in.Now.Add(time.Duration(in.Row.IntervalMS) * time.Millisecond).UnixMilli(),
 		DurationMs:    res.DurationMS,
 		Now:           in.Now,
@@ -231,21 +238,27 @@ func sensorReasonData(data map[string]any) string {
 // sensor declared is visible to the subprocess and that workdir is where it
 // starts. Dropping either would evaluate a different program than the one
 // applied.
+//
+// The breaker columns travel with it, because the runtime holds no breaker
+// state of its own: what stops a tripped sensor from being evaluated is the
+// same row every health surface reports (#220).
 func SensorSpecFromRow(row store.SensorSummary) (sensor.Spec, error) {
 	exec, err := parseSensorExec(row.ExecJSON)
 	if err != nil {
 		return sensor.Spec{}, fmt.Errorf("sensor %s: %w", row.Name, err)
 	}
 	return sensor.Spec{
-		Name:        row.Name,
-		Job:         row.JobName,
-		Argv:        exec.Run,
-		Workdir:     exec.Workdir,
-		Env:         exec.Env,
-		Timeout:     time.Duration(row.TimeoutMS) * time.Millisecond,
-		MaxTriggers: row.MaxTriggersPerTick,
-		Cursor:      row.Cursor,
-		LastTickAt:  row.LastTickAt,
+		Name:                row.Name,
+		Job:                 row.JobName,
+		Argv:                exec.Run,
+		Workdir:             exec.Workdir,
+		Env:                 exec.Env,
+		Timeout:             time.Duration(row.TimeoutMS) * time.Millisecond,
+		MaxTriggers:         row.MaxTriggersPerTick,
+		Cursor:              row.Cursor,
+		LastTickAt:          row.LastTickAt,
+		ConsecutiveFailures: row.ConsecutiveFailures,
+		BreakerOpenedAt:     row.BreakerOpenedAt,
 	}, nil
 }
 

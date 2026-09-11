@@ -40,6 +40,15 @@ func ClassifyFailure(exitCode int) FailureKind {
 	}
 }
 
+// BreakerExempt reports whether a failure of this class must not burn circuit
+// breaker budget. A transient failure is a glitch and a config failure pauses
+// the sensor through its own path; neither is evidence that the sensor is
+// down, so neither counts toward the trip. This is the only place that reading
+// is made, and the commit transaction carries the answer onto the row.
+func BreakerExempt(kind FailureKind) bool {
+	return kind == FailureTransient || kind == FailureConfig
+}
+
 // BackoffCap is the ceiling on the permanent-failure backoff. The formula is
 // interval times 2^min(n,6) capped at one hour (plan 05 section 6.2); a sensor
 // that keeps failing past the sixth consecutive failure waits no longer than

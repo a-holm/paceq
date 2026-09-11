@@ -33,6 +33,7 @@ type SensorSummary struct {
 	CursorVersion       int64
 	DedupEpoch          int64
 	ConsecutiveFailures int
+	BreakerOpenedAt     time.Time
 	NextEvalAt          int64
 	LastTickAt          *int64
 	LastOutcome         string
@@ -44,7 +45,7 @@ type SensorSummary struct {
 const sensorSummarySelect = `SELECT s.name, s.job_name, s.kind, s.exec_json, s.interval_ms,
        s.min_interval_ms, s.timeout_ms, s.max_triggers_per_tick,
        s.paused, COALESCE(s.paused_reason, ''), s.cursor, s.cursor_version,
-       s.dedup_epoch, s.consecutive_failures, s.next_eval_at,
+       s.dedup_epoch, s.consecutive_failures, s.breaker_opened_at, s.next_eval_at,
               t.last_started_at, COALESCE(t.outcome, '')
        FROM sensors s
 LEFT JOIN (
@@ -55,21 +56,23 @@ LEFT JOIN (
 ) t ON t.source_name = s.name`
 
 // scanSensorSummary scans one row back into a SensorSummary. paused comes back
-// as an integer, cursor and last_tick_at as nullable columns.
+// as an integer, cursor, breaker_opened_at and last_tick_at as nullable
+// columns.
 func scanSensorSummary(row interface{ Scan(...any) error }, out *SensorSummary) error {
 	var pausedRaw int
 	var cursor sql.NullString
-	var lastTick sql.NullInt64
+	var breakerOpened, lastTick sql.NullInt64
 	if err := row.Scan(
 		&out.Name, &out.JobName, &out.Kind, &out.ExecJSON, &out.IntervalMS,
 		&out.MinIntervalMS, &out.TimeoutMS, &out.MaxTriggersPerTick,
 		&pausedRaw, &out.PausedReason, &cursor, &out.CursorVersion,
-		&out.DedupEpoch, &out.ConsecutiveFailures, &out.NextEvalAt,
+		&out.DedupEpoch, &out.ConsecutiveFailures, &breakerOpened, &out.NextEvalAt,
 		&lastTick, &out.LastOutcome,
 	); err != nil {
 		return err
 	}
 	out.Paused = pausedRaw != 0
+	out.BreakerOpenedAt = nullableMillis(breakerOpened)
 	if cursor.Valid {
 		out.Cursor = &cursor.String
 	}

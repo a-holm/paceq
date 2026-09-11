@@ -34,7 +34,7 @@ import (
 const dueSensorsSQL = `SELECT s.name, s.job_name, s.kind, s.exec_json, s.interval_ms,
        s.min_interval_ms, s.timeout_ms, s.max_triggers_per_tick,
        s.paused, COALESCE(s.paused_reason, ''), s.cursor, s.cursor_version,
-       s.dedup_epoch, s.consecutive_failures, s.next_eval_at,
+       s.dedup_epoch, s.consecutive_failures, s.breaker_opened_at, s.next_eval_at,
        (SELECT t.last_started_at FROM ticks t
          WHERE t.source_kind = 'sensor' AND t.source_name = s.name
          ORDER BY t.started_at DESC LIMIT 1),
