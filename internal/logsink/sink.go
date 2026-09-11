@@ -44,6 +44,8 @@ type Line struct {
 	Split  bool   `json:"split,omitempty"`
 	// DroppedBytes is set on the truncated marker only: how many raw job
 	// bytes the quota threw away between the head and the surviving tail.
+	// The marker exists only when that count is positive, so a marker read
+	// back without this field came from something other than this package.
 	DroppedBytes int64 `json:"dropped_bytes,omitempty"`
 }
 
@@ -66,9 +68,11 @@ type Options struct {
 // The quota works in two phases. While the file is under a quarter of the
 // quota, lines go straight to disk: the head, which holds how the job
 // started. After that, lines go into an in memory ring of at most three
-// quarters of the quota: the tail, which holds how the job ended. Finish
-// writes the truncated marker and then the tail, so the file always reads
-// head, marker, tail.
+// quarters of the quota: the tail, which holds how the job ended. Reaching
+// the tail costs nothing on its own; only a line the ring cannot keep is
+// lost. Finish writes the marker when something was lost and then whatever
+// the ring holds, so a cut log reads head, marker, tail and a whole one
+// reads as one unbroken run of lines.
 type Sink struct {
 	mu        sync.Mutex
 	f         *os.File
@@ -79,7 +83,6 @@ type Sink struct {
 	phase     phase
 	ring      *ring
 	dropped   int64
-	truncated bool
 
 	stderrTail   *textTail
 	combinedTail *textTail
@@ -307,22 +310,32 @@ func (s *Sink) write(rec lineRecord) error {
 		}
 		return nil
 	}
-	// Reaching this branch is what truncation means: a line did not fit in
-	// the head and now lives in the tail, or was thrown away outright. A log
-	// that stopped exactly at the limit never gets here, so it is never
-	// marked truncated and never carries an empty marker.
-	s.truncated = true
-	dropped := s.ring.push(rec.encoded, len(rec.raw))
-	s.dropped += dropped
+	// Reaching this branch means the head is full, not that anything is
+	// gone: the ring keeps what it is handed and Finish writes it out. A log
+	// that fills the head exactly enters the tail phase with an empty ring,
+	// and a log that overruns the head by a little is written whole. What is
+	// lost is what the ring does not keep: the lines it evicts to make room,
+	// and a line too big for it to hold at all. lostOutput decides on that.
+	s.dropped += s.ring.push(rec.encoded, len(rec.raw))
 	return nil
 }
+
+// lostOutput is the one derivation of "the quota lost some of this attempt's
+// output": bytes the ring threw away, and nothing else. Finish returns it for
+// steps.log_truncated and gates the in-file marker on it, so the column and
+// the file cannot say different things about the same attempt.
+//
+// It takes the count rather than reading the sink, because the count is the
+// whole input and a caller that has to pass it cannot accidentally answer from
+// something else.
+func lostOutput(droppedBytes int64) bool { return droppedBytes > 0 }
 
 // Finish ends the log: it writes the marker and the surviving tail, flushes
 // everything to disk and closes the file. All of that happens before the
 // caller opens its database transaction, so what is left inside the
 // transaction is pure SQL. The returned tail prefers stderr and falls back to
-// the combined streams; bytes is the file's final size; truncated reports
-// whether the quota cut anything.
+// the combined streams; bytes is the file's final size; truncated is
+// lostOutput, the same answer the marker in the file is written on.
 func (s *Sink) Finish() (tail string, bytes int64, truncated bool, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -334,10 +347,16 @@ func (s *Sink) Finish() (tail string, bytes int64, truncated bool, err error) {
 			return "", 0, false, err
 		}
 	}
-	if s.phase == phaseTail {
+	// Both questions are asked after the remainders, because flushPartial
+	// can be the write that evicts. They are separate questions: the marker
+	// explains a hole, and a hole can exist with an empty ring when one line
+	// was too big for it to keep.
+	if lostOutput(s.dropped) {
 		if err := s.writeMarkerLocked(); err != nil {
 			return "", 0, false, err
 		}
+	}
+	if s.ring.holds() {
 		if err := s.ring.flush(func(encoded []byte) error {
 			_, err := s.f.Write(encoded)
 			return err
@@ -363,12 +382,13 @@ func (s *Sink) Finish() (tail string, bytes int64, truncated bool, err error) {
 	} else {
 		tail = s.stderrTail.text()
 	}
-	return tail, info.Size(), s.truncated, nil
+	return tail, info.Size(), lostOutput(s.dropped), nil
 }
 
 // writeMarkerLocked writes the truncated marker line: what the reader needs to
 // explain the seq gap it is about to see. It runs after the head and before
-// the tail.
+// the tail, and only when bytes were dropped, so its dropped_bytes is never
+// zero and never absent.
 func (s *Sink) writeMarkerLocked() error {
 	s.seq++
 	marker, err := json.Marshal(Line{
