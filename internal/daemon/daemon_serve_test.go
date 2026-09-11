@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -40,14 +41,29 @@ func openServeStore(t *testing.T, clk clock.Clock) *store.Store {
 
 // seedClaimedRunningRun materialises a manual run, claims it and starts its
 // only step, which is exactly the state an executor's context interrupt leaves.
+// The step keeps no retry budget, so a reaper that finds it running ends it.
 func seedClaimedRunningRun(t *testing.T, st *store.Store) string {
+	t.Helper()
+	return seedClaimedRunningRunRetrying(t, st, 0)
+}
+
+// seedClaimedRunningRunRetrying seeds the same row with retryMax retries on
+// the step. The budget decides what the reaper does with the run: a lost step
+// that can be tried again parks back at pending and the run returns to the
+// queue, while one with nothing left closes the graph and the run takes the
+// verdict its steps aggregate to.
+func seedClaimedRunningRunRetrying(t *testing.T, st *store.Store, retryMax int) string {
 	t.Helper()
 	ctx := context.Background()
 
+	retry := ""
+	if retryMax > 0 {
+		retry = fmt.Sprintf(`,"retry":{"max":%d}`, retryMax)
+	}
 	spec := `{"schema":"paceq.job.v1","name":"drainme","max_concurrent":1,` +
-		`"steps":[{"name":"only","run":["sleep","60"],"shell":false}]}`
+		`"steps":[{"name":"only","run":["sleep","60"],"shell":false` + retry + `}]}`
 	if _, _, err := st.UpsertJobVersion(ctx, store.JobVersionInput{
-		JobName: "drainme", SpecHash: "sha256:drainme", SpecJSON: spec,
+		JobName: "drainme", SpecHash: fmt.Sprintf("sha256:drainme-%d", retryMax), SpecJSON: spec,
 	}); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
