@@ -392,17 +392,7 @@ func (e *Engine) runStep(ctx context.Context, d *drive, name string, h *heldRun)
 	// effect that never happened.
 	faults.Point("M1:step:before_exec")
 
-	timeout := d.stepsByName[name].Timeout
-	if timeout <= 0 {
-		timeout = runner.DefaultTimeout
-	}
-	runDeadlineHit := false
-	if !d.deadline.IsZero() {
-		if remaining := d.deadline.Sub(e.Clock.Now()); remaining < timeout {
-			timeout = remaining
-			runDeadlineHit = true
-		}
-	}
+	timeout, runDeadlineHit := stepCeiling(d.stepsByName[name].Timeout, d.deadline, e.Clock.Now())
 
 	// The poll: while the process runs, its cancellation request is
 	// re-read on the clock, and the renewal goroutine's signals are

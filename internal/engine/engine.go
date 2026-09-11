@@ -50,10 +50,6 @@ type Engine struct {
 	// while a step runs. Zero means DefaultPollInterval.
 	PollInterval time.Duration
 
-	// StepTimeoutDefault applies when neither the job nor the step names
-	// a timeout. Zero means runner.DefaultTimeout.
-	StepTimeoutDefault time.Duration
-
 	// KillGrace is the SIGTERM to SIGKILL gap every step's process group
 	// gets, on both spawn paths. Zero means runner.DefaultKillGrace.
 	KillGrace time.Duration

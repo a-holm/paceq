@@ -41,11 +41,16 @@ var allowedImports = map[string][]string{
 	// spec asks cronx one question (#214): whether a schedule's time zone is
 	// one the scheduler can load. cronx is a leaf over the standard library,
 	// and one authority on zone names beats two lists that drift apart.
-	"spec":    {"diag", "cronx"},
-	"retry":   {},
-	"procfs":  {},
-	"spool":   {},
-	"runner":  {"clock", "faults", "procfs", "spool"},
+	"spec":   {"diag", "cronx"},
+	"retry":  {},
+	"procfs": {},
+	"spool":  {},
+	// runner takes one thing from spec and only one: the timeout ceiling the
+	// file validator enforces (#201). A runner that refuses a spec the
+	// validator accepts turns a job that passed apply into one that can never
+	// start, so the ceiling has to be one constant rather than two that agree
+	// today.
+	"runner":  {"clock", "faults", "procfs", "spool", "spec"},
 	"sensor":  {"runner", "clock", "reason", "model"},
 	"logsink": {"clock"},
 	// notify stays a value-only leaf EXCEPT for two deliberate exceptions

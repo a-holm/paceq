@@ -410,6 +410,18 @@ func TestExecuteRunAStepTimeoutKillsAndRecordsItself(t *testing.T) {
 		t.Errorf("a step timeout fails the run as %q, want %q",
 			detail.ReasonCode, reason.RUNFailedStep)
 	}
+	// The step asked for 150ms inside a job that allowed a minute, so the
+	// ceiling it hit is its own. Naming the run's budget here would send the
+	// operator to the wrong line of the file.
+	var scope map[string]any
+	if step.ReasonData != "" {
+		if err := json.Unmarshal([]byte(step.ReasonData), &scope); err != nil {
+			t.Fatalf("step reason_data is not an object: %q", step.ReasonData)
+		}
+	}
+	if _, named := scope["scope"]; named {
+		t.Errorf("the kill is attributed to %v, want the step's own ceiling", scope["scope"])
+	}
 	violations, err := f.Store.Fsck(ctx)
 	if err != nil {
 		t.Fatalf("fsck: %v", err)
