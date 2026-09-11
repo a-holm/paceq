@@ -150,3 +150,39 @@ func TestPathsOutputFileCreatedUnderWorkdirRoot(t *testing.T) {
 		}
 	})
 }
+
+// TestPathsOutputEscapingTheWorkdirIsRefused covers the climbing relative
+// path. TestPathsOutputFileCreatedUnderWorkdirRoot proves the happy road and a
+// missing parent, and a plain filepath.Join gets both of those right too; only
+// a path that leaves the root separates the rooted open from the join.
+func TestPathsOutputEscapingTheWorkdirIsRefused(t *testing.T) {
+	work := t.TempDir()
+
+	closer, err := createOutput(work, "../outside.ndjson")
+	if err == nil {
+		closer()
+		t.Fatal("an output path escaping the workdir root was accepted")
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(work), "outside.ndjson")); err == nil {
+		t.Error("the escaped output file was created anyway")
+	}
+}
+
+// TestPathsSymlinkedEnvFileLeavingTheRootIsRefused is the kernel resolved half
+// of the env_file rule. The lexical case in TestPathsEnvFileChecks is refused
+// by any string check; a symlink whose own name never climbs is refused only
+// because the file is opened through os.Root.
+func TestPathsSymlinkedEnvFileLeavingTheRootIsRefused(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	secret := filepath.Join(t.TempDir(), "secrets.env")
+	if err := os.WriteFile(secret, []byte("SECRET=leak\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, filepath.Join(root, "innocent.env")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadEnvFile("", "innocent.env"); err == nil {
+		t.Fatal("a symlinked env_file leaving the root was accepted")
+	}
+}
