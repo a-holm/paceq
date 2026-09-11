@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 // UpsertSensor is the seed/definition seam the CLI test harness and early
@@ -57,6 +58,15 @@ func TestSetSensorDueMovesNextEvalAt(t *testing.T) {
 	seedSensor(t, s, "finder", "a", 0)
 	ctx := context.Background()
 
+	// seedSensor leaves next_eval_at at 0, which already reads as due. Park
+	// the sensor an hour out first, or "due now" holds below whether or not
+	// SetSensorDue wrote anything at all.
+	future := s.clk.Now().UTC().Add(time.Hour).UnixMilli()
+	if _, err := s.w.ExecContext(ctx,
+		"UPDATE sensors SET next_eval_at = ? WHERE name = ?", future, "finder"); err != nil {
+		t.Fatalf("park the sensor in the future: %v", err)
+	}
+
 	// With the writer clock fixed at a known instant, next_eval_at is
 	// deterministic.
 	if err := s.SetSensorDue(ctx, "finder"); err != nil {
@@ -68,6 +78,9 @@ func TestSetSensorDueMovesNextEvalAt(t *testing.T) {
 		t.Fatalf("read next_eval_at: %v", err)
 	}
 
+	if next == future {
+		t.Fatalf("next_eval_at is still %d: SetSensorDue moved nothing", next)
+	}
 	// The writer's clock defaults to the system clock; the only assertion that
 	// is stable is that the row was made due now (next_eval_at <= now), which
 	// SetSensorDue always guarantees by writing the same instant.

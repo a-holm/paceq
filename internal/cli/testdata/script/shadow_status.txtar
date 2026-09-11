@@ -12,7 +12,8 @@ plantschedule sync-files five '*/5 * * * *'
 wantexit 0 fresh.txt fresh_err.txt shadow status -o text
 grep 'SHADOW MODE' fresh.txt
 grep 'Recorded shadow history: none' fresh.txt
-! stdout 'SHADOW-LIES'
+# No history means no evaluation line at all, not a line reading zero.
+! grep 'Evaluations marked shadow_triggered' fresh.txt
 
 # Three recorded evaluations and one row-level shadowed schedule.
 plantshadow sync-files five TRIGGERED 3

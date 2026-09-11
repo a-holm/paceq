@@ -48,6 +48,30 @@ func explainTestTickID(t *testing.T, s *Store, sourceName string, fire time.Time
 	return tickID
 }
 
+// planFullScans returns the objects an EXPLAIN QUERY PLAN reads by full table
+// scan. SQLite names the alias the statement declared and never the table
+// behind it, and it dropped the word TABLE from the SCAN line long ago, so
+// matching on the table name is a check that can never fire. Constant rows and
+// index walks are not table reads and are left out.
+func planFullScans(plan string) []string {
+	var scanned []string
+	for _, line := range strings.Split(plan, "\n") {
+		rest, ok := strings.CutPrefix(strings.TrimSpace(line), "SCAN ")
+		if !ok || strings.Contains(rest, "INDEX") {
+			continue
+		}
+		fields := strings.Fields(rest)
+		if len(fields) == 0 || fields[0] == "CONSTANT" {
+			continue
+		}
+		if len(fields) > 1 && fields[1] == "CONSTANT" {
+			continue
+		}
+		scanned = append(scanned, fields[0])
+	}
+	return scanned
+}
+
 // TestExplainQueryPlansSearchNotScan holds the plan contract on exactly the
 // SQL production executes: every core read searches an index and none of
 // ticks, runs or run_events is ever scanned in full.
@@ -72,8 +96,8 @@ func TestExplainQueryPlansSearchNotScan(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			plan := queryPlan(t, s, tc.query, tc.args...)
-			if strings.Contains(plan, "SCAN TABLE "+tc.table) {
-				t.Errorf("the plan scans %s in full, want a search:\n%s", tc.table, plan)
+			if scanned := planFullScans(plan); len(scanned) > 0 {
+				t.Errorf("the plan reads %v by full table scan, want a search on %s:\n%s", scanned, tc.table, plan)
 			}
 			if !strings.Contains(plan, "SEARCH") {
 				t.Errorf("the plan has no SEARCH line, want an index-driven read:\n%s", plan)

@@ -83,8 +83,10 @@ func TestEmitHeaderAndSeparators(t *testing.T) {
 	if !strings.HasPrefix(out, "# line one\n# line two\n") {
 		t.Fatalf("header missing:\n%s", out)
 	}
-	if got := strings.Count(out, "\n---\n"); got != 1 && !strings.Contains(out, "---") {
-		t.Fatalf("separators wrong:\n%s", out)
+	// One separator per document: the count is read off the input rather
+	// than pinned to a literal, so a third job cannot silently pass.
+	if got := strings.Count(out, "\n---\n"); got != len(res.Docs) {
+		t.Fatalf("%d separators for %d documents:\n%s", got, len(res.Docs), out)
 	}
 }
 

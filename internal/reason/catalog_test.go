@@ -67,17 +67,19 @@ func TestCodesBelongToTheirLevel(t *testing.T) {
 	}
 }
 
-// TestEveryLevelIsPopulated is the M1 commitment: the tick, trigger, run and
-// step levels all exist now, including the codes M2, M3 and M4 fill in later,
+// TestEveryRenderedLevelIsPopulated is the M1 commitment: every level the
+// catalogue renders exists now, including the codes later milestones fill in,
 // because codes added after the fact become after-rationalisations. The lease
-// level joined them with the role leases (#42) and is held to the same rule,
-// so the count of levels here is the count in the const block (#193).
-func TestEveryLevelIsPopulated(t *testing.T) {
+// level joined the other four with the role leases (#42) and is held to the
+// same rule. The list comes from levelOrder rather than a literal here, so a
+// level added to the renderer without codes is a failure and not a silent
+// empty heading (#193, #273).
+func TestEveryRenderedLevelIsPopulated(t *testing.T) {
 	counts := map[Level]int{}
 	for _, e := range All() {
 		counts[e.Level]++
 	}
-	for _, l := range []Level{LevelTick, LevelTrigger, LevelRun, LevelStep, LevelLease} {
+	for _, l := range levelOrder {
 		if counts[l] == 0 {
 			t.Errorf("level %s has no codes at all", l)
 		}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -222,6 +223,34 @@ func TestFsckRunsEveryStatementUnderADeadline(t *testing.T) {
 	}
 }
 
+// runsRefRe finds every mention of the runs table in a statement, capturing
+// the alias where one is declared.
+var runsRefRe = regexp.MustCompile(`(?i)(?:\bFROM|\bJOIN|,)\s+runs\b(?:\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*))?`)
+
+// runsPlanKeywords are the words that follow the table name without being an
+// alias.
+var runsPlanKeywords = map[string]bool{
+	"ON": true, "WHERE": true, "LEFT": true, "INNER": true, "CROSS": true,
+	"JOIN": true, "ORDER": true, "GROUP": true, "LIMIT": true, "SET": true,
+	"USING": true, "UNION": true, "HAVING": true,
+}
+
+// runsPlanNames is every name a plan line can use for the runs table in this
+// statement: the alias where the statement declares one, and the bare table
+// name otherwise. SQLite reports the alias, so matching the table name alone
+// would miss every aliased read.
+func runsPlanNames(sql string) map[string]bool {
+	names := map[string]bool{}
+	for _, m := range runsRefRe.FindAllStringSubmatch(sql, -1) {
+		if m[1] == "" || runsPlanKeywords[strings.ToUpper(m[1])] {
+			names["runs"] = true
+			continue
+		}
+		names[m[1]] = true
+	}
+	return names
+}
+
 // TestEveryInvariantQueryPlansWithoutScanningRuns is the EXPLAIN QUERY PLAN
 // gate: every statement the sweep runs is explained exactly as production runs
 // it, and none of them may scan the runs table. A scan there is the difference
@@ -278,8 +307,11 @@ func TestEveryInvariantQueryPlansWithoutScanningRuns(t *testing.T) {
 		_ = rows.Close()
 
 		joined := strings.Join(plan, "\n")
-		if strings.Contains(joined, "SCAN TABLE runs") {
-			t.Errorf("invariant %s scans the runs table:\n%s", tc.check, joined)
+		names := runsPlanNames(tc.sql)
+		for _, scanned := range planFullScans(joined) {
+			if names[scanned] {
+				t.Errorf("invariant %s scans the runs table as %q:\n%s", tc.check, scanned, joined)
+			}
 		}
 		for _, want := range tc.uses {
 			if !strings.Contains(joined, want) {
