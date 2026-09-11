@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/a-holm/paceq/internal/clock"
+	"github.com/a-holm/paceq/internal/spec"
 )
 
 var (
@@ -851,6 +852,69 @@ func TestRunRefusesContractViolationsBeforeStartingAnything(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestSpecValidateCapsAtTheValidatorsCeiling holds the runner's refusal to the
+// boundary the file validator enforces. A cap of its own is not a second line
+// of defence, it is a second policy: everything between the two ceilings is a
+// job file that passes validate and apply and can then never run.
+func TestSpecValidateCapsAtTheValidatorsCeiling(t *testing.T) {
+	cases := []struct {
+		name    string
+		timeout time.Duration
+		ok      bool
+	}{
+		{"a multi hour step inside a longer job", 2 * time.Hour, true},
+		{"the ceiling itself", spec.MaxJobTimeout, true},
+		{"a nanosecond over it", spec.MaxJobTimeout + 1, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := baseSpec(t, "/bin/true")
+			s.Timeout = tc.timeout
+			err := s.validate()
+			if tc.ok && err != nil {
+				t.Fatalf("validate(%s) = %v, want it accepted: the validator accepts it", tc.timeout, err)
+			}
+			if !tc.ok && !errors.Is(err, ErrInvalidSpec) {
+				t.Fatalf("validate(%s) = %v, want ErrInvalidSpec: the validator refuses it", tc.timeout, err)
+			}
+		})
+	}
+}
+
+// TestBothSpawnPathsAcceptAMultiHourTimeout is the same boundary at the two
+// doors that actually start a process. Both call validate independently, so
+// both have to be shown.
+func TestBothSpawnPathsAcceptAMultiHourTimeout(t *testing.T) {
+	t.Run("direct", func(t *testing.T) {
+		s := baseSpec(t, "/bin/true")
+		s.Timeout = 2 * time.Hour
+		res, err := runBounded(t, time.Minute, context.Background(), s)
+		if err != nil {
+			t.Fatalf("Run refused a spec the validator accepts: %v", err)
+		}
+		if res.Outcome != Succeeded {
+			t.Fatalf("outcome = %v, want Succeeded", res.Outcome)
+		}
+	})
+	t.Run("shim", func(t *testing.T) {
+		spoolDir := filepath.Join(t.TempDir(), "spool", "attempts")
+		s := baseSpec(t, "/bin/sh", "-c", "exit 5")
+		s.Shell = false
+		s.Timeout = 2 * time.Hour
+		res, err := SpawnViaShim(t.Context(), s, ShimTarget{
+			Executable: shimFixture(t),
+			SpoolDir:   spoolDir,
+			ClaimEpoch: 42,
+		})
+		if err != nil {
+			t.Fatalf("SpawnViaShim refused a spec the validator accepts: %v", err)
+		}
+		if res.Outcome != Failed || res.ExitCode != 5 {
+			t.Fatalf("outcome = %v exit = %d, want Failed/5", res.Outcome, res.ExitCode)
+		}
+	})
 }
 
 func TestRunDefaultClockAndGraceApplyWhenUnset(t *testing.T) {
