@@ -10,7 +10,10 @@ import (
 	"github.com/a-holm/paceq/internal/clock"
 )
 
-// groupKiller is what an escalation uses to deliver signals.
+// groupKiller is what an escalation uses to deliver signals. Every caller
+// passes the negated group id, and that is not a stylistic choice: signalling
+// the bare pid would leave grandchildren running as orphans holding files and
+// ports, which is exactly the leak Setpgid exists to prevent.
 type groupKiller = func(pgid int, sig syscall.Signal) error
 
 // killProcessGroup is the real delivery. The tests replace it through
@@ -18,21 +21,6 @@ type groupKiller = func(pgid int, sig syscall.Signal) error
 // newEscalation.
 var killProcessGroup groupKiller = func(pgid int, sig syscall.Signal) error {
 	return syscall.Kill(pgid, sig)
-}
-
-// terminateGroup signals a whole process group. The negative pid is not a
-// stylistic choice: signalling the bare pid would leave grandchildren running
-// as orphans holding files and ports, which is exactly the leak Setpgid
-// exists to prevent.
-func terminateGroup(pid int, sig syscall.Signal) error {
-	return killProcessGroup(-pid, sig)
-}
-
-// captureGroupKill replaces the killer seam for one test and restores it.
-func captureGroupKill(fake func(pgid int, sig syscall.Signal) error) (restore func()) {
-	old := killProcessGroup
-	killProcessGroup = fake
-	return func() { killProcessGroup = old }
 }
 
 // escalation owns the SIGTERM then SIGKILL sequence against one process

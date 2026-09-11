@@ -65,7 +65,6 @@ Codes about one run: why it was refused, why it waits, and how it ended.
 | Code | Meaning | Ends the object | reason_data keys |
 |---|---|---|---|
 | `RUN_CANCELLED_MANUAL` | cancelled by request | yes | - |
-| `RUN_CANCELLED_SHUTDOWN` | cancelled because the daemon stopped | yes | - |
 | `RUN_DEFERRED_CONCURRENCY_KEY` | waiting for the concurrency key to free | no | `blocking_run_id`, `concurrency_key` |
 | `RUN_FAILED_STEP` | a step failed | yes | `attempt`, `step` |
 | `RUN_INTERRUPTED_SHUTDOWN` | interrupted by a clean daemon stop, nothing was lost | no | - |
@@ -439,17 +438,6 @@ closed the run. Steps that were mid flight report cancelled too.
 What to do next:
 - cancel_reason on the run records what the caller supplied
 - if the work still matters, start a fresh run once the reason for the cancel is handled
-
-### RUN_CANCELLED_SHUTDOWN
-
-cancelled because the daemon stopped. [run level, ends the object]
-
-The daemon was shut down while this run was in flight, so it cancelled the
-run rather than orphan it. The process group was killed and the run closed
-cleanly, so nothing keeps running unowned.
-
-What to do next:
-- runs closed this way are safe to start again once the daemon is back
 
 ### RUN_DEFERRED_CONCURRENCY_KEY
 
