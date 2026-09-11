@@ -338,6 +338,86 @@ func TestRecentSkippedTicksStayUntilTheirHorizon(t *testing.T) {
 	}
 }
 
+// seedCoalescedSkip plants a skipped tick whose two age columns disagree, the
+// shape coalesceSkipSQL leaves behind: started_at is the first evaluation of
+// the run of identical skips, last_started_at the newest one. seedRetentionTick
+// cannot express it, because it writes the same instant into both.
+func seedCoalescedSkip(t *testing.T, s *Store, id string, started, lastStarted time.Time, repeat int) {
+	t.Helper()
+	if _, err := s.w.ExecContext(context.Background(), `
+INSERT INTO ticks (id, source_kind, source_name, scheduled_for, started_at, last_started_at,
+                   finished_at, repeat_count, outcome, reason_code)
+VALUES (?, 'schedule', ?, ?, ?, ?, ?, ?, 'skipped', 'SKIPPED_PAUSED')`,
+		id, id, started.UnixMilli(), started.UnixMilli(), lastStarted.UnixMilli(),
+		lastStarted.UnixMilli(), repeat); err != nil {
+		t.Fatalf("seed coalesced skip %s: %v", id, err)
+	}
+}
+
+// TestSkippedPruneAgesACoalescedRowByItsLastEvaluation is the reason skip
+// retention compares last_started_at. A row that is still absorbing
+// evaluations has an old started_at by construction: a schedule paused for a
+// month holds one row whose first evaluation is a month old and whose newest
+// one is a minute old. Ageing it by started_at deletes exactly the history the
+// operator asks for, and the next evaluation opens a fresh row that claims the
+// pause started a moment ago.
+func TestSkippedPruneAgesACoalescedRowByItsLastEvaluation(t *testing.T) {
+	s := migratedStore(t)
+	now := time.Now().UTC()
+	pol := DefaultPolicies()
+	cutoff := skippedTicksCutoff(now, pol)
+
+	// Both columns past the horizon: a run of skips that really did stop.
+	seedCoalescedSkip(t, s, "settled", now.AddDate(0, 0, -30), now.AddDate(0, 0, -20), 900)
+	// Still coalescing: first evaluation a month ago, newest one a minute ago.
+	seedCoalescedSkip(t, s, "coalescing", now.AddDate(0, 0, -30), now.Add(-time.Minute), 43200)
+	// Wholly inside the horizon.
+	seedCoalescedSkip(t, s, "recent", now.AddDate(0, 0, -1), now.Add(-time.Minute), 1440)
+
+	plan, err := s.EstimateRetention(context.Background(), pol, now)
+	if err != nil {
+		t.Fatalf("estimate: %v", err)
+	}
+	if plan.SkippedTicks != 1 {
+		t.Errorf("dry-run estimates %d deletable skips, want 1: only the settled run is past its horizon",
+			plan.SkippedTicks)
+	}
+
+	deleted := int64(0)
+	for {
+		n, err := s.PruneSkippedTicksBatch(context.Background(), cutoff)
+		if err != nil {
+			t.Fatalf("prune skipped ticks: %v", err)
+		}
+		deleted += n
+		if n == 0 {
+			break
+		}
+	}
+	if deleted != 1 {
+		t.Errorf("deleted %d skips, want 1", deleted)
+	}
+
+	for _, want := range []struct {
+		id     string
+		alive  bool
+		reason string
+	}{
+		{"settled", false, "its newest evaluation is 20 days old, so its coalescing window has passed"},
+		{"coalescing", true, "it absorbed an evaluation a minute ago and is still the record of the pause"},
+		{"recent", true, "it is inside the horizon on both columns"},
+	} {
+		var n int64
+		if err := s.w.QueryRowContext(context.Background(),
+			"SELECT count(*) FROM ticks WHERE id = ?", want.id).Scan(&n); err != nil {
+			t.Fatalf("count tick %s: %v", want.id, err)
+		}
+		if alive := n == 1; alive != want.alive {
+			t.Errorf("tick %s alive=%v, want alive=%v: %s", want.id, alive, want.alive, want.reason)
+		}
+	}
+}
+
 // TestRunKeysPruneByAge checks the longest horizon and the tuple delete.
 func TestRunKeysPruneByAge(t *testing.T) {
 	s := migratedStore(t)

@@ -109,6 +109,15 @@ DELETE FROM runs
 // database once their coalescing window has passed (07 section 6.2), so they
 // carry no keep-minimum: seven days of "nothing was due" is evidence enough.
 // Deleting a tick cascades to its triggers.
+//
+// Age here is last_started_at, not started_at. A skipped row is a run of
+// identical evaluations, not one: coalesceSkipSQL bumps repeat_count and moves
+// last_started_at, leaving started_at at the first evaluation of the run.
+// started_at is therefore the age of the oldest evaluation a row absorbed, and
+// a row that is still absorbing has an old one by construction; last_started_at
+// is when the coalescing window closed. It is NOT NULL on every tick, so no
+// COALESCE is needed. The ORDER BY id batching stays: it bounds the batch, and
+// ULID ids order by creation.
 func (s *Store) PruneSkippedTicksBatch(ctx context.Context, cutoff time.Time) (int64, error) {
 	const q = `
 DELETE FROM ticks
@@ -116,7 +125,7 @@ DELETE FROM ticks
    SELECT id
      FROM ticks
     WHERE outcome = 'skipped'
-      AND started_at < ?
+      AND last_started_at < ?
     ORDER BY id
     LIMIT ?
  )`
@@ -127,6 +136,11 @@ DELETE FROM ticks
 // cutoff, except each source's newest keepMin ticks. A source is the
 // (source_kind, source_name) pair, so a quarterly schedule keeps its newest
 // 200 evaluations even when every one of them is older than the horizon.
+//
+// started_at is the right age column here, unlike in PruneSkippedTicksBatch:
+// coalesceSkipSQL is the only writer that moves last_started_at on its own and
+// it only ever folds into a childless skip, so on every row this predicate can
+// reach the two columns hold the same instant.
 func (s *Store) PruneTicksBatch(ctx context.Context, cutoff time.Time, keepMin int) (int64, error) {
 	const q = `
 DELETE FROM ticks
@@ -255,7 +269,7 @@ SELECT count(*) FROM runs r
 			{
 				&plan.SkippedTicks, `
 SELECT count(*) FROM ticks
- WHERE outcome = 'skipped' AND started_at < ?`,
+ WHERE outcome = 'skipped' AND last_started_at < ?`,
 				[]any{skippedTicksCutoff(now, p).UnixMilli()},
 			},
 			{
