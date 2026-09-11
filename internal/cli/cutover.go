@@ -46,7 +46,7 @@ func newCutoverCmd(env Env, g *globals) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "cutover",
 		Short: "Comment imported jobs out of the crontab, with a way back",
-		Long: `The migration's last step (M6-03): after import and shadow mode,
+		Long: `The migration's last step: after import and shadow mode,
 comment the crontab lines that paceq now owns out of the crontab - and be
 able to undo it in one minute.
 

@@ -32,7 +32,7 @@ func newShadowCmd(env Env, g *globals) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "shadow",
 		Short: "Shadow mode reporting: what would have run, compared to cron",
-		Long: `The migration's trust mechanism (M6-02).
+		Long: `The migration's trust mechanism.
 
 Shadow mode runs while ` + "`paceq serve --shadow`" + ` is up: every schedule is
 planned, evaluated and recorded exactly as normally - fire-times, skip

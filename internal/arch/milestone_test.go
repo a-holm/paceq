@@ -37,15 +37,19 @@ var milestonePattern = regexp.MustCompile(`\bM[0-9]+(-[0-9]+)?\b`)
 // explain to an operator what paceq requires or what it did. internal/spec is
 // the validator, so every message and hint it carries is read by someone whose
 // file was just refused. internal/reason is the reason catalogue, rendered by
-// paceq explain and into docs/reference/reason-codes.md. errorcmd.go is the
-// paceq error catalogue, which is where a diagnostic sends the reader for the
-// long form.
+// paceq explain and into docs/reference/reason-codes.md. internal/cli is the
+// command surface: the error catalogue a diagnostic sends the reader to for
+// the long form, and every cobra help string, which is what an operator gets
+// from --help. Those help strings also render into docs/reference/cli.md
+// behind a staleness gate, so an edit here carries a make docs regeneration in
+// the same commit.
 //
-// The boundary stops here on purpose, and the rest of internal/cli is outside
-// it. Cobra help strings are operator-visible too and the same rule should
-// reach them. They render into docs/reference/cli.md through a staleness gate,
-// so widening the prefix to "internal/cli" is a one-word change that has to
-// carry a make docs regeneration and the help edits with it.
+// The rule reads string literals and nothing else, so the // comments in these
+// packages that name the milestone a constraint arrived in are untouched. That
+// is provenance between developers, and it stays.
+//
+// The boundary stops at these three. internal/daemon and internal/engine carry
+// no operator-facing prose that earns the extra surface today.
 //
 // Packages outside this list carry milestone identifiers that this rule has no
 // quarrel with: the fault-injection point names ("M4:claim:after_update") are
@@ -54,7 +58,7 @@ var milestonePattern = regexp.MustCompile(`\bM[0-9]+(-[0-9]+)?\b`)
 var operatorText = []string{
 	"internal/spec",
 	"internal/reason",
-	"internal/cli/errorcmd.go",
+	"internal/cli",
 }
 
 // exemptField is the one field inside those packages that the rule does not
