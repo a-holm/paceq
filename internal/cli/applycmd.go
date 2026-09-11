@@ -122,6 +122,7 @@ func runApply(ctx context.Context, env Env, g *globals, out *ui, args []string) 
 				SpecJSON:      string(spec.Canonical(job)),
 				Sensors:       job.Sensors,
 				Schedules:     job.Schedules,
+				Shadow:        job.Shadow,
 			},
 			fileSHA: hex.EncodeToString(sum[:]),
 			source:  source.Bytes,

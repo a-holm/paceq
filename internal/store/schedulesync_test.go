@@ -28,10 +28,21 @@ func scheduleFixture(name, cron string) spec.Schedule {
 func applyWithSchedules(t *testing.T, s *Store, job, hash string, schedules ...spec.Schedule) JobApplyResult {
 	t.Helper()
 
+	return applyShadowedJob(t, s, job, hash, false, schedules...)
+}
+
+// applyShadowedJob applies one job whose file carries the top-level shadow
+// flag, which is the declaration the schedule rows have to resolve (#203).
+func applyShadowedJob(t *testing.T, s *Store, job, hash string, jobShadow bool,
+	schedules ...spec.Schedule,
+) JobApplyResult {
+	t.Helper()
+
 	results, err := s.ApplyJobs(context.Background(), []JobVersionInput{{
 		JobName:   job,
 		SpecHash:  "sha256:" + hash,
 		SpecJSON:  `{"schema":"paceq.job.v1","name":"` + job + `"}`,
+		Shadow:    jobShadow,
 		Schedules: schedules,
 	}})
 	if err != nil {
@@ -41,6 +52,18 @@ func applyWithSchedules(t *testing.T, s *Store, job, hash string, schedules ...s
 		t.Fatalf("apply %s returned %d results, want 1", job, len(results))
 	}
 	return results[0]
+}
+
+// scheduleShadow reads the column the whole tick path decides shadow from.
+func scheduleShadow(t *testing.T, s *Store, job, name string) int {
+	t.Helper()
+
+	var shadow int
+	if err := s.r.QueryRow(`SELECT shadow FROM schedules
+WHERE job_name = ? AND name = ?`, job, name).Scan(&shadow); err != nil {
+		t.Fatalf("read the shadow flag of %s/%s: %v", job, name, err)
+	}
+	return shadow
 }
 
 // scheduleSnapshotSQL reads every column of one schedule as one quoted string,
@@ -262,7 +285,7 @@ WHERE job_name = 'reports' AND name = 'nightly'`).Scan(&kept); err != nil {
 // the comparison forgets is a file change that never reaches the database.
 func TestSchedulePlanReadsEveryDefinitionField(t *testing.T) {
 	base := scheduleFixture("nightly", "0 3 * * *")
-	existing := map[string]string{"nightly": scheduleDefOf(base).digest()}
+	existing := map[string]string{"nightly": scheduleDefOf(base, false).digest()}
 
 	elsewhere := base
 	elsewhere.Timezone = "Europe/Oslo"
@@ -272,19 +295,24 @@ func TestSchedulePlanReadsEveryDefinitionField(t *testing.T) {
 	watched.Shadow = true
 
 	cases := []struct {
-		what     string
-		schedule spec.Schedule
-		want     string
+		what      string
+		schedule  spec.Schedule
+		jobShadow bool
+		want      string
 	}{
-		{"an unchanged spec", base, ""},
-		{"a changed expression", scheduleFixture("nightly", "15 4 * * *"), lifecycleSpecChanged},
-		{"a changed timezone", elsewhere, lifecycleSpecChanged},
-		{"a changed overlap", queued, lifecycleSpecChanged},
-		{"a changed shadow flag", watched, lifecycleSpecChanged},
+		{"an unchanged spec", base, false, ""},
+		{"a changed expression", scheduleFixture("nightly", "15 4 * * *"), false, lifecycleSpecChanged},
+		{"a changed timezone", elsewhere, false, lifecycleSpecChanged},
+		{"a changed overlap", queued, false, lifecycleSpecChanged},
+		{"a changed shadow flag", watched, false, lifecycleSpecChanged},
+		{"a changed job shadow flag", base, true, lifecycleSpecChanged},
 	}
 	for _, c := range cases {
 		t.Run(c.what, func(t *testing.T) {
-			plan := buildSchedulePlan([]spec.Schedule{c.schedule}, existing)
+			plan := buildSchedulePlan(JobVersionInput{
+				Schedules: []spec.Schedule{c.schedule},
+				Shadow:    c.jobShadow,
+			}, existing)
 			if len(plan) != 1 {
 				t.Fatalf("the plan holds %d items, want 1", len(plan))
 			}
@@ -302,9 +330,9 @@ func TestASparseScheduleDigestsLikeAnExplicitOne(t *testing.T) {
 	sparse := spec.Schedule{Name: "nightly", Cron: "0 3 * * *"}
 	explicit := scheduleFixture("nightly", "0 3 * * *")
 
-	if scheduleDefOf(sparse).digest() != scheduleDefOf(explicit).digest() {
+	if scheduleDefOf(sparse, false).digest() != scheduleDefOf(explicit, false).digest() {
 		t.Errorf("a schedule that says nothing digests differently from one that spells the defaults out:\n%s\n%s",
-			scheduleDefOf(sparse).digest(), scheduleDefOf(explicit).digest())
+			scheduleDefOf(sparse, false).digest(), scheduleDefOf(explicit, false).digest())
 	}
 }
 
@@ -364,5 +392,97 @@ WHERE job_name = 'reports' AND name = 'nightly'`).Scan(&paused, &expr); err != n
 	}
 	if paused != 1 {
 		t.Error("a re-apply resumed a schedule an operator paused")
+	}
+}
+
+// TestAJobLevelShadowReachesEveryScheduleRow is the #203 guard on the write
+// side: a job file that says shadow: true and repeats it on none of its
+// schedules must leave shadow = 1 on every row, because the row is the only
+// thing the tick path, schedules ls and the shadow report ever read.
+func TestAJobLevelShadowReachesEveryScheduleRow(t *testing.T) {
+	s := migratedStore(t)
+
+	res := applyShadowedJob(t, s, "reports", "a1", true,
+		scheduleFixture("nightly", "0 3 * * *"),
+		scheduleFixture("weekly", "0 5 * * 1"))
+	if len(res.Schedules.Created) != 2 {
+		t.Fatalf("the apply reports %+v, want two created", res.Schedules)
+	}
+	for _, name := range []string{"nightly", "weekly"} {
+		if got := scheduleShadow(t, s, "reports", name); got != 1 {
+			t.Errorf("schedule %s carries shadow=%d, want 1", name, got)
+		}
+	}
+
+	// Nothing changed, so nothing is rewritten: the digest has to agree with
+	// itself across applies or every re-apply would churn the rows.
+	again := applyShadowedJob(t, s, "reports", "a1", true,
+		scheduleFixture("nightly", "0 3 * * *"),
+		scheduleFixture("weekly", "0 5 * * 1"))
+	if len(again.Schedules.Unchanged) != 2 {
+		t.Errorf("the second apply reports %+v, want two unchanged", again.Schedules)
+	}
+
+	// The cutover direction (#35). A shadow flag that only ever turns on is
+	// worse than one that never turns on at all.
+	off := applyShadowedJob(t, s, "reports", "a2", false,
+		scheduleFixture("nightly", "0 3 * * *"),
+		scheduleFixture("weekly", "0 5 * * 1"))
+	if len(off.Schedules.Updated) != 2 {
+		t.Fatalf("dropping the flag reports %+v, want two updated", off.Schedules)
+	}
+	for _, name := range []string{"nightly", "weekly"} {
+		if got := scheduleShadow(t, s, "reports", name); got != 0 {
+			t.Errorf("schedule %s still carries shadow=%d after the flag went, want 0", name, got)
+		}
+	}
+}
+
+// TestTheRowShadowIsTheJobFlagOrTheScheduleFlag covers all four combinations of
+// the two declarations. The job flag never turns a schedule flag off: the spec
+// says a job-level shadow shadows all of its schedules, not that it replaces
+// what each schedule said.
+func TestTheRowShadowIsTheJobFlagOrTheScheduleFlag(t *testing.T) {
+	shadowed := scheduleFixture("nightly", "0 3 * * *")
+	shadowed.Shadow = true
+
+	cases := []struct {
+		what      string
+		jobShadow bool
+		schedule  spec.Schedule
+		want      int
+	}{
+		{"neither flag", false, scheduleFixture("nightly", "0 3 * * *"), 0},
+		{"the schedule flag alone", false, shadowed, 1},
+		{"the job flag alone", true, scheduleFixture("nightly", "0 3 * * *"), 1},
+		{"both flags", true, shadowed, 1},
+	}
+	for _, c := range cases {
+		t.Run(c.what, func(t *testing.T) {
+			s := migratedStore(t)
+			applyShadowedJob(t, s, "reports", "a1", c.jobShadow, c.schedule)
+			if got := scheduleShadow(t, s, "reports", "nightly"); got != c.want {
+				t.Errorf("%s leaves shadow=%d, want %d", c.what, got, c.want)
+			}
+		})
+	}
+}
+
+// TestAScheduleFlagShadowsOnlyItsOwnRow pins the half of the behaviour the fix
+// must not widen: without the job flag, a shadowed schedule leaves its siblings
+// alone.
+func TestAScheduleFlagShadowsOnlyItsOwnRow(t *testing.T) {
+	s := migratedStore(t)
+
+	ghost := scheduleFixture("weekly", "0 5 * * 1")
+	ghost.Shadow = true
+	applyShadowedJob(t, s, "reports", "a1", false,
+		scheduleFixture("nightly", "0 3 * * *"), ghost)
+
+	if got := scheduleShadow(t, s, "reports", "weekly"); got != 1 {
+		t.Errorf("the schedule that asked for shadow carries shadow=%d, want 1", got)
+	}
+	if got := scheduleShadow(t, s, "reports", "nightly"); got != 0 {
+		t.Errorf("a sibling of a shadowed schedule carries shadow=%d, want 0", got)
 	}
 }

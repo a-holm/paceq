@@ -27,6 +27,12 @@ type JobVersionInput struct {
 	// means one, which is the default a job that says nothing gets.
 	MaxConcurrent int
 
+	// Shadow is the job's top-level shadow declaration (#32): every schedule
+	// of this job records its ticks and executes nothing. It is resolved into
+	// each schedule row rather than stored on the job, so the row stays the
+	// one answer the tick path, schedules ls and the shadow report all read.
+	Shadow bool
+
 	// SpecHash is the digest of the canonical spec, "sha256:<hex>". It is the
 	// whole of idempotent reload: the same digest is the same version.
 	SpecHash string
