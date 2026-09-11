@@ -994,6 +994,7 @@ func (s *Store) FinishRun(ctx context.Context, runID string, ref LeaseRef, fr Fi
 			AllStepsTerminal: allStepsTerminal(states),
 			AnyStepFailed:    anyStepIs(states, model.StepFailed),
 			AnyStepCancelled: anyStepIs(states, model.StepCancelled),
+			RunLevelFailure:  reason.IsRunLevelFailure(fr.Code),
 			ReasonCode:       string(fr.Code),
 			Now:              now.UnixMilli(),
 			AvailableAt:      run.AvailableAt.UnixMilli(),
