@@ -1,0 +1,20 @@
+FAIL testdata/bad/bad-cron.yaml:7:11  PQ2011: expression "0 3 * * * *" has 6 fields: cron schedules need exactly 5 fields (minute hour day-of-month month day-of-week); seconds fields and descriptors beyond the documented list are not supported
+
+   5 | schedules:
+   6 |   - name: nightly
+>  7 |     cron: "0 3 * * * *"
+                 ^
+   8 |     timezone: Europe/Oslo
+
+   A schedule expression is five cron fields, a descriptor or an interval:
+
+       cron: "0 3 * * *"      minute hour day-of-month month day-of-week
+       cron: "@daily"         the same, by name
+       cron: "@every 90m"     an interval, counted from the Unix epoch
+
+   An expression that parses but matches no date, such as 0 0 30 2 *, is
+   accepted: the scheduler records that it never fires.
+
+       paceq schedules preview <job>/<schedule>    prints the next occurrences
+
+   paceq error PQ2011  for the full explanation

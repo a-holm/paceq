@@ -78,6 +78,7 @@ func TestCodesUseTheSeriesTheyBelongTo(t *testing.T) {
 		CodeFanOutLimit:     true,
 		CodeDAGDepthLimit:   true,
 		CodeUnknownTimezone: true,
+		CodeBadCron:         true,
 	}
 	warning := map[string]bool{
 		CodeShell: true, CodeInheritEnv: true, CodeConcurrencyParamUnresolved: true,

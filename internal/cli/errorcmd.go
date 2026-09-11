@@ -341,6 +341,23 @@ var catalogue = map[string]explanation{
 			"a machine with no zone database needs one installed: apt install tzdata",
 		},
 	},
+	spec.CodeBadCron: {
+		Code:  spec.CodeBadCron,
+		Title: "the schedule expression is not one paceq can read",
+		Explanation: "A schedule expression is five cron fields (minute hour day-of-month month " +
+			"day-of-week), one of the descriptors @hourly, @daily, @midnight, @weekly, @monthly, " +
+			"@yearly and @annually, or an interval such as @every 90m. Seconds fields and the L, " +
+			"W and # extensions are not part of the 1.0 contract. The decoder asks the same " +
+			"parser the scheduler asks, so the answer arrives with a file and a line rather than " +
+			"as an error tick on every wake. An expression that parses but matches no date, such " +
+			"as 0 0 30 2 *, is a different thing and stays valid: it applies, and the scheduler " +
+			"records that it never fires.",
+		Next: []string{
+			`cron: "0 3 * * *"  is 03:00 every day in the schedule's zone`,
+			`cron: "@every 90m"  is an interval, counted from the Unix epoch`,
+			"paceq schedules preview <job>/<schedule>  prints the next occurrences of an expression",
+		},
+	},
 	spec.CodeShell: {
 		Code:  spec.CodeShell,
 		Title: "the step runs its command through a shell",

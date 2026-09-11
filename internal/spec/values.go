@@ -488,6 +488,36 @@ func (d *decoder) timezone(node ast.Node, where string) string {
 	return value
 }
 
+// cron is the schedule expression, read by the parser that will run it.
+func (d *decoder) cron(node ast.Node, where string) string {
+	value, ok := d.stringValue(node, where+" cron")
+	if !ok {
+		return ""
+	}
+	// An empty expression is the field not being filled in. The schedule
+	// branch refuses that as a missing field, with a hint about what to write;
+	// parsing it here as well would report one mistake twice.
+	if value == "" {
+		return ""
+	}
+	// cronx.Parse is the one authority on an expression, the way LoadZone is
+	// on a zone name. It answers syntax only: whether an expression ever fires
+	// is the horizon search behind Next, Prev and Between, which says so with
+	// ErrNoOccurrence. So "0 0 30 2 *" parses, applies, and the scheduler
+	// records on its own wake that it matches nothing.
+	if _, err := cronx.Parse(value); err != nil {
+		d.error(CodeBadCron, position(node), err.Error(),
+			"A schedule expression is five cron fields, a descriptor or an interval:\n\n"+
+				"    cron: \"0 3 * * *\"      minute hour day-of-month month day-of-week\n"+
+				"    cron: \"@daily\"         the same, by name\n"+
+				"    cron: \"@every 90m\"     an interval, counted from the Unix epoch\n\n"+
+				"An expression that parses but matches no date, such as 0 0 30 2 *, is\n"+
+				"accepted: the scheduler records that it never fires.\n\n"+
+				"    paceq schedules preview <job>/<schedule>    prints the next occurrences")
+	}
+	return value
+}
+
 // crossCheck is the part of validation that needs the whole job: the rules
 // about how steps refer to each other.
 func (d *decoder) crossCheck(job *Job) {

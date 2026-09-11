@@ -596,7 +596,7 @@ func (d *decoder) schedules(node ast.Node) []Schedule {
 			case "name":
 				schedule.Name = d.name(value, where+" name")
 			case "cron":
-				schedule.Cron = d.text(value, where+" cron")
+				schedule.Cron = d.cron(value, where)
 			case "timezone":
 				schedule.Timezone = d.timezone(value, where)
 			case "overlap":
@@ -619,7 +619,8 @@ func (d *decoder) schedules(node ast.Node) []Schedule {
 				"A schedule is a cron expression and the zone it is read in:\n\n"+
 					"    cron: \"0 3 * * *\"\n"+
 					"    timezone: Europe/Oslo\n\n"+
-					"The expression itself is checked by the scheduler, not here.")
+					"The expression is read by the parser that will run it, so a typo is refused\n"+
+					"here rather than on the first wake.")
 		}
 		schedules = append(schedules, schedule)
 	}
