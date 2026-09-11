@@ -67,15 +67,17 @@ func TestCodesBelongToTheirLevel(t *testing.T) {
 	}
 }
 
-// TestAllFourLevelsArePopulated is the M1 commitment: the tick, trigger, run
-// and step levels all exist now, including the codes M2, M3 and M4 fill in
-// later, because codes added after the fact become after-rationalisations.
-func TestAllFourLevelsArePopulated(t *testing.T) {
+// TestEveryLevelIsPopulated is the M1 commitment: the tick, trigger, run and
+// step levels all exist now, including the codes M2, M3 and M4 fill in later,
+// because codes added after the fact become after-rationalisations. The lease
+// level joined them with the role leases (#42) and is held to the same rule,
+// so the count of levels here is the count in the const block (#193).
+func TestEveryLevelIsPopulated(t *testing.T) {
 	counts := map[Level]int{}
 	for _, e := range All() {
 		counts[e.Level]++
 	}
-	for _, l := range []Level{LevelTick, LevelTrigger, LevelRun, LevelStep} {
+	for _, l := range []Level{LevelTick, LevelTrigger, LevelRun, LevelStep, LevelLease} {
 		if counts[l] == 0 {
 			t.Errorf("level %s has no codes at all", l)
 		}
