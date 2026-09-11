@@ -161,7 +161,7 @@ func runNotificationsList(ctx context.Context, env Env, g *globals, out *ui, f n
 	defer done()
 	rows, err := ro.ListNotifications(ctx, filter)
 	if err != nil {
-		return internalError("could not list the notifications", err)
+		return storeFailure(ctx, "could not list the notifications", err)
 	}
 	switch out.mode {
 	case modeJSON:
@@ -196,7 +196,7 @@ func runNotificationsShow(ctx context.Context, env Env, g *globals, out *ui, idA
 	defer done()
 	row, err := ro.GetNotification(ctx, id)
 	if err != nil {
-		return notificationLookupError(err, idArg)
+		return notificationLookupError(ctx, err, idArg)
 	}
 	switch out.mode {
 	case modeJSON:
@@ -264,7 +264,7 @@ func runNotificationsRetry(ctx context.Context, env Env, g *globals, out *ui, id
 
 	next, err := st.RetryOutbox(ctx, id)
 	if err != nil {
-		return notificationRetryError(err, idArg)
+		return notificationRetryError(ctx, err, idArg)
 	}
 	switch out.mode {
 	case modeJSON:
@@ -375,7 +375,7 @@ func notificationID(arg string) (int64, bool) {
 	return id, true
 }
 
-func notificationLookupError(err error, arg string) error {
+func notificationLookupError(ctx context.Context, err error, arg string) error {
 	if errors.Is(err, store.ErrNotificationNotFound) {
 		return notFoundError(
 			fmt.Sprintf("no notification carries id %s", arg),
@@ -383,10 +383,10 @@ func notificationLookupError(err error, arg string) error {
 			"paceq notifications list --limit 50  shows what exists",
 		)
 	}
-	return internalError("could not read the notification", err)
+	return storeFailure(ctx, "could not read the notification", err)
 }
 
-func notificationRetryError(err error, arg string) error {
+func notificationRetryError(ctx context.Context, err error, arg string) error {
 	switch {
 	case errors.Is(err, store.ErrNotificationNotFound):
 		return notFoundError(
@@ -401,7 +401,7 @@ func notificationRetryError(err error, arg string) error {
 			"if it must go out again, probe delivery first with: paceq notifications test <notifier>",
 		)
 	default:
-		return internalError("could not retry the notification", err)
+		return storeFailure(ctx, "could not retry the notification", err)
 	}
 }
 

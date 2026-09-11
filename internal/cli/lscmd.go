@@ -37,12 +37,12 @@ func runLs(ctx context.Context, env Env, g *globals, out *ui) error {
 
 	schedules, err := ro.ListAllSchedules(ctx)
 	if err != nil {
-		return internalError("could not list schedules", err)
+		return storeFailure(ctx, "could not list schedules", err)
 	}
 
 	runs, err := ro.ListRuns(ctx, store.RunFilter{Limit: 50})
 	if err != nil {
-		return internalError("could not list runs", err)
+		return storeFailure(ctx, "could not list runs", err)
 	}
 
 	// Index runs by job name for quick lookup.

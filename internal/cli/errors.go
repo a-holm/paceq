@@ -145,6 +145,13 @@ func classify(ctx context.Context, err error) *Error {
 		return busyError(err)
 	}
 
+	// A contended database is the one store failure that fixes itself. The
+	// store owns the result codes that say so, because internal/arch keeps
+	// the driver out of every other package.
+	if store.IsBusy(err) {
+		return busyError(err)
+	}
+
 	var perm *store.PermissionError
 	if errors.As(err, &perm) {
 		// The store's refusal already carries the chmod that fixes it, so the
@@ -154,6 +161,22 @@ func classify(ctx context.Context, err error) *Error {
 	}
 
 	return internalError("the command failed", err)
+}
+
+// storeFailure is what a command says when a store call fails. classify names
+// the error if it can, and what is only the fallback text for a failure paceq
+// has no better name for. A condition the tool already knows how to name
+// keeps its own exit code instead of arriving as "this is a bug".
+//
+// Call sites reach for this rather than internalError whenever the error came
+// out of the store: deciding the class before looking at the error is how a
+// busy database, a cancelled command and an exposed file all end up reported
+// as exit 1.
+func storeFailure(ctx context.Context, what string, err error) *Error {
+	if named := classify(ctx, err); named.code != ExitInternal {
+		return named
+	}
+	return internalError(what, err)
 }
 
 // renderError writes a failure to stderr and returns the exit code that goes

@@ -236,7 +236,7 @@ func applyToStore(ctx context.Context, env Env, g *globals, loaded []loadedSpec)
 		if errors.As(err, &taken) {
 			return nil, sensorNameTakenError(loaded, taken)
 		}
-		return nil, internalError("could not record the job specs", err)
+		return nil, storeFailure(ctx, "could not record the job specs", err)
 	}
 	return results, nil
 }

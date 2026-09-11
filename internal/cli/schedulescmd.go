@@ -119,7 +119,7 @@ func runSchedulesList(ctx context.Context, env Env, g *globals, out *ui) error {
 
 	rows, err := ro.ListAllSchedules(ctx)
 	if err != nil {
-		return internalError("could not list schedules", err)
+		return storeFailure(ctx, "could not list schedules", err)
 	}
 
 	if out.mode == modeJSON {
@@ -194,7 +194,7 @@ func runSchedulesShow(ctx context.Context, env Env, g *globals, out *ui, ref str
 
 	ticks, err := ro.ScheduleTicks(ctx, sch.JobName, sch.Name)
 	if err != nil {
-		return internalError("could not read the ticks of "+ref, err)
+		return storeFailure(ctx, "could not read the ticks of "+ref, err)
 	}
 
 	if out.mode == modeJSON {
@@ -535,7 +535,7 @@ func runSchedulesPause(ctx context.Context, env Env, g *globals, out *ui, ref st
 
 	_, err = s.PauseSchedule(ctx, sch.JobName, sch.Name)
 	if err != nil {
-		return internalError("could not pause "+ref, err)
+		return storeFailure(ctx, "could not pause "+ref, err)
 	}
 
 	out.print("%s paused %s/%s", out.symbols.ok, sch.JobName, sch.Name)
@@ -617,7 +617,7 @@ func runSchedulesResume(ctx context.Context, env Env, g *globals, out *ui, ref s
 
 	_, err = s.ResumeSchedule(ctx, sch.JobName, sch.Name, nextTickAt)
 	if err != nil {
-		return internalError("could not resume "+ref, err)
+		return storeFailure(ctx, "could not resume "+ref, err)
 	}
 
 	out.print("%s resumed %s/%s", out.symbols.ok, sch.JobName, sch.Name)
@@ -680,7 +680,7 @@ func resolveScheduleRef(ctx context.Context, ro *store.Store, ref string) (store
 	// Bare name: search all schedules.
 	all, err := ro.ListAllSchedules(ctx)
 	if err != nil {
-		return store.ScheduleRow{}, internalError("could not list schedules", err)
+		return store.ScheduleRow{}, storeFailure(ctx, "could not list schedules", err)
 	}
 	var matches []store.ScheduleRow
 	for _, row := range all {

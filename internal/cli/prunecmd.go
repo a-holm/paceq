@@ -71,7 +71,7 @@ func runPrune(ctx context.Context, env Env, g *globals, out *ui, f pruneFlags) e
 		})
 		plan, err := plans.PrunePlans(ctx)
 		if err != nil {
-			return internalError("could not estimate the retention pass", err)
+			return storeFailure(ctx, "could not estimate the retention pass", err)
 		}
 		renderPrunePlan(out, plan)
 		return nil
@@ -90,7 +90,7 @@ func runPrune(ctx context.Context, env Env, g *globals, out *ui, f pruneFlags) e
 	})
 	res, err := executor.Prune(ctx)
 	if err != nil {
-		return internalError("the retention pass failed", err)
+		return storeFailure(ctx, "the retention pass failed", err)
 	}
 
 	if out.mode == modeJSON {

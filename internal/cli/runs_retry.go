@@ -89,7 +89,7 @@ func runRunsRetry(ctx context.Context, env Env, g *globals, out *ui, runArg stri
 	detail, err := ro.GetRun(ctx, runArg)
 	closeErr := ro.Close()
 	if err != nil {
-		return runLookupError(err, runArg)
+		return runLookupError(ctx, err, runArg)
 	}
 	if closeErr != nil {
 		return internalError("could not close the read only store", closeErr)
@@ -122,7 +122,7 @@ func runRunsRetry(ctx context.Context, env Env, g *globals, out *ui, runArg stri
 		if mapped := reopenError(err); mapped != nil {
 			return mapped
 		}
-		return internalError("could not reopen the run", err)
+		return storeFailure(ctx, "could not reopen the run", err)
 	}
 
 	result := retryResult{
@@ -197,7 +197,7 @@ func retryRunOnce(ctx context.Context, env Env, g *globals, stateDir, runID stri
 
 // runLookupError renders the refusals both retry and replay give for a name
 // that does not resolve, so the two commands speak with one voice.
-func runLookupError(err error, runArg string) error {
+func runLookupError(ctx context.Context, err error, runArg string) error {
 	switch {
 	case errors.Is(err, store.ErrAmbiguousRunID):
 		return notFoundError(
@@ -213,7 +213,7 @@ func runLookupError(err error, runArg string) error {
 			"check the id: paceq explains it on every failure it reports",
 		)
 	default:
-		return internalError("could not read the run", err)
+		return storeFailure(ctx, "could not read the run", err)
 	}
 }
 

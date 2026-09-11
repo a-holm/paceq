@@ -121,7 +121,7 @@ func runSensorsList(ctx context.Context, env Env, g *globals, out *ui, f sensorL
 
 	rows, err := ro.ListSensors(ctx)
 	if err != nil {
-		return internalError("could not list sensors", err)
+		return storeFailure(ctx, "could not list sensors", err)
 	}
 
 	filtered := rows
@@ -247,7 +247,7 @@ func runSensorsShow(ctx context.Context, env Env, g *globals, out *ui, name stri
 
 	ticks, err := ro.SensorTicks(ctx, name, f.limit)
 	if err != nil {
-		return internalError("could not read the ticks of "+name, err)
+		return storeFailure(ctx, "could not read the ticks of "+name, err)
 	}
 
 	if out.mode == modeJSON {
@@ -438,7 +438,7 @@ func runSensorsTest(ctx context.Context, env Env, g *globals, out *ui, name stri
 	}
 	verdicts, err := ro.PeekDedup(ctx, name, row.DedupEpoch, runKeys)
 	if err != nil {
-		return internalError("could not read the dedup gate for "+name, err)
+		return storeFailure(ctx, "could not read the dedup gate for "+name, err)
 	}
 	verdictByKey := map[string]store.DedupVerdict{}
 	for _, v := range verdicts {
@@ -630,7 +630,7 @@ func runSensorsTick(ctx context.Context, env Env, g *globals, out *ui, name stri
 		Now: now,
 	})
 	if err != nil {
-		return internalError("could not begin the sensor tick for "+name, err)
+		return storeFailure(ctx, "could not begin the sensor tick for "+name, err)
 	}
 	ev := sensor.NewEvaluator(sensor.Config{}, clockForEnv(env))
 	res := ev.Evaluate(ctx, spec, in)
@@ -653,7 +653,7 @@ func runSensorsTick(ctx context.Context, env Env, g *globals, out *ui, name stri
 		Now:    now,
 	})
 	if err != nil {
-		return internalError("could not commit the sensor tick for "+name, err)
+		return storeFailure(ctx, "could not commit the sensor tick for "+name, err)
 	}
 	if commit.Fenced {
 		return busyError(fmt.Errorf("the tick of %s was fenced: the sensor advanced past this evaluation", name))
@@ -849,7 +849,7 @@ func writeSensorOp(ctx context.Context, env Env, g *globals, out *ui, op sensorW
 	defer func() { _ = s.Close() }()
 
 	if err := op.direct(s); err != nil {
-		return classifySensorWrite(name, err)
+		return classifySensorWrite(ctx, name, err)
 	}
 	out.print("%s %s %s", out.symbols.ok, op.verb, name)
 	return nil
@@ -1064,7 +1064,7 @@ func requireSensor(ctx context.Context, env Env, g *globals, name string) error 
 // unknownSensorError is the exit 3 refusal with a did-you-mean suggestion.
 func unknownSensorError(ctx context.Context, ro *store.Store, err error, name string) error {
 	if !errors.Is(err, store.ErrNotFound) {
-		return internalError("could not read sensor "+name, err)
+		return storeFailure(ctx, "could not read sensor "+name, err)
 	}
 	next := []string{
 		"paceq sensors list  shows every sensor",
@@ -1087,11 +1087,11 @@ func unknownSensorError(ctx context.Context, ro *store.Store, err error, name st
 }
 
 // classifySensorWrite turns a store write error into the right exit code.
-func classifySensorWrite(name string, err error) error {
+func classifySensorWrite(ctx context.Context, name string, err error) error {
 	if errors.Is(err, store.ErrNotFound) {
 		return notFoundError(fmt.Sprintf("no sensor matches %q", name), name)
 	}
-	return internalError("could not write the sensor state for "+name, err)
+	return storeFailure(ctx, "could not write the sensor state for "+name, err)
 }
 
 // derefString returns the string a pointer points at, or "".

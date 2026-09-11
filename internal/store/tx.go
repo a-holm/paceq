@@ -101,6 +101,13 @@ func isBusySnapshot(err error) bool {
 	return errors.As(err, &coded) && coded.Code() == busySnapshotCode
 }
 
+// IsBusy reports whether err is one of the two SQLITE_BUSY outcomes: a
+// contended database, not a broken one. It is exported because internal/arch
+// forbids every package outside this one from importing the driver, so a
+// caller that has to tell a transient refusal from a failure it should report
+// as a bug has no other way to ask.
+func IsBusy(err error) bool { return isBusy(err) }
+
 func (s *Store) withTxOnce(ctx context.Context, fn func(*sql.Tx) error) error {
 	// The write-wait measurement (#40) wraps the whole attempt: the lock is
 	// held from BEGIN to COMMIT or ROLLBACK, and that span is what a

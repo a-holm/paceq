@@ -86,7 +86,7 @@ func runRunsReplay(ctx context.Context, env Env, g *globals, out *ui, runArg str
 	detail, err := ro.GetRun(ctx, runArg)
 	closeErr := ro.Close()
 	if err != nil {
-		return runLookupError(err, runArg)
+		return runLookupError(ctx, err, runArg)
 	}
 	if closeErr != nil {
 		return internalError("could not close the read only store", closeErr)
@@ -105,7 +105,7 @@ func runRunsReplay(ctx context.Context, env Env, g *globals, out *ui, runArg str
 		if mapped := replayError(err); mapped != nil {
 			return mapped
 		}
-		return internalError("could not replay the run", err)
+		return storeFailure(ctx, "could not replay the run", err)
 	}
 
 	result := replayResult{

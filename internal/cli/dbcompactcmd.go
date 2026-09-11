@@ -73,7 +73,7 @@ func runDbCompact(ctx context.Context, env Env, g *globals, out *ui, force bool)
 		return nil
 	}
 	if err := s.FullVacuum(ctx); err != nil {
-		return internalError("the vacuum failed; the database is unchanged", err)
+		return storeFailure(ctx, "the vacuum failed; the database is unchanged", err)
 	}
 	after, err := s.PageCount(ctx)
 	if err != nil {

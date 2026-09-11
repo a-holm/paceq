@@ -106,7 +106,7 @@ func runRunsArtifacts(ctx context.Context, env Env, g *globals, out *ui, runArg 
 
 	rows, err := ro.RunsArtifacts(ctx, detail.ID)
 	if err != nil {
-		return internalError("could not read the artifacts of the run", err)
+		return storeFailure(ctx, "could not read the artifacts of the run", err)
 	}
 
 	docs := make([]artifactRecord, 0, len(rows))
