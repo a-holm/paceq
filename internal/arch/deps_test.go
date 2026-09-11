@@ -19,6 +19,18 @@ const (
 // directly. Transitive imports are deliberately not restricted: engine may import
 // runner even though cli imports engine and may not import runner itself.
 // A package absent from this table carries no direction rule yet.
+//
+// A row is widened only for a vocabulary leaf: an internal package that
+// imports nothing under internal/ and only names things, so the edge carries
+// types, constants and pure functions and no capability. model and reason are
+// the two, and stdlibOnly below holds them to it, so an edge into either adds
+// no transitive weight and can form no cycle. That is what ADR-0001 decision 4
+// means by domain types usable from every layer. sensor and status read the
+// breaker fold from model on this rule, and status reads the reason catalogue
+// on it (#220, #284). A leaf that does something (clock, id, procfs, spool,
+// faults, retry) is outside the rule: there the table says who may hold the
+// capability, so each of those rows still argues on its own. The rule does not
+// run backwards: a vocabulary leaf keeps its empty row.
 var allowedImports = map[string][]string{
 	"model":   {},
 	"id":      {},
@@ -34,7 +46,7 @@ var allowedImports = map[string][]string{
 	"procfs":  {},
 	"spool":   {},
 	"runner":  {"clock", "faults", "procfs", "spool"},
-	"sensor":  {"runner", "clock", "reason"},
+	"sensor":  {"runner", "clock", "reason", "model"},
 	"logsink": {"clock"},
 	// notify stays a value-only leaf EXCEPT for two deliberate exceptions
 	// (#29): the notification value type lives in pure-data model, and the
@@ -55,7 +67,7 @@ var allowedImports = map[string][]string{
 	"reconcile":        {"store", "clock", "cronx", "reason", "faults", "spool"},
 	"doctor":           {"store", "clock", "obs", "reconcile"},
 	"explain":          {"store", "reason", "clock", "id", "cronx"},
-	"status":           {"store", "clock"},
+	"status":           {"store", "clock", "model", "reason"},
 	"cli":              {"engine", "daemon", "store", "doctor", "explain", "status", "spec", "diag", "obs", "model", "clock", "id", "reason", "logsink", "cronx", "sensor", "buildinfo", "importer/crontab", "janitor", "scheduler", "cutover", "runner", "reconcile", "sockpath"},
 	"importer/crontab": {"spec", "cronx"},
 	"testutil":         {"model", "clock", "id", "store", "sockpath"},
@@ -252,8 +264,10 @@ func selfDir(t *testing.T) string {
 // the standard library. The rule table above keeps them from importing another
 // internal package; this rule keeps them from taking a third party dependency
 // as well. It is what makes internal/model provable without a mock and reusable
-// from a property test that has no database.
-var stdlibOnly = []string{"model"}
+// from a property test that has no database, and it is what the table's
+// vocabulary-leaf rule rests on: a leaf every layer may import has to stay
+// weightless to be worth importing from everywhere.
+var stdlibOnly = []string{"model", "reason"}
 
 func TestPackagesThatMustDependOnStdlibOnly(t *testing.T) {
 	for _, name := range stdlibOnly {
