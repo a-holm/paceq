@@ -112,6 +112,11 @@ func TestRunAggregateDoesNotTouchItsInput(t *testing.T) {
 // machine never reads a step row, so the two can only agree by holding the same
 // order, and nothing but this test holds them to it.
 //
+// The walk takes both values of the fold's second input, which is what makes it
+// a proof over the whole domain rather than over the half where no run-level
+// failure happened. While Guards had no term for one, the writer's side of the
+// pair could not be asked the question at all.
+//
 // The comment asserted this test existed before the test did (#188).
 func TestTerminalVerdictMatchesRunAggregate(t *testing.T) {
 	t.Parallel()
@@ -120,17 +125,23 @@ func TestTerminalVerdictMatchesRunAggregate(t *testing.T) {
 		model.StepSucceeded, model.StepFailed,
 		model.StepCancelled, model.StepSkipped,
 	}
+	compared := 0
 	var walk func(prefix []model.StepState, depth int)
 	walk = func(prefix []model.StepState, depth int) {
 		if len(prefix) > 0 {
-			want := model.RunAggregate(prefix, false)
-			g := model.Guards{
-				AnyStepFailed:    contains(prefix, model.StepFailed),
-				AnyStepCancelled: contains(prefix, model.StepCancelled),
-			}
-			got, _ := model.TerminalVerdict(g)
-			if got != want {
-				t.Fatalf("TerminalVerdict over %v = %q, RunAggregate = %q", prefix, got, want)
+			for _, runLevelFailure := range []bool{false, true} {
+				compared++
+				want := model.RunAggregate(prefix, runLevelFailure)
+				g := model.Guards{
+					AnyStepFailed:    contains(prefix, model.StepFailed),
+					AnyStepCancelled: contains(prefix, model.StepCancelled),
+					RunLevelFailure:  runLevelFailure,
+				}
+				got, _ := model.TerminalVerdict(g)
+				if got != want {
+					t.Fatalf("TerminalVerdict over %v (run-level failure %t) = %q, RunAggregate = %q",
+						prefix, runLevelFailure, got, want)
+				}
 			}
 		}
 		if depth == 0 {
@@ -141,11 +152,44 @@ func TestTerminalVerdictMatchesRunAggregate(t *testing.T) {
 		}
 	}
 	walk(nil, 4)
+
+	// (4 + 16 + 64 + 256) non-empty terminal step lists, each compared over
+	// both values of the second input. Half of 680 is the count this test
+	// had while it could only ask half the question.
+	if want := 680; compared != want {
+		t.Errorf("compared %d verdicts, want %d", compared, want)
+	}
+}
+
+// TestTerminalVerdictNamesTheRunLevelArmRunFailed pins the event name. The
+// reaper's orphan arm already writes run.failed for this ending and explain
+// reads the reason code to say which kind it was, so a name of its own here
+// would give one event two words and split every reader of the event stream.
+func TestTerminalVerdictNamesTheRunLevelArmRunFailed(t *testing.T) {
+	t.Parallel()
+
+	got, name := model.TerminalVerdict(model.Guards{RunLevelFailure: true})
+	if got != model.RunFailed {
+		t.Errorf("a run-level failure ranks to %q, want %q", got, model.RunFailed)
+	}
+	if name != "run.failed" {
+		t.Errorf("the run-level arm emits %q, want run.failed", name)
+	}
+	if _, stepName := model.TerminalVerdict(model.Guards{AnyStepFailed: true}); name != stepName {
+		t.Errorf("the run-level arm emits %q and the step-failure arm emits %q: one ending, two names", name, stepName)
+	}
 }
 
 // TestRunLevelFailureOutranksEverySetOfSteps pins the second input: a run that
 // failed for a reason no step can express is failed whatever its steps say,
 // including the all-skipped shape the reaper leaves behind.
+//
+// Two of the lists are the ones the ordering is easiest to get wrong on. A
+// running step would outrank everything if the flag were tested after the step
+// loop, and it must not: the reaper has already killed the process group by the
+// time it stamps such a run, so nothing is outstanding however the row reads. A
+// failed step reaches failed down either path, which is what keeps a refactor
+// that reorders the tests from staying green for the wrong reason.
 func TestRunLevelFailureOutranksEverySetOfSteps(t *testing.T) {
 	t.Parallel()
 
@@ -156,6 +200,10 @@ func TestRunLevelFailureOutranksEverySetOfSteps(t *testing.T) {
 		{model.StepSucceeded, model.StepSucceeded},
 		{model.StepCancelled},
 		{model.StepPending},
+		{model.StepRunning},
+		{model.StepSkipped, model.StepRunning},
+		{model.StepFailed},
+		{model.StepFailed, model.StepSkipped},
 	} {
 		if got := model.RunAggregate(steps, true); got != model.RunFailed {
 			t.Errorf("RunAggregate(%v, true) = %q, want %q", steps, got, model.RunFailed)

@@ -282,3 +282,71 @@ func TestScenarioExemptsCarryReasons(t *testing.T) {
 		t.Fatalf("no ScenarioExempt entries found: the exemption rule guards nothing and the catalogue grew a field for nothing")
 	}
 }
+
+// TestRunLevelFailureCodesAreTheClosedSet names the codes that mean a run
+// failed for something no step can express, the way TestTerminalFlagsFollowThe
+// WriteRule names the non-terminal ones. The set is written out here so that
+// marking a code, or dropping the mark from one, is a deliberate edit in two
+// places rather than a flag flipped alone.
+//
+// The mark is the second input to model.RunAggregate, and it outranks every
+// step, so a code that carried it wrongly would make the fold read a healthy
+// run as failed for good.
+func TestRunLevelFailureCodesAreTheClosedSet(t *testing.T) {
+	runLevel := map[Code]bool{
+		RUNPoisoned:           true,
+		RUNOrphanedReconciled: true,
+	}
+
+	marked := 0
+	for _, e := range All() {
+		if e.RunLevelFailure {
+			marked++
+		}
+		if want := runLevel[e.Code]; e.RunLevelFailure != want {
+			t.Errorf("%s: RunLevelFailure is %v, want %v", e.Code, e.RunLevelFailure, want)
+		}
+		if !e.RunLevelFailure {
+			continue
+		}
+		if !e.Terminal {
+			t.Errorf("%s is a run-level failure but not Terminal: the fold answers failed for it, so the code ends its run", e.Code)
+		}
+		if e.Level != LevelRun {
+			t.Errorf("%s is a run-level failure at level %s, want %s", e.Code, e.Level, LevelRun)
+		}
+	}
+	if marked != len(runLevel) {
+		t.Errorf("the catalogue marks %d run-level failures, this test names %d", marked, len(runLevel))
+	}
+	if marked == 0 {
+		t.Fatal("no code is marked RunLevelFailure: the fold's second input can never be true and the field guards nothing")
+	}
+}
+
+// TestIsRunLevelFailureAnswersFromTheCatalogue holds the exported lookup to the
+// entries rather than to a list of its own. It is what every writer of a
+// terminal run state calls, so a lookup that answered from anywhere else would
+// put the decision back in the caller.
+func TestIsRunLevelFailureAnswersFromTheCatalogue(t *testing.T) {
+	for _, e := range All() {
+		if got := IsRunLevelFailure(e.Code); got != e.RunLevelFailure {
+			t.Errorf("IsRunLevelFailure(%s) = %v, the catalogue says %v", e.Code, got, e.RunLevelFailure)
+		}
+	}
+	for _, c := range []Code{"", "RUN_NOT_A_CODE"} {
+		if IsRunLevelFailure(c) {
+			t.Errorf("IsRunLevelFailure(%q) is true for a code outside the catalogue: there is no entry to read the fact from", c)
+		}
+	}
+}
+
+// TestTheLegacyStampIsNotARunLevelFailure pins the one deliberate omission. A
+// run stamped RUN_LEGACY_UNSPECIFIED by fsck --repair may well have failed at
+// run level, but the stamp erased which kind of ending it was, so the fold
+// reads it off its steps and I10 reports the row rather than excusing it.
+func TestTheLegacyStampIsNotARunLevelFailure(t *testing.T) {
+	if IsRunLevelFailure(RUNLegacyUnspecified) {
+		t.Error("RUN_LEGACY_UNSPECIFIED is marked a run-level failure: the stamp says nothing about how the run ended, and reading failure into it hides every pre-catalogue row from I10")
+	}
+}

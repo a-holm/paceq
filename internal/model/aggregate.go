@@ -19,6 +19,12 @@ package model
 // success. The flag outranks the steps, which is the only way the fold can
 // answer for both kinds of ending without a caller deciding on its own.
 //
+// Which reason codes carry it is the catalogue's answer, reason.IsRunLevelFailure,
+// because this package may not import the catalogue and a set of code names
+// kept here would be the same fact written twice. Every caller asks there and
+// hands the answer in, and Guards.RunLevelFailure carries it to TerminalVerdict
+// so the machine ranks a run the same way this fold does.
+//
 // A run with no steps has nothing outstanding and nothing failed, so it
 // succeeded. Nothing materialises such a run, because a job with no steps does
 // not validate, and this is what the model says if one ever appears.

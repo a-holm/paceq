@@ -582,11 +582,14 @@ func (s *Store) ReconcileRunStates(ctx context.Context) error {
 	return s.withTx(ctx, func(tx *sql.Tx) error {
 		type stranded struct {
 			state string
+			code  string
+			data  string
 			lease int64
 			steps []string
 		}
 		byRun := map[string]*stranded{}
-		rows, err := tx.Query(`SELECT r.id, r.state, COALESCE(r.lease_expires_at, 0),
+		rows, err := tx.Query(`SELECT r.id, r.state, COALESCE(r.reason_code, ''),
+			COALESCE(r.reason_data, '{}'), COALESCE(r.lease_expires_at, 0),
 			COALESCE(s.state, '')
 		FROM runs r LEFT JOIN steps s ON s.run_id = r.id
 		ORDER BY r.id, s.idx`)
@@ -594,15 +597,15 @@ func (s *Store) ReconcileRunStates(ctx context.Context) error {
 			return fmt.Errorf("reconcile run states: %w", err)
 		}
 		for rows.Next() {
-			var id, runState, stepState string
+			var id, runState, runCode, runData, stepState string
 			var lease int64
-			if err := rows.Scan(&id, &runState, &lease, &stepState); err != nil {
+			if err := rows.Scan(&id, &runState, &runCode, &runData, &lease, &stepState); err != nil {
 				_ = rows.Close()
 				return fmt.Errorf("reconcile run states: %w", err)
 			}
 			p, ok := byRun[id]
 			if !ok {
-				p = &stranded{state: runState, lease: lease}
+				p = &stranded{state: runState, code: runCode, data: runData, lease: lease}
 				byRun[id] = p
 			}
 			if stepState != "" {
@@ -633,12 +636,13 @@ func (s *Store) ReconcileRunStates(ctx context.Context) error {
 			for _, st := range p.steps {
 				aggSteps = append(aggSteps, model.StepState(st))
 			}
-			agg := model.RunAggregate(aggSteps, false)
+			have := reason.Code(p.code)
+			agg := model.RunAggregate(aggSteps, reason.IsRunLevelFailure(have))
 			if agg == model.RunRunning {
 				// Still work open: nothing to converge.
 				continue
 			}
-			if err := finalizeReconciledRunTx(tx, id, cur, agg, now); err != nil {
+			if err := finalizeReconciledRunTx(tx, id, cur, agg, have, p.data, now); err != nil {
 				return err
 			}
 		}
@@ -651,18 +655,30 @@ func (s *Store) ReconcileRunStates(ctx context.Context) error {
 // first failed step, a succeeded run says so, and a cancelled run says so. The
 // run_events row notes the recovery so explain can tell a clean finish from a
 // reconciliation.
-func finalizeReconciledRunTx(tx *sql.Tx, runID string, cur model.RunState, agg model.RunState, now time.Time) error {
+//
+// have is the code the row already carries. When it names a run-level failure
+// the aggregate is failed because of it, and the row keeps that code and the
+// payload the code promises: no step of such a run failed, so RUN_FAILED_STEP
+// would name a step that does not exist, and RUN_SUCCEEDED would report a
+// quarantined run to the operator as a success.
+func finalizeReconciledRunTx(tx *sql.Tx, runID string, cur model.RunState, agg model.RunState,
+	have reason.Code, haveData string, now time.Time,
+) error {
 	var (
 		code  reason.Code
 		data  string
 		event string
 	)
-	switch agg {
-	case model.RunFailed:
+	switch {
+	case reason.IsRunLevelFailure(have):
+		code = have
+		data = haveData
+		event = "run.failed"
+	case agg == model.RunFailed:
 		code = reason.RUNFailedStep
 		data = `{"step":` + `"` + firstFailedStepName(tx, runID) + `"}`
 		event = "run.failed"
-	case model.RunCancelled:
+	case agg == model.RunCancelled:
 		code = reason.RUNCancelledManual
 		data = "{}"
 		event = "run.cancelled"
@@ -978,6 +994,7 @@ func (s *Store) FinishRun(ctx context.Context, runID string, ref LeaseRef, fr Fi
 			AllStepsTerminal: allStepsTerminal(states),
 			AnyStepFailed:    anyStepIs(states, model.StepFailed),
 			AnyStepCancelled: anyStepIs(states, model.StepCancelled),
+			RunLevelFailure:  reason.IsRunLevelFailure(fr.Code),
 			ReasonCode:       string(fr.Code),
 			Now:              now.UnixMilli(),
 			AvailableAt:      run.AvailableAt.UnixMilli(),
@@ -1392,16 +1409,29 @@ func anyStepIs(states []model.StepState, want model.StepState) bool {
 // steps and never ask the machine to move the run, so a lease answer here
 // would be a fact nobody computed; the one caller that does ask fills the
 // field in from leaseHeldBy.
+//
+// The fold's second input is computed from the code rather than assumed: a
+// caller that hands in a run-level failure gets a failed verdict over steps
+// that all read skipped, which is the ending no step can express.
 func cancelGuards(states []model.StepState, code reason.Code) model.Guards {
+	runLevel := reason.IsRunLevelFailure(code)
 	return model.Guards{
 		AnyStepFailed:    anyStepIs(states, model.StepFailed),
 		AnyStepCancelled: anyStepIs(states, model.StepCancelled),
 		AllStepsTerminal: allStepsTerminal(states),
-		ReasonCode:       string(cancelReason(model.RunAggregate(states, false), code)),
+		RunLevelFailure:  runLevel,
+		ReasonCode:       string(cancelReason(model.RunAggregate(states, runLevel), code)),
 	}
 }
 
+// cancelReason names the code that matches the verdict. A run-level failure
+// code survives it unchanged: that code is why the verdict is failed, and no
+// step of the run produced it, so RUN_FAILED_STEP would name a step that does
+// not exist.
 func cancelReason(verdict model.RunState, code reason.Code) reason.Code {
+	if reason.IsRunLevelFailure(code) {
+		return code
+	}
 	switch verdict {
 	case model.RunFailed:
 		return reason.RUNFailedStep

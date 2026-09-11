@@ -38,6 +38,14 @@ type Guards struct {
 	// CrashBudgetLeft is the poison quarantine (02 section 5.7): a run that
 	// has crashed too often is failed instead of requeued.
 	CrashBudgetLeft bool
+	// RunLevelFailure is the run having failed for something no step can
+	// express: quarantined, or out of attempts. It outranks every step
+	// guard, which is the same rank RunAggregate gives its second input,
+	// and it is what lets the machine answer for a run whose steps all read
+	// skipped because it ended before any of them ran. Which reason codes
+	// carry the fact is the catalogue's answer, not the model's; the caller
+	// asks reason.IsRunLevelFailure and hands the result in.
+	RunLevelFailure bool
 	// ReasonCode is the explanation for a transition that needs one. Every
 	// terminal state does (06 section 2.1), and so does the retry transition,
 	// which records why the attempt failed. The catalogue of codes is M1-05;

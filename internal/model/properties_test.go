@@ -364,6 +364,7 @@ func TestEveryGuardIsLoadBearing(t *testing.T) {
 		{"AnyStepCancelled", func(g model.Guards) model.Guards { g.AnyStepCancelled = !g.AnyStepCancelled; return g }},
 		{"AllStepsTerminal", func(g model.Guards) model.Guards { g.AllStepsTerminal = !g.AllStepsTerminal; return g }},
 		{"CrashBudgetLeft", func(g model.Guards) model.Guards { g.CrashBudgetLeft = !g.CrashBudgetLeft; return g }},
+		{"RunLevelFailure", func(g model.Guards) model.Guards { g.RunLevelFailure = !g.RunLevelFailure; return g }},
 		{"ReasonCode", func(g model.Guards) model.Guards {
 			if g.ReasonCode == "" {
 				g.ReasonCode = reasonCode

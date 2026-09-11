@@ -55,6 +55,20 @@ type Entry struct {
 	DataKeys    []string
 	Terminal    bool
 
+	// RunLevelFailure marks a code that means the run failed for something
+	// no step can express: the reaper quarantined it, or its attempt budget
+	// ran out. It is the second input to model.RunAggregate, which is why
+	// the fact lives on the code rather than in whichever package happened
+	// to need it first. A run that ends this way ends before any step ran,
+	// so every step reads skipped and the step fold alone would call the
+	// run a success.
+	//
+	// RUN_LEGACY_UNSPECIFIED is not marked, even though the row under it
+	// may well have failed at run level: the stamp fsck --repair writes
+	// erased which kind of ending it was. Such a row is reported rather
+	// than excused.
+	RunLevelFailure bool
+
 	ScenarioExempt bool
 	ExemptReason   string
 }
@@ -77,6 +91,20 @@ func Lookup(c Code) (Entry, bool) {
 func IsKnown(c Code) bool {
 	_, ok := catalog[c]
 	return ok
+}
+
+// IsRunLevelFailure reports whether a code means the run failed for something
+// no step can express. It is the one definition of that question in the tree,
+// and it answers from the catalogue, so a new code carries the fact from the
+// commit that adds it instead of waiting for a predicate somewhere else to be
+// taught about it.
+//
+// Every writer of a terminal run state and the I10 checker feed the answer to
+// model.RunAggregate as its second input. A code outside the catalogue is not
+// a run-level failure: there is no entry to read the fact from.
+func IsRunLevelFailure(c Code) bool {
+	e, ok := Lookup(c)
+	return ok && e.RunLevelFailure
 }
 
 // All returns every entry sorted by code. The order is stable across calls,
