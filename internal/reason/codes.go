@@ -244,10 +244,14 @@ func newCatalog() map[Code]Entry {
 			Level: LevelTick,
 			Short: "the sensor failed or panicked",
 			Explanation: "The sensor subprocess died, exited non-zero, or produced nothing the " +
-				"evaluator could read. Nothing triggered, and the sensor's consecutive_failures " +
-				"climbed by one toward whatever its failure policy allows.",
+				"evaluator could read. Nothing triggered. The commit raised the sensor's " +
+				"consecutive_failures by one, unless the exit code was 75 (a transient " +
+				"failure, which never counts toward the breaker); at ten in a row the " +
+				"breaker opens and the sensor stops being evaluated until a probe " +
+				"recovers it or an operator resumes it.",
 			Remedy: []string{
 				"run the sensor's command by hand and read what it prints",
+				"read consecutive_failures on the sensor: paceq sensors show <name>",
 				"check the sensor's timeout and interval before suspecting the sensor's code",
 			},
 			DataKeys: []string{"exit_code"},

@@ -22,6 +22,15 @@ type Spec struct {
 	// They are inputs here, never written.
 	Cursor     *string
 	LastTickAt *int64
+
+	// ConsecutiveFailures and BreakerOpenedAt are the sensor's circuit breaker
+	// state, read off the same row every health surface reports: how many
+	// permanent failures in a row it has answered with, and when the current
+	// open period began (the zero time when it is not open). They decide
+	// whether this evaluation starts at all, and nothing in this process
+	// remembers them between wakes.
+	ConsecutiveFailures int
+	BreakerOpenedAt     time.Time
 }
 
 // Config is what the evaluator needs beyond a spec. The zero value of each

@@ -97,9 +97,13 @@ paceq sensors test <sensor>
 
 ### The sensor kept failing and the breaker tripped
 
-`TICK_ERROR_SENSOR_FAILED` with the sensor paused by its breaker: repeated
-failures trip a cooldown, and a half-open probe decides when it may try
-again. Fix the underlying failure; the breaker opens back up on its own.
+`TICK_ERROR_SENSOR_FAILED` on ten evaluations in a row: the breaker is open,
+the sensor is not evaluated for a cooldown, and one probe per cooldown
+decides when it may try again. `paceq sensors show <sensor>` prints the count
+and `paceq status sensor/<sensor>` reports the breaker, both off the sensor's
+row, so a restart does not hide it. Fix the underlying failure and the next
+successful probe closes the breaker; `paceq sensors resume <sensor>` clears
+it at once.
 
 ### The trigger was deduplicated away
 

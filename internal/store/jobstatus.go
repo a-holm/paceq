@@ -188,3 +188,12 @@ func nullableMillis(ms sql.NullInt64) time.Time {
 	}
 	return time.UnixMilli(ms.Int64).UTC()
 }
+
+// millisOrNull is nullableMillis backwards, for a stamp on its way into a
+// nullable millisecond column: the zero time is written as NULL.
+func millisOrNull(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t.UnixMilli()
+}

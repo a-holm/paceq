@@ -33,6 +33,7 @@ type SensorSummary struct {
 	CursorVersion       int64
 	DedupEpoch          int64
 	ConsecutiveFailures int
+	BreakerOpenedAt     time.Time
 	NextEvalAt          int64
 	LastTickAt          *int64
 	LastOutcome         string
@@ -44,7 +45,7 @@ type SensorSummary struct {
 const sensorSummarySelect = `SELECT s.name, s.job_name, s.kind, s.exec_json, s.interval_ms,
        s.min_interval_ms, s.timeout_ms, s.max_triggers_per_tick,
        s.paused, COALESCE(s.paused_reason, ''), s.cursor, s.cursor_version,
-       s.dedup_epoch, s.consecutive_failures, s.next_eval_at,
+       s.dedup_epoch, s.consecutive_failures, s.breaker_opened_at, s.next_eval_at,
               t.last_started_at, COALESCE(t.outcome, '')
        FROM sensors s
 LEFT JOIN (
@@ -55,21 +56,23 @@ LEFT JOIN (
 ) t ON t.source_name = s.name`
 
 // scanSensorSummary scans one row back into a SensorSummary. paused comes back
-// as an integer, cursor and last_tick_at as nullable columns.
+// as an integer, cursor, breaker_opened_at and last_tick_at as nullable
+// columns.
 func scanSensorSummary(row interface{ Scan(...any) error }, out *SensorSummary) error {
 	var pausedRaw int
 	var cursor sql.NullString
-	var lastTick sql.NullInt64
+	var breakerOpened, lastTick sql.NullInt64
 	if err := row.Scan(
 		&out.Name, &out.JobName, &out.Kind, &out.ExecJSON, &out.IntervalMS,
 		&out.MinIntervalMS, &out.TimeoutMS, &out.MaxTriggersPerTick,
 		&pausedRaw, &out.PausedReason, &cursor, &out.CursorVersion,
-		&out.DedupEpoch, &out.ConsecutiveFailures, &out.NextEvalAt,
+		&out.DedupEpoch, &out.ConsecutiveFailures, &breakerOpened, &out.NextEvalAt,
 		&lastTick, &out.LastOutcome,
 	); err != nil {
 		return err
 	}
 	out.Paused = pausedRaw != 0
+	out.BreakerOpenedAt = nullableMillis(breakerOpened)
 	if cursor.Valid {
 		out.Cursor = &cursor.String
 	}
@@ -230,13 +233,17 @@ WHERE name = ? AND paused = 0`, reason, now, name)
 	return nil
 }
 
-// ResumeSensor clears a sensor's paused state, its reason, and its
-// consecutive-failure count (the breaker state an operator reset by resuming).
+// ResumeSensor clears a sensor's paused state, its reason, and the whole of
+// its circuit breaker state. Both breaker columns go together: a resume that
+// left breaker_opened_at standing would refuse the sensor work for the rest of
+// its cooldown while every health surface reported it healthy, which is the
+// defect an operator hits while recovering from the first one (#220).
 func (s *Store) ResumeSensor(ctx context.Context, name string) error {
 	now := s.clk.Now().UTC().UnixMilli()
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
 		res, err := tx.Exec(`UPDATE sensors
-SET paused = 0, paused_reason = NULL, consecutive_failures = 0, updated_at = ?
+SET paused = 0, paused_reason = NULL, consecutive_failures = 0,
+    breaker_opened_at = NULL, updated_at = ?
 WHERE name = ?`, now, name)
 		if err != nil {
 			return fmt.Errorf("resume sensor %s: %w", name, err)

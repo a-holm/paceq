@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/a-holm/paceq/internal/clock"
+	"github.com/a-holm/paceq/internal/model"
 )
 
 // Source lists which sensors are due in one wake. M3-01 supplies the
@@ -49,18 +50,25 @@ type Ticket struct {
 // goroutine so a hanging sensor never blocks a loop. It never writes to the
 // database; the Result travels to the Sink, which is M3-03's.
 //
-// It also owns the sensor-robustness state that must survive from one wake to
-// the next (M3-05): a circuit breaker per sensor. A tripped sensor stops being
-// evaluated until it recovers on a half-open probe or an operator resumes it,
-// so the loop stops hammering a service that is down. The trigger ceiling is
-// not here: ApplyLimit runs where the evaluation is committed, so a forced
-// `paceq sensors tick` is bound by the same budget as a daemon wake (#215).
+// It applies neither of the two sensor-robustness rules (M3-05) itself. Both
+// are decided where the evaluation is committed, which is the one point a
+// daemon wake and a forced `paceq sensors tick` both pass through: ApplyLimit
+// bounds the batch there, so the forced evaluation is held to the same budget
+// and the same cursor rule as a daemon wake (#215), and the breaker count is
+// folded onto the sensor's row there, in the same transaction as the
+// evaluation it counts (#220).
+//
+// What the runtime still does about the breaker is refuse to start. A tripped
+// sensor is not evaluated until a probe after its cooldown recovers it or an
+// operator resumes it, so the loop stops hammering a service that is down. It
+// reads that state off the sensor's row and keeps no count of its own, which
+// is what makes a restart harmless and the reported number the same one work
+// is refused on.
 //
 // It is not a Go errgroup and does not own a goroutine of selector logic on
 // purpose: the daemon's loop shell already select-s on the context, the ticker
 // and the notify bus, and calls Step once per wake. The runtime only carries
-// state that must survive from one wake to the next (what is in flight, what
-// is tripped) and the bounded workers the evaluations share.
+// what is in flight right now and the bounded workers the evaluations share.
 type Runtime struct {
 	source Source
 	sink   Sink
@@ -71,15 +79,9 @@ type Runtime struct {
 	maxParallel  int
 	drainTimeout time.Duration
 
-	// breakers owns one breaker per sensor name. The map is written only
-	// when a sensor first fails, so an all-healthy deployment never pays for
-	// a breaker it does not need.
-	breakers map[string]*Breaker
-	// breakerMax is the trip threshold shared by every breaker; zero means
-	// the default in backoff.go.
-	breakerMax int
 	// breakerCooldown is how long a tripped sensor stays down before a probe
-	// is admitted; zero means the backoff default (one hour).
+	// is admitted. The count it is measured against is on the sensor's row,
+	// not here: this runtime remembers nothing about any breaker.
 	breakerCooldown time.Duration
 
 	mu      sync.Mutex
@@ -99,9 +101,6 @@ type RuntimeConfig struct {
 	Clock        clock.Clock
 	Log          *slog.Logger
 
-	// BreakerMaxFailures is the circuit breaker trip threshold. Zero means
-	// the default in backoff.go.
-	BreakerMaxFailures int
 	// BreakerCooldown is how long a tripped sensor stays closed before a
 	// half-open probe. Zero means the backoff default (one hour).
 	BreakerCooldown time.Duration
@@ -126,6 +125,10 @@ func NewRuntime(ev *Evaluator, cfg RuntimeConfig) *Runtime {
 	if drain <= 0 {
 		drain = 30 * time.Second
 	}
+	cooldown := cfg.BreakerCooldown
+	if cooldown <= 0 {
+		cooldown = BackoffCap
+	}
 	return &Runtime{
 		source:          cfg.Source,
 		sink:            cfg.Sink,
@@ -134,29 +137,19 @@ func NewRuntime(ev *Evaluator, cfg RuntimeConfig) *Runtime {
 		log:             log,
 		maxParallel:     maxP,
 		drainTimeout:    drain,
-		breakers:        make(map[string]*Breaker),
-		breakerMax:      cfg.BreakerMaxFailures,
-		breakerCooldown: cfg.BreakerCooldown,
+		breakerCooldown: cooldown,
 		active:          make(map[string]struct{}),
 		permits:         make(chan struct{}, maxP),
 	}
 }
 
-// breakerFor returns the sensor's breaker, building it on first use with the
-// shared trip policy.
-func (rt *Runtime) breakerFor(name string) *Breaker {
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	if b, ok := rt.breakers[name]; ok {
-		return b
-	}
-	b := NewBreaker(BreakerConfig{
-		MaxFailures: rt.breakerMax,
-		Cooldown:    rt.breakerCooldown,
-		Clock:       rt.clk,
-	})
-	rt.breakers[name] = b
-	return b
+// admits reports whether the sensor's circuit breaker lets this evaluation
+// start. The whole answer is on the row the spec was read from, so a restart
+// cannot rearm a tripped sensor and the number refused here is the number
+// every health surface prints (#220).
+func (rt *Runtime) admits(spec Spec) bool {
+	return model.SensorBreakerAdmits(spec.ConsecutiveFailures, spec.BreakerOpenedAt,
+		rt.clk.Now(), rt.breakerCooldown)
 }
 
 // Step is one run of the loop seam: admit due sensors, claim the ones that
@@ -167,9 +160,11 @@ func (rt *Runtime) breakerFor(name string) *Breaker {
 // each one kills its own process group and drains; Step waits for them so the
 // daemon's loop returns only when no sensor subprocess is left behind.
 //
-// A sensor whose breaker is open (a tripped sensor inside its cooldown, or a
-// half-open probe already in flight) is left due for a later wake, exactly as
-// a sensor with no free permit is; it is never started.
+// A sensor whose breaker is open is left due for a later wake, exactly as a
+// sensor with no free permit is; it is never started. Its probe, once the
+// cooldown has elapsed, is admitted like any other evaluation and is held to
+// one at a time by the same claim: no second probe starts until the first has
+// committed its verdict onto the row.
 func (rt *Runtime) Step(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		rt.drain()
@@ -187,7 +182,7 @@ func (rt *Runtime) Step(ctx context.Context) error {
 			rt.drain()
 			return err
 		}
-		if !rt.breakerFor(spec.Name).Admit() {
+		if !rt.admits(spec) {
 			continue // tripped: refuse work until the cooldown offers a probe
 		}
 		if !rt.claim(spec.Name) {
@@ -207,7 +202,6 @@ func (rt *Runtime) Step(ctx context.Context) error {
 // pressing this sensor. All three releases are deferred so not even a panic
 // leaks the claim or the permit.
 func (rt *Runtime) evaluate(ctx context.Context, spec Spec) {
-	brek := rt.breakerFor(spec.Name)
 	defer rt.ReleasePermit()
 	defer rt.unclaim(spec.Name)
 	// The tick opens before the sensor runs, never after: see Sink.Begin.
@@ -226,13 +220,13 @@ func (rt *Runtime) evaluate(ctx context.Context, spec Spec) {
 	}
 	in := rt.inputFor(spec)
 	res := rt.ev.Evaluate(ctx, spec, in)
-	// The batch is bounded by max_triggers_per_tick where it is committed, so
-	// the forced CLI evaluation is bound by the same ceiling and the same
-	// cursor rule (#215). Truncation changes neither the outcome nor the exit
-	// code, so the breaker's verdict is the same on either side of it: a
-	// truncated batch counts as a success if the sensor itself answered, and
-	// an errored one counts toward the trip however many triggers were dropped.
-	_ = brek.NoteOutcome(ClassifyFailure(res.ExitCode), res.Outcome != Errored)
+	// The Result reaches the sink whole and unjudged. Its batch is bounded by
+	// max_triggers_per_tick where it is committed, so the forced CLI
+	// evaluation is bound by the same ceiling and the same cursor rule
+	// (#215), and its verdict is folded into the breaker count by the same
+	// transaction, so a crash between the two cannot leave a sensor stopped
+	// with nothing recording why (#220). Truncation moves neither the outcome
+	// nor the exit code, so the verdict is the same on either side of it.
 	if rt.sink != nil {
 		if err := rt.sink.Commit(ctx, spec, tk, res); err != nil && ctx.Err() == nil {
 			rt.log.Warn("sensor result was not committed", "sensor", spec.Name, "error", err.Error())

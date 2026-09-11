@@ -62,8 +62,10 @@ tests:
               summary: "WAL vokser — sannsynlig langlevd leser hindrer checkpointing"
               runbook: "pulseq doctor; se docs/drift/wal.md"
 
-  # The sensor failure light trips on consecutive failures alone, without a
-  # for-duration: six failures in a row are already the message.
+  # Sensorlyset står på breakerens egen terskel, uten for-varighet: når
+  # telleren når den, har sensoren sluttet å bli evaluert, og det er hele
+  # meldingen. Serien teller én feil i minuttet, slik en sensor som feiler
+  # hver evaluering gjør.
   - interval: 1m
     input_series:
       - series: 'pulseq_sensor_consecutive_failures{name="flaky"}'
@@ -73,14 +75,17 @@ tests:
       - eval_time: 3m
         alertname: PulseqSensorErrorRate
         exp_alerts: []
-      - eval_time: 7m
+      - eval_time: 9m
+        alertname: PulseqSensorErrorRate
+        exp_alerts: []
+      - eval_time: 10m
         alertname: PulseqSensorErrorRate
         exp_alerts:
           - exp_labels:
               severity: warning
               name: flaky
             exp_annotations:
-              summary: "Sensor flaky feiler gjentatt — breaker nærmer seg"
+              summary: "Sensor flaky feiler gjentatt — breakeren er åpen"
               runbook: "pulseq explain sensor flaky"
 
   # The disk-guard speaks for itself (#44): one while degraded, zero while
