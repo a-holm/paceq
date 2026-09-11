@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/a-holm/paceq/internal/cronx"
+	"github.com/a-holm/paceq/internal/diag"
 	"github.com/a-holm/paceq/internal/spec"
 )
 
@@ -157,4 +158,48 @@ func TestAnEmptyCronStaysAMissingField(t *testing.T) {
 	if diags[0].Code != spec.CodeMissingField {
 		t.Fatalf("an empty cron raised %s, want %s", diags[0].Code, spec.CodeMissingField)
 	}
+}
+
+// TestABadDayOfWeekIsRefusedInTheSameWordsEveryTime holds the refusal itself
+// to the promise the whole parser rests on: the same file gives the same
+// diagnostics. The message quotes cronx, cronx suggests the names the field
+// accepts, and those names live in a map. A suggestion list cut to three
+// entries before it is ordered names three arbitrary days, so one file refused
+// twice reads differently, and it does so intermittently, which is worse than
+// always.
+//
+// The expected clause is the order the field counts in. A list built by
+// ranging the map can only come out alphabetical, so it never matches this at
+// any seed: the assertion is red on every run, not on one run in thirty-five.
+// The repeat loop then holds the property the assertion is a proxy for.
+func TestABadDayOfWeekIsRefusedInTheSameWordsEveryTime(t *testing.T) {
+	const expr = "0 0 7 12 !"
+	const want = `field 5 (day of week) value "!" cannot be read in "!": use numbers or names like sun, mon, tue`
+
+	source := []byte(cronSource(expr))
+
+	first := badCron(t, source)
+	if first.Message != want {
+		t.Errorf("the refusal reads\n%q\nwant\n%q", first.Message, want)
+	}
+	for i := range 16 {
+		again := badCron(t, source)
+		if again != first {
+			t.Fatalf("parse %d refused one file differently:\n%+v\n%+v", i+2, first, again)
+		}
+	}
+}
+
+// badCron is the one PQ2011 a file is expected to raise.
+func badCron(t *testing.T, source []byte) diag.Diagnostic {
+	t.Helper()
+
+	_, diags := spec.Parse("j.yaml", source)
+	for _, d := range diags {
+		if d.Code == spec.CodeBadCron {
+			return d
+		}
+	}
+	t.Fatalf("the file decoded without a %s: %v", spec.CodeBadCron, diags)
+	return diag.Diagnostic{}
 }

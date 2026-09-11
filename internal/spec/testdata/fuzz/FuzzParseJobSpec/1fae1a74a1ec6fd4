@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("schedules:\n  - cron: 0 0 7 12 \"")
