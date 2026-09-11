@@ -27,7 +27,7 @@
 | Tilstander | queued/running/succeeded/failed/cancelled; «utsatt» = available_at+defer_reason | §3.14 |
 | Dedup | `run_keys(source, epoch, run_key)`; dedup-epoch løser reset-fella | §3.22 |
 
-Budsjetter: ≤8 runtime-deps, ≤12 000 linjer kjerne-Go, binær <30 MB, `status` <100 ms.
+Budsjetter: ≤8 runtime-deps, binær <30 MB, `status` <100 ms. Kjerne-Go har ingen linjegrense (ADR-0004).
 
 ---
 
@@ -1005,7 +1005,7 @@ Budsjetter: ≤8 runtime-deps, ≤12 000 linjer kjerne-Go, binær <30 MB, `statu
 - **Avhenger av:** M8-01, M8-02, M8-03, M8-04, M8-05, M8-06, M8-07
 - **Spek:** Tag v1.0 «Stabil kontrakt»: ingen nye funksjoner, frosne formater, migreringsgaranti fra alle 0.x, dokumentert utfasingspolicy (09 §8).
   Akseptanse:
-  - Konfigformatet uten brytende endring siste 3 måneder; K4-budsjettsjekk (10 §7): kjerne ≤12 000 linjer, ≤8 runtime-deps — brudd betyr at noe fjernes, ikke at budsjettet økes.
+  - Konfigformatet uten brytende endring siste 3 måneder; K4-budsjettsjekk (10 §7): ≤8 runtime-deps — brudd betyr at noe fjernes, ikke at budsjettet økes.
 
 ---
 
