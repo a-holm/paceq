@@ -424,21 +424,33 @@ func resolveValue(text string, spec fieldSpec) (int, error) {
 
 func nameHint(spec fieldSpec) string {
 	if spec.names != nil {
-		return " or names like " + firstKeys(spec.names)
+		return " or names like " + firstNames(spec.names)
 	}
 	return ""
 }
 
-func firstKeys(m map[string]int) string {
-	keys := make([]string, 0, 3)
-	for k := range m {
-		keys = append(keys, k)
-		if len(keys) == 3 {
-			break
-		}
+// firstNames names the first three values of a field in the order the field
+// counts them, so a weekday hint opens on sun and a month hint on jan.
+//
+// The whole set is ordered before it is cut. Ranging a map is randomised per
+// iteration, so cutting first and sorting the sample leaves the sample itself
+// to chance, and this text reaches the operator inside a diagnostic that has
+// to read the same on every parse of the same file.
+func firstNames(m map[string]int) string {
+	names := make([]string, 0, len(m))
+	for name := range m {
+		names = append(names, name)
 	}
-	sort.Strings(keys)
-	return strings.Join(keys, ", ")
+	sort.Slice(names, func(i, j int) bool {
+		if m[names[i]] != m[names[j]] {
+			return m[names[i]] < m[names[j]]
+		}
+		return names[i] < names[j]
+	})
+	if len(names) > 3 {
+		names = names[:3]
+	}
+	return strings.Join(names, ", ")
 }
 
 // compiled is a parsed cron schedule ready for iteration.

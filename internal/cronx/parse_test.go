@@ -290,3 +290,32 @@ func TestNameRangeAndStepSchedulesFire(t *testing.T) {
 		}
 	})
 }
+
+// TestNameHintNamesTheSameFieldsEveryTime pins the suggestion list a refusal
+// carries. The field names live in a map, and ranging a map is randomised per
+// iteration, so a hint cut to three entries before it is ordered names three
+// arbitrary days: the same expression refused twice then reads differently.
+//
+// The expectation is the order the field counts in, which a hint built by
+// ranging cannot produce at any seed, because ranging then sorting can only
+// emit names in alphabetical order. That is what makes this fail on every run
+// rather than on one run in thirty-five.
+func TestNameHintNamesTheSameFieldsEveryTime(t *testing.T) {
+	want := map[string]string{
+		"month":       " or names like jan, feb, mar",
+		"day of week": " or names like sun, mon, tue",
+	}
+
+	for _, spec := range cronFields() {
+		got := nameHint(spec)
+		if spec.names == nil {
+			if got != "" {
+				t.Errorf("field %d (%s) suggests names it does not accept: %q", spec.pos, spec.name, got)
+			}
+			continue
+		}
+		if got != want[spec.name] {
+			t.Errorf("field %d (%s) hint = %q, want %q", spec.pos, spec.name, got, want[spec.name])
+		}
+	}
+}
