@@ -230,13 +230,17 @@ WHERE name = ? AND paused = 0`, reason, now, name)
 	return nil
 }
 
-// ResumeSensor clears a sensor's paused state, its reason, and its
-// consecutive-failure count (the breaker state an operator reset by resuming).
+// ResumeSensor clears a sensor's paused state, its reason, and the whole of
+// its circuit breaker state. Both breaker columns go together: a resume that
+// left breaker_opened_at standing would refuse the sensor work for the rest of
+// its cooldown while every health surface reported it healthy, which is the
+// defect an operator hits while recovering from the first one (#220).
 func (s *Store) ResumeSensor(ctx context.Context, name string) error {
 	now := s.clk.Now().UTC().UnixMilli()
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
 		res, err := tx.Exec(`UPDATE sensors
-SET paused = 0, paused_reason = NULL, consecutive_failures = 0, updated_at = ?
+SET paused = 0, paused_reason = NULL, consecutive_failures = 0,
+    breaker_opened_at = NULL, updated_at = ?
 WHERE name = ?`, now, name)
 		if err != nil {
 			return fmt.Errorf("resume sensor %s: %w", name, err)

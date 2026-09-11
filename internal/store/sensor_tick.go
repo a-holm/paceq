@@ -174,6 +174,12 @@ type SensorTickCommitInput struct {
 	// code, and still has to say how many triggers it dropped.
 	ReasonData string
 
+	// BreakerExempt marks an errored evaluation that must not burn circuit
+	// breaker budget: exit 75 (EX_TEMPFAIL) and exit 64 (EX_USAGE) are read
+	// off the result by the caller that classified it. It is read only when
+	// Outcome is OutcomeError.
+	BreakerExempt bool
+
 	// NextEvalAt is when the sensor becomes due again. Set on every commit.
 	NextEvalAt int64
 
@@ -250,6 +256,26 @@ func (s *Store) CommitSensorTick(ctx context.Context, in SensorTickCommitInput) 
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
 		cursorAfter := cursorAdvanceOf(in.Outcome, in.CursorAfter)
 
+		// The circuit breaker state this evaluation lands on. It is read here
+		// rather than folded in SQL so one Go function decides the count for
+		// the writer and the readers alike (#220), and it is written by the
+		// statement below so the count moves in the same transaction as the
+		// evaluation it counts: a crash between the two would lose the only
+		// evidence a health surface has that the sensor stopped.
+		var failuresBefore int
+		var openedBefore sql.NullInt64
+		err := tx.QueryRow(`SELECT consecutive_failures, breaker_opened_at
+FROM sensors WHERE name = ?`, in.SensorName).Scan(&failuresBefore, &openedBefore)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			// No row at all falls through: the guard below writes zero rows
+			// and the commit is fenced, which is the same answer.
+			return fmt.Errorf("read the breaker state of sensor %s: %w", in.SensorName, err)
+		}
+		failuresAfter := model.SensorFailuresAfter(failuresBefore,
+			in.Outcome == OutcomeError, in.BreakerExempt)
+		openedAfter := model.SensorBreakerOpenedAt(failuresBefore, failuresAfter,
+			nullableMillis(openedBefore), now)
+
 		// Step 0: the cursor CAS guard. The evaluation whose result we are
 		// committing read this version at start; if the sensor moved since,
 		// nothing here may write. Zero rows means the guard is stale.
@@ -257,10 +283,14 @@ func (s *Store) CommitSensorTick(ctx context.Context, in SensorTickCommitInput) 
 SET cursor = COALESCE(?, cursor),
     cursor_updated_at = CASE WHEN ? IS NULL THEN cursor_updated_at ELSE ? END,
     cursor_version = cursor_version + 1,
+    consecutive_failures = ?,
+    breaker_opened_at = ?,
     next_eval_at = ?,
     updated_at = ?
 WHERE name = ? AND cursor_version = ?`,
-			nullIfEmpty(cursorAfter), nullIfEmpty(cursorAfter), at, in.NextEvalAt, at, in.SensorName, in.CursorVersion)
+			nullIfEmpty(cursorAfter), nullIfEmpty(cursorAfter), at,
+			failuresAfter, millisOrNull(openedAfter),
+			in.NextEvalAt, at, in.SensorName, in.CursorVersion)
 		if err != nil {
 			return fmt.Errorf("advance the cursor of sensor %s: %w", in.SensorName, err)
 		}
